@@ -643,8 +643,8 @@ mod tests {
                     let row: Vec<&str> = lines[idx].split('\t').collect();
                     idx += 1;
                     out.push('{');
-                    match row[0] {
-                        "+" => {
+                    match row.first().copied() {
+                        Some("+") => {
                             for (ki, key) in keys.iter().enumerate() {
                                 if ki > 0 {
                                     out.push(',');
@@ -654,7 +654,7 @@ mod tests {
                                 out.push_str(row[1 + ki]);
                             }
                         }
-                        "*" => {
+                        Some("*") => {
                             let m: usize = row[1].parse().unwrap();
                             for j in 0..m {
                                 if j > 0 {

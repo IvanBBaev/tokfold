@@ -85,10 +85,18 @@ jobs:
       - name: Cache cargo build artifacts
         uses: Swatinem/rust-cache@v2
 
+      # rustfmt and clippy are toolchain-version-sensitive: their lint sets drift
+      # between releases (lints get added, renamed, or deprecated). Running
+      # `clippy -D warnings` on the MSRV or macOS legs turns that drift into
+      # spurious failures unrelated to the MSRV contract. Pin both to the single
+      # required stable leg; the other legs prove the code compiles and its tests
+      # pass on their toolchain/OS, which is the guarantee they actually exist for.
       - name: Format check
+        if: matrix.required
         run: cargo fmt --all --check
 
       - name: Clippy
+        if: matrix.required
         run: cargo clippy --all-targets --all-features ${{ matrix.flags }} -- -D warnings
 
       - name: Test
