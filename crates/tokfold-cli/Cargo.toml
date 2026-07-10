@@ -1,0 +1,23 @@
+[package]
+name = "tokfold-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Command-line interface for tokfold, the reversible LLM context compression engine"
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "tokfold"
+path = "src/main.rs"
+
+[dependencies]
+tokfold-core.workspace = true
+tokfold-mcp.workspace = true
+clap.workspace = true
+anyhow.workspace = true

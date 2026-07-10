@@ -1,0 +1,136 @@
+# Continuous integration for the tokfold workspace.
+#
+# Required check: only the (ubuntu-latest, stable) leg is meant to gate merges.
+# In branch protection, require the status check named exactly
+#   "test (ubuntu-latest, stable)".
+# The macOS and MSRV legs run for signal but are marked continue-on-error, so a
+# red result there does not block a merge (see `continue-on-error` below).
+# Windows is deliberately absent until the `mcp` subcommand is real.
+#
+# Third-party action pins: Swatinem/rust-cache@v2 is fixed by the project spec.
+# actions/checkout and taiki-e/install-action were left unpinned by the spec;
+# the chosen major-version tags are noted at their call sites. The Rust toolchain
+# is installed via the runner's preinstalled rustup rather than a third-party
+# action, which keeps one fewer dependency to pin and lets `rustup override`
+# cleanly beat the repo's rust-toolchain.toml on the MSRV leg.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly re-scan (Mondays 06:00 UTC). A PR-only audit misses advisories that
+    # are published *after* code has already shipped; this job re-checks the
+    # released tree against a fresh advisory database. See the `audit` job.
+    - cron: "0 6 * * 1"
+
+# Cancel superseded runs on the same ref so a burst of pushes does not queue up.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege: nothing here needs write access to the repo.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    # Push/PR only; the scheduled trigger drives the `audit` job instead.
+    if: github.event_name != 'schedule'
+    name: test (${{ matrix.os }}, ${{ matrix.toolchain }})
+    runs-on: ${{ matrix.os }}
+    # Non-required legs report for signal but must not block a merge.
+    continue-on-error: ${{ !matrix.required }}
+    strategy:
+      # Report every leg's result; do not abort siblings on the first failure.
+      fail-fast: false
+      matrix:
+        include:
+          # The one required check.
+          - os: ubuntu-latest
+            toolchain: stable
+            required: true
+            flags: ""
+          # Signal-only: catches platform-specific breakage.
+          - os: macos-latest
+            toolchain: stable
+            required: false
+            flags: ""
+          # Signal-only: MSRV guard. `--locked` proves the committed Cargo.lock
+          # still resolves under the minimum supported Rust version.
+          - os: ubuntu-latest
+            toolchain: "1.85"
+            required: false
+            flags: "--locked"
+    steps:
+      - name: Checkout
+        # actions/checkout: spec left the version open; v4 chosen as the current
+        # major.
+        uses: actions/checkout@v4
+
+      - name: Install Rust ${{ matrix.toolchain }}
+        # Uses the runner's preinstalled rustup. `override set` makes cargo use
+        # this toolchain in the repo dir, overriding rust-toolchain.toml (needed
+        # so the MSRV leg actually runs on 1.85 rather than stable).
+        run: |
+          rustup toolchain install ${{ matrix.toolchain }} --profile minimal -c rustfmt -c clippy
+          rustup override set ${{ matrix.toolchain }}
+          rustc --version
+
+      - name: Cache cargo build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format check
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features ${{ matrix.flags }} -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace ${{ matrix.flags }}
+
+      # cargo-deny and the publish dry-run are platform- and toolchain-independent,
+      # so they run once on the required leg only. cargo-deny needs the advisory
+      # database, which the runner fetches over the network.
+      - name: Install cargo-deny
+        if: matrix.required
+        # taiki-e/install-action: spec left the version open; v2 chosen as the
+        # current major. Installs a prebuilt binary (no from-source compile).
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+
+      - name: Supply-chain policy (cargo-deny)
+        if: matrix.required
+        run: cargo deny check
+
+      - name: Packaging dry-run
+        run: cargo publish --dry-run -p tokfold-core ${{ matrix.flags }}
+
+  audit:
+    # Scheduled-only companion to CI: re-audits already-shipped code weekly.
+    if: github.event_name == 'schedule'
+    name: audit (weekly)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup override set stable
+
+      - name: Install cargo-audit
+        # taiki-e/install-action: version chosen as noted above.
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: Audit dependencies
+        run: cargo audit

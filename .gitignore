@@ -1,0 +1,6 @@
+# Rust build artifacts
+/target
+
+# These are intentionally NOT listed here — they are excluded via
+# .git/info/exclude so the exclusion itself stays uncommitted:
+#   CLAUDE.md, CLAUDE.local.md, WORKLOG.md, .claude/, docs/ai/

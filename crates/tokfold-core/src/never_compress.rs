@@ -1,0 +1,456 @@
+//! Versioned, data-driven list of lines that must survive compression verbatim.
+//!
+//! Some lines carry more value than their token cost: a compiler error, an HTTP
+//! `4xx`/`5xx` status, an `EACCES`, a panic trace, a `denied`/`unauthorized`
+//! message, a certificate failure. Folding, deduplicating or reordering these
+//! degrades exactly the output an agent most needs to read back accurately. This
+//! module names those lines so the encoders can leave them untouched.
+//!
+//! # Why literal-only, no regex
+//!
+//! Matching is a **case-folded literal substring** test, never a regular
+//! expression. Regex over attacker-influenced input is a denial-of-service
+//! surface: a pathological pattern/input pair can cost super-linear time
+//! (catastrophic backtracking). Every rule here is a fixed literal, so a match is
+//! a bounded, linear scan of the line and the crate takes no regex dependency.
+//!
+//! Case folding is **ASCII-only**, which is sufficient because every literal is
+//! ASCII: a UTF-8 continuation byte (`>= 0x80`) can never equal an ASCII byte
+//! under ASCII case folding, so folding cannot produce a spurious match inside a
+//! multi-byte character.
+//!
+//! # The verbatim-with-position contract
+//!
+//! A line the table protects must be reproduced **byte-for-byte at its original
+//! position** relative to the surrounding lines: an encoder may not fold it into a
+//! legend, dedup it against a merely-similar line, or move it. This module only
+//! decides *membership*; the encoders enforce the contract. The rule is stated
+//! here because this is where the intent lives.
+//!
+//! # Related integrity rules (kept alongside membership)
+//!
+//! * **Dedup only on byte-identical lines.** Repeated lines may be collapsed only
+//!   when they are byte-for-byte identical. There is no near-duplicate clustering
+//!   in v0.0.1, so a protected error line can never be merged into a line that is
+//!   only similar to it.
+//! * **No content-adaptive windows.** Whether a line is kept must never depend on
+//!   the *content* of its neighbours. Membership is decided per line in isolation;
+//!   content must not open or close a "keep window" over adjacent lines.
+//!
+//! # Non-claim
+//!
+//! This is a fidelity safeguard, not a security control. It preserves error and
+//! security lines; it does **not** inspect, sanitize or authorize anything. The
+//! crate is **not** a prompt-injection filter and must not be marketed as reducing
+//! injection risk: a hostile line that matches a rule is preserved verbatim, not
+//! neutralized.
+
+/// Version of the rule table.
+///
+/// Bumping it is a **deliberate, reviewed act**: the list ships as data, and
+/// changing which lines are protected changes compressor output. Downstream
+/// prompt-cache stability depends on this staying fixed within a format version,
+/// so the value is asserted in tests to catch an accidental edit.
+pub const LIST_VERSION: u32 = 1;
+
+/// One entry in the never-compress table.
+///
+/// Rules are grouped by [`class`](Self::class) so the list is inspectable and
+/// testable by category. A line matches when [`literal`](Self::literal) occurs as
+/// a substring, compared ASCII-case-insensitively unless
+/// [`case_sensitive`](Self::case_sensitive) is set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct NeverCompressRule {
+    /// Semantic category, e.g. `"compiler"` or `"certificate"`. Groups the table
+    /// for auditing and per-class tests; carries no matching behaviour.
+    pub class: &'static str,
+    /// The fixed substring to search for. Always non-empty (asserted in tests):
+    /// an empty literal would match every line and disable compression entirely.
+    pub literal: &'static str,
+    /// When `true`, match byte-for-byte; when `false`, fold ASCII case. Symbolic
+    /// constants such as `EACCES` are case-sensitive; human-readable phrases are
+    /// not.
+    pub case_sensitive: bool,
+}
+
+impl NeverCompressRule {
+    /// Whether this rule's literal occurs in `line` under the rule's case policy.
+    fn matches_line(&self, line: &str) -> bool {
+        if self.case_sensitive {
+            line.contains(self.literal)
+        } else {
+            contains_ascii_case_insensitive(line, self.literal)
+        }
+    }
+}
+
+/// The frozen rule table (`LIST_VERSION` 1).
+///
+/// Ordered by class. Matching walks the table in this order and returns the first
+/// hit, so the order is the deterministic tie-break when a line matches more than
+/// one rule (for example an HTTP status line that also contains `Unauthorized`).
+/// Over-matching is deliberately preferred to under-matching: an extra protected
+/// line only lowers the compression ratio, whereas a missed error line degrades
+/// fidelity.
+static RULES: &[NeverCompressRule] = &[
+    // --- compiler / build errors ---
+    NeverCompressRule {
+        class: "compiler",
+        literal: "error[",
+        case_sensitive: false,
+    }, // Rust: error[E0308]
+    NeverCompressRule {
+        class: "compiler",
+        literal: "error:",
+        case_sensitive: false,
+    }, // clang/gcc/generic
+    NeverCompressRule {
+        class: "compiler",
+        literal: "error TS",
+        case_sensitive: false,
+    }, // TypeScript: error TS2322
+    // --- HTTP 4xx/5xx status lines (canonical reason phrases, RFC 9110) ---
+    NeverCompressRule {
+        class: "http-status",
+        literal: "400 Bad Request",
+        case_sensitive: false,
+    },
+    NeverCompressRule {
+        class: "http-status",
+        literal: "401 Unauthorized",
+        case_sensitive: false,
+    },
+    NeverCompressRule {
+        class: "http-status",
+        literal: "403 Forbidden",
+        case_sensitive: false,
+    },
+    NeverCompressRule {
+        class: "http-status",
+        literal: "404 Not Found",
+        case_sensitive: false,
+    },
+    NeverCompressRule {
+        class: "http-status",
+        literal: "405 Method Not Allowed",
+        case_sensitive: false,
+    },
+    NeverCompressRule {
+        class: "http-status",
+        literal: "408 Request Timeout",
+        case_sensitive: false,
+    },
+    NeverCompressRule {
+        class: "http-status",
+        literal: "409 Conflict",
+        case_sensitive: false,
+    },
+    NeverCompressRule {
+        class: "http-status",
+        literal: "410 Gone",
+        case_sensitive: false,
+    },
+    NeverCompressRule {
+        class: "http-status",
+        literal: "422 Unprocessable",
+        case_sensitive: false,
+    },
+    NeverCompressRule {
+        class: "http-status",
+        literal: "429 Too Many Requests",
+        case_sensitive: false,
+    },
+    NeverCompressRule {
+        class: "http-status",
+        literal: "500 Internal Server Error",
+        case_sensitive: false,
+    },
+    NeverCompressRule {
+        class: "http-status",
+        literal: "501 Not Implemented",
+        case_sensitive: false,
+    },
+    NeverCompressRule {
+        class: "http-status",
+        literal: "502 Bad Gateway",
+        case_sensitive: false,
+    },
+    NeverCompressRule {
+        class: "http-status",
+        literal: "503 Service Unavailable",
+        case_sensitive: false,
+    },
+    NeverCompressRule {
+        class: "http-status",
+        literal: "504 Gateway Timeout",
+        case_sensitive: false,
+    },
+    // --- errno symbols in the access/permission family (case-sensitive constants) ---
+    NeverCompressRule {
+        class: "errno",
+        literal: "EACCES",
+        case_sensitive: true,
+    },
+    NeverCompressRule {
+        class: "errno",
+        literal: "EPERM",
+        case_sensitive: true,
+    },
+    NeverCompressRule {
+        class: "errno",
+        literal: "EROFS",
+        case_sensitive: true,
+    },
+    // --- panic traces ---
+    NeverCompressRule {
+        class: "panic",
+        literal: "panicked at",
+        case_sensitive: false,
+    }, // Rust
+    NeverCompressRule {
+        class: "panic",
+        literal: "panic:",
+        case_sensitive: false,
+    }, // Go
+    // --- stack traces / backtraces ---
+    NeverCompressRule {
+        class: "stack-trace",
+        literal: "Traceback (most recent call last)",
+        case_sensitive: false,
+    }, // Python
+    NeverCompressRule {
+        class: "stack-trace",
+        literal: "stack backtrace:",
+        case_sensitive: false,
+    }, // Rust
+    NeverCompressRule {
+        class: "stack-trace",
+        literal: "goroutine ",
+        case_sensitive: false,
+    }, // Go stack dump
+    // --- denial ---
+    NeverCompressRule {
+        class: "denial",
+        literal: "denied",
+        case_sensitive: false,
+    },
+    // --- authorization ---
+    NeverCompressRule {
+        class: "authz",
+        literal: "unauthorized",
+        case_sensitive: false,
+    },
+    NeverCompressRule {
+        class: "authz",
+        literal: "forbidden",
+        case_sensitive: false,
+    },
+    // --- certificate / TLS failures ---
+    NeverCompressRule {
+        class: "certificate",
+        literal: "certificate verify failed",
+        case_sensitive: false,
+    },
+    NeverCompressRule {
+        class: "certificate",
+        literal: "certificate verification failed",
+        case_sensitive: false,
+    },
+    NeverCompressRule {
+        class: "certificate",
+        literal: "certificate has expired",
+        case_sensitive: false,
+    },
+    NeverCompressRule {
+        class: "certificate",
+        literal: "certificate is not valid",
+        case_sensitive: false,
+    },
+    NeverCompressRule {
+        class: "certificate",
+        literal: "self-signed certificate",
+        case_sensitive: false,
+    },
+    NeverCompressRule {
+        class: "certificate",
+        literal: "self signed certificate",
+        case_sensitive: false,
+    },
+    NeverCompressRule {
+        class: "certificate",
+        literal: "unable to get local issuer certificate",
+        case_sensitive: false,
+    },
+    NeverCompressRule {
+        class: "certificate",
+        literal: "SSL certificate problem",
+        case_sensitive: false,
+    },
+    NeverCompressRule {
+        class: "certificate",
+        literal: "x509: certificate",
+        case_sensitive: false,
+    },
+    NeverCompressRule {
+        class: "certificate",
+        literal: "tls: bad certificate",
+        case_sensitive: false,
+    },
+    // --- warnings ---
+    NeverCompressRule {
+        class: "warning",
+        literal: "warning:",
+        case_sensitive: false,
+    },
+];
+
+/// The full rule table, for auditing and grouping by [`class`](NeverCompressRule::class).
+pub fn rules() -> &'static [NeverCompressRule] {
+    RULES
+}
+
+/// The rule protecting `line`, or `None` if the line is compressible.
+///
+/// Callers pass a single line (no trailing newline required). On a match the line
+/// must be preserved verbatim with its position; see the module contract. When a
+/// line matches several rules the first in table order wins, so the result is
+/// deterministic.
+pub fn is_protected(line: &str) -> Option<&'static NeverCompressRule> {
+    RULES.iter().find(|rule| rule.matches_line(line))
+}
+
+/// ASCII-case-insensitive substring test.
+///
+/// Returns whether `needle` occurs in `haystack`, folding only ASCII letters.
+/// Uses `.get(..)` rather than slice indexing so it cannot panic on any input.
+fn contains_ascii_case_insensitive(haystack: &str, needle: &str) -> bool {
+    let hay = haystack.as_bytes();
+    let need = needle.as_bytes();
+    if need.is_empty() {
+        return true;
+    }
+    if need.len() > hay.len() {
+        return false;
+    }
+    let last_start = hay.len() - need.len();
+    for start in 0..=last_start {
+        if let Some(window) = hay.get(start..start + need.len()) {
+            if window
+                .iter()
+                .zip(need.iter())
+                .all(|(h, n)| h.eq_ignore_ascii_case(n))
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::{
+        LIST_VERSION, NeverCompressRule, contains_ascii_case_insensitive, is_protected, rules,
+    };
+
+    /// One realistic line per semantic class must be protected, and it must land
+    /// in the expected class (guards both membership and table ordering).
+    #[test]
+    fn each_class_matches_a_realistic_line() {
+        let cases: &[(&str, &str)] = &[
+            ("error[E0308]: mismatched types", "compiler"),
+            ("HTTP/1.1 404 Not Found", "http-status"),
+            ("open failed: EACCES", "errno"),
+            ("thread 'main' panicked at src/main.rs:10:5", "panic"),
+            ("Traceback (most recent call last):", "stack-trace"),
+            ("bind: Permission denied", "denial"),
+            ("access token unauthorized for this scope", "authz"),
+            ("SSL certificate problem: unable to verify", "certificate"),
+            ("warning: unused variable `x`", "warning"),
+        ];
+        for (line, expected_class) in cases {
+            let hit = is_protected(line);
+            assert!(hit.is_some(), "expected {line:?} to be protected");
+            assert_eq!(
+                hit.map(|r| r.class),
+                Some(*expected_class),
+                "wrong class for {line:?}"
+            );
+        }
+    }
+
+    /// Case-insensitive rules match regardless of case; the substring helper folds
+    /// ASCII in both directions and respects bounds.
+    #[test]
+    fn case_folding_matches_regardless_of_case() {
+        assert!(is_protected("ACCESS DENIED").is_some());
+        assert!(is_protected("Access Denied").is_some());
+        assert!(is_protected("access denied").is_some());
+
+        assert!(contains_ascii_case_insensitive("HELLO WORLD", "hello"));
+        assert!(contains_ascii_case_insensitive("hello", "HELLO"));
+        assert!(!contains_ascii_case_insensitive("abc", "abcd"));
+        assert!(!contains_ascii_case_insensitive("", "x"));
+        // A UTF-8 continuation byte must not fold into an ASCII letter.
+        assert!(!contains_ascii_case_insensitive("é", "e"));
+    }
+
+    /// Case-sensitive rules do not fold: `EACCES` is protected, `eacces` is not
+    /// (and the sample line carries no other trigger).
+    #[test]
+    fn case_sensitive_rule_does_not_fold() {
+        assert!(is_protected("open failed: EACCES").is_some());
+        assert!(is_protected("open failed: eacces path").is_none());
+    }
+
+    /// A benign line matches nothing.
+    #[test]
+    fn benign_line_is_not_protected() {
+        assert!(is_protected("the quick brown fox jumps over the lazy dog").is_none());
+        assert!(is_protected("{\"user\":\"alice\",\"count\":42}").is_none());
+        assert!(is_protected("").is_none());
+    }
+
+    /// When a line matches several rules, the first in table order wins.
+    #[test]
+    fn first_rule_in_table_order_wins() {
+        // Contains "401 Unauthorized" (http-status, earlier) and "Unauthorized"
+        // (authz, later). The earlier class must be returned.
+        assert_eq!(
+            is_protected("HTTP/1.1 401 Unauthorized").map(|r| r.class),
+            Some("http-status")
+        );
+    }
+
+    /// Matching is deterministic: same input yields the same rule instance.
+    #[test]
+    fn matching_is_deterministic() {
+        let line = "bind: Permission denied";
+        let a = is_protected(line);
+        let b = is_protected(line);
+        assert_eq!(a, b);
+        match (a, b) {
+            (Some(ra), Some(rb)) => assert!(std::ptr::eq(ra, rb)),
+            _ => panic!("expected {line:?} to match on both calls"),
+        }
+    }
+
+    /// `LIST_VERSION` is pinned; a bump must be a conscious edit to this test.
+    #[test]
+    fn list_version_is_pinned() {
+        assert_eq!(LIST_VERSION, 1);
+    }
+
+    /// No rule may carry an empty literal or class.
+    #[test]
+    fn no_rule_has_empty_fields() {
+        for rule in rules() {
+            let NeverCompressRule { class, literal, .. } = rule;
+            assert!(!literal.is_empty(), "empty literal in class {class:?}");
+            assert!(!class.is_empty(), "empty class for literal {literal:?}");
+        }
+    }
+}

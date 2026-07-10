@@ -1,0 +1,78 @@
+# cargo-deny configuration for the tokfold workspace.
+#
+# The load-bearing rule here is the network ban in [bans]. tokfold-core is handed
+# full agent transcripts -- tool outputs, JSON, logs -- which routinely contain
+# secrets (tokens, connection strings, PII). A network-capable dependency in core
+# could exfiltrate that content, so a networking crate reaching the dependency
+# graph is a confidentiality breach, not a style issue. This file makes the
+# "zero network in core" guarantee a build failure away from being a lie.
+#
+# Schema: cargo-deny v2 (fields such as the per-severity advisory levels and the
+# licenses `copyleft`/`default` keys were removed upstream; do not reintroduce
+# them).
+
+[graph]
+# Evaluate the ban list with every feature enabled so an optional networking
+# dependency cannot slip past behind a feature gate.
+all-features = true
+
+[advisories]
+# Vulnerabilities are always denied in the v2 schema -- there is no knob to
+# downgrade them, which is exactly the policy we want.
+# `unmaintained = "all"` surfaces unmaintained advisories (workspace and
+# transitive) as warnings rather than hard failures.
+unmaintained = "all"
+yanked = "warn"
+ignore = []
+
+[licenses]
+# Permissive licenses only. Unicode-3.0 covers unicode-ident; Zlib and
+# BSD-3-Clause cover common low-level transitive crates.
+allow = ["MIT", "Apache-2.0", "BSD-3-Clause", "Unicode-3.0", "Zlib"]
+confidence-threshold = 0.93
+
+# Narrow, per-crate exceptions rather than widening the global allow list.
+# arrayref is BSD-2-Clause (permissive, OSI/FSF approved) and enters the tree only
+# transitively through blake3, which is a tokfold-cli dependency -- never a
+# tokfold-core one. Scoping the allowance to this single crate keeps the global
+# policy tight.
+[[licenses.exceptions]]
+crate = "arrayref"
+allow = ["BSD-2-Clause"]
+
+[bans]
+# A second copy of a crate bloats the tree and the audit surface; warn, do not
+# fail, so a transient duplicate does not block CI.
+multiple-versions = "warn"
+wildcards = "warn"
+
+# Networking crates are denied outright in the workspace. See the confidentiality
+# note at the top of this file: core sees secrets, so it must never be able to
+# open a socket. These are HTTP/RPC clients and servers plus common async runtimes
+# used to build them.
+deny = [
+    { crate = "reqwest", reason = "HTTP client -- no network in core (confidentiality)" },
+    { crate = "hyper", reason = "HTTP stack -- no network in core (confidentiality)" },
+    { crate = "ureq", reason = "HTTP client -- no network in core (confidentiality)" },
+    { crate = "isahc", reason = "HTTP client -- no network in core (confidentiality)" },
+    { crate = "curl", reason = "HTTP client -- no network in core (confidentiality)" },
+    { crate = "surf", reason = "HTTP client -- no network in core (confidentiality)" },
+    { crate = "actix-web", reason = "HTTP server -- no network in core (confidentiality)" },
+    { crate = "axum", reason = "HTTP server -- no network in core (confidentiality)" },
+    { crate = "warp", reason = "HTTP server -- no network in core (confidentiality)" },
+    { crate = "tonic", reason = "gRPC stack -- no network in core (confidentiality)" },
+]
+
+# tokio itself is not banned (it may appear as a build-time utility), but its
+# networking features are: `net` pulls in sockets, which is the exact capability
+# core must not have. This fires only if tokio enters the graph.
+[[bans.features]]
+crate = "tokio"
+deny = ["net"]
+
+[sources]
+# crates.io only. An unknown registry or git source is an unaudited supply-chain
+# entry point.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

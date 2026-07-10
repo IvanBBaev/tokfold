@@ -1,0 +1,43 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":dependencyDashboard"
+  ],
+  "timezone": "Europe/Sofia",
+  "schedule": ["before 6am on monday"],
+  "labels": ["dependencies"],
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 6am on monday"]
+  },
+  "packageRules": [
+    {
+      "description": "Fold every Cargo update into a single weekly PR to keep solo review load sane.",
+      "matchManagers": ["cargo"],
+      "groupName": "cargo dependencies",
+      "schedule": ["before 6am on monday"]
+    },
+    {
+      "description": "Fold GitHub Actions bumps into a single weekly PR.",
+      "matchManagers": ["github-actions"],
+      "groupName": "github actions",
+      "schedule": ["before 6am on monday"]
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Bump a pinned Rust toolchain in rust-toolchain.toml. Dormant while the channel is \"stable\"; activates only when it is pinned to a concrete version such as \"1.85.0\".",
+      "managerFilePatterns": ["/(^|/)rust-toolchain\\.toml$/"],
+      "matchStrings": ["channel\\s*=\\s*\"(?<currentValue>\\d+\\.\\d+(\\.\\d+)?)\""],
+      "depNameTemplate": "rust",
+      "packageNameTemplate": "rust-lang/rust",
+      "datasourceTemplate": "github-releases"
+    }
+  ],
+  "vulnerabilityAlerts": {
+    "labels": ["security"],
+    "schedule": ["at any time"]
+  }
+}
