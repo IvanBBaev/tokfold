@@ -18,6 +18,10 @@ tokfold-mcp = { path = "crates/tokfold-mcp", version = "0.0.1" }
 thiserror = "2"
 sha2 = "0.10"
 rustc-hash = "2"
+# Exact GPT tokenizers for the opt-in `tiktoken` feature (tokfold-core). Pinned
+# with `default-features = false` so no future default can pull a networking
+# crate into core, which `deny.toml` bans for confidentiality.
+tiktoken-rs = { version = "0.6", default-features = false }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 blake3 = "1"

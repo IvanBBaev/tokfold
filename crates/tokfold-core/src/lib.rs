@@ -50,4 +50,6 @@ pub mod tape;
 pub use compressor::{Artifact, Compressor, Config, ConfigBuilder, EncoderId, Profile, Stats};
 pub use error::{CompressError, DecompressError};
 pub use estimator::{ByteLenEstimator, HeuristicEstimator, TokenEstimator};
+#[cfg(feature = "tiktoken")]
+pub use estimator::{Cl100kEstimator, O200kEstimator, TokenizerLoadError};
 pub use fidelity::Fidelity;

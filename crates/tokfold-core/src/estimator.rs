@@ -38,7 +38,9 @@ pub trait TokenEstimator: Send + Sync {
 /// Frozen tokenizer ids for the header's `tokenizer_id` field (§3).
 ///
 /// Ids are part of the wire format: once shipped, a value's meaning never changes.
-/// Values `2..=4` are reserved names only — no implementation ships in v0.0.1.
+/// Ids `0` and `1` are always available; `2` and `3` name an implementation that
+/// ships only under feature `tiktoken`; `4` is a reserved name with no
+/// implementation in v0.0.1.
 pub mod ids {
     /// [`super::HeuristicEstimator`] — the default cost model.
     pub const HEURISTIC: u16 = 0;
@@ -46,10 +48,12 @@ pub mod ids {
     /// [`super::ByteLenEstimator`] — reference only, never the default.
     pub const BYTE_LEN: u16 = 1;
 
-    /// Reserved: the `cl100k_base` tokenizer (feature `tiktoken`). Not implemented in v0.0.1.
+    /// The `cl100k_base` tokenizer (GPT-3.5 / GPT-4). Implemented by
+    /// `Cl100kEstimator` under feature `tiktoken`; the id itself is always defined.
     pub const CL100K_BASE: u16 = 2;
 
-    /// Reserved: the `o200k_base` tokenizer (feature `tiktoken`). Not implemented in v0.0.1.
+    /// The `o200k_base` tokenizer (GPT-4o). Implemented by `O200kEstimator` under
+    /// feature `tiktoken`; the id itself is always defined.
     pub const O200K_BASE: u16 = 3;
 
     /// Reserved: a Hugging Face tokenizer (feature `hf`). Not implemented in v0.0.1.
@@ -216,6 +220,128 @@ impl TokenEstimator for ByteLenEstimator {
     }
 }
 
+/// Exact tokenizer-backed estimators, compiled only under feature `tiktoken`.
+///
+/// These count tokens with a real BPE model instead of approximating one, so the
+/// do-no-harm gate they drive cannot greenlight a real-token loser for the model
+/// family they cover — the gap [`HeuristicEstimator`](super::HeuristicEstimator) can
+/// leave (§7). They are
+/// opt-in: each constructor loads megabytes of embedded BPE data, which is why the
+/// heuristic, not these, is the default (see the crate feature note). Adding one
+/// changes only which rendering is selected and the reported
+/// [`TokenEstimator::tokenizer_id`]; the recovery archive is unaffected, since it
+/// always records the passthrough tokenizer id `0` regardless of the selector.
+#[cfg(feature = "tiktoken")]
+mod exact {
+    use super::{TokenEstimator, ids};
+    use tiktoken_rs::CoreBPE;
+
+    /// The embedded BPE tables of an exact tokenizer failed to build.
+    ///
+    /// Construction is the only fallible step; [`TokenEstimator::estimate`] cannot
+    /// fail once an estimator exists.
+    #[derive(Debug, thiserror::Error)]
+    #[error("failed to load the {tokenizer} tokenizer: {message}")]
+    pub struct TokenizerLoadError {
+        tokenizer: &'static str,
+        message: String,
+    }
+
+    /// Count the tokens of `text` as ordinary content.
+    ///
+    /// `encode_ordinary` treats the whole input as literal text: a substring that
+    /// looks like a special token (`<|endoftext|>`) is counted as the bytes a
+    /// provider actually sends in message content, never collapsed to a single
+    /// special token. That is both the honest count for a rendering and panic-free —
+    /// there is no fallible path to trip the crate's no-panic contract.
+    fn count(bpe: &CoreBPE, text: &str) -> usize {
+        bpe.encode_ordinary(text).len()
+    }
+
+    /// Exact `cl100k_base` tokenizer (GPT-3.5 / GPT-4), [`ids::CL100K_BASE`].
+    ///
+    /// Ground truth for the GPT family rather than an approximation, so unlike
+    /// [`HeuristicEstimator`](super::HeuristicEstimator) the gate it drives cannot
+    /// over- or under-count that family. Opt-in only (see [`exact`](self)).
+    pub struct Cl100kEstimator {
+        bpe: CoreBPE,
+    }
+
+    impl Cl100kEstimator {
+        /// Load the `cl100k_base` BPE tables and build the estimator.
+        ///
+        /// # Errors
+        ///
+        /// Returns [`TokenizerLoadError`] if the embedded tables fail to build.
+        pub fn new() -> Result<Self, TokenizerLoadError> {
+            let bpe = tiktoken_rs::cl100k_base().map_err(|e| TokenizerLoadError {
+                tokenizer: "cl100k_base",
+                message: e.to_string(),
+            })?;
+            Ok(Self { bpe })
+        }
+    }
+
+    impl core::fmt::Debug for Cl100kEstimator {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.debug_struct("Cl100kEstimator").finish_non_exhaustive()
+        }
+    }
+
+    impl TokenEstimator for Cl100kEstimator {
+        fn estimate(&self, text: &str) -> usize {
+            count(&self.bpe, text)
+        }
+
+        fn tokenizer_id(&self) -> u16 {
+            ids::CL100K_BASE
+        }
+    }
+
+    /// Exact `o200k_base` tokenizer (GPT-4o), [`ids::O200K_BASE`].
+    ///
+    /// The newer GPT-4o vocabulary; the corpus aggregates it as a robustness
+    /// cross-check against [`Cl100kEstimator`]. Opt-in only (see [`exact`](self)).
+    pub struct O200kEstimator {
+        bpe: CoreBPE,
+    }
+
+    impl O200kEstimator {
+        /// Load the `o200k_base` BPE tables and build the estimator.
+        ///
+        /// # Errors
+        ///
+        /// Returns [`TokenizerLoadError`] if the embedded tables fail to build.
+        pub fn new() -> Result<Self, TokenizerLoadError> {
+            let bpe = tiktoken_rs::o200k_base().map_err(|e| TokenizerLoadError {
+                tokenizer: "o200k_base",
+                message: e.to_string(),
+            })?;
+            Ok(Self { bpe })
+        }
+    }
+
+    impl core::fmt::Debug for O200kEstimator {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.debug_struct("O200kEstimator").finish_non_exhaustive()
+        }
+    }
+
+    impl TokenEstimator for O200kEstimator {
+        fn estimate(&self, text: &str) -> usize {
+            count(&self.bpe, text)
+        }
+
+        fn tokenizer_id(&self) -> u16 {
+            ids::O200K_BASE
+        }
+    }
+}
+
+/// Exact GPT tokenizer estimators (feature `tiktoken`). See [`exact`].
+#[cfg(feature = "tiktoken")]
+pub use exact::{Cl100kEstimator, O200kEstimator, TokenizerLoadError};
+
 #[cfg(test)]
 mod tests {
     use super::{ByteLenEstimator, HeuristicEstimator, TokenEstimator, ids};
@@ -308,5 +434,59 @@ mod tests {
         // selecting encoders on bytes would optimize the wrong objective (R6). The
         // explicit `default()` call is what exercises the derived `Default`.
         assert_eq!(HeuristicEstimator::default().tokenizer_id(), ids::HEURISTIC);
+    }
+}
+
+#[cfg(all(test, feature = "tiktoken"))]
+mod tiktoken_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::{Cl100kEstimator, HeuristicEstimator, O200kEstimator, TokenEstimator, ids};
+
+    #[test]
+    fn exact_tokenizer_ids_are_stable() {
+        let cl100k = Cl100kEstimator::new().expect("cl100k_base tables load");
+        let o200k = O200kEstimator::new().expect("o200k_base tables load");
+        assert_eq!(cl100k.tokenizer_id(), ids::CL100K_BASE);
+        assert_eq!(o200k.tokenizer_id(), ids::O200K_BASE);
+        assert_eq!(cl100k.tokenizer_id(), 2);
+        assert_eq!(o200k.tokenizer_id(), 3);
+    }
+
+    #[test]
+    fn empty_string_costs_nothing() {
+        assert_eq!(Cl100kEstimator::new().unwrap().estimate(""), 0);
+        assert_eq!(O200kEstimator::new().unwrap().estimate(""), 0);
+    }
+
+    #[test]
+    fn cl100k_matches_known_bpe_count() {
+        // "hello world" is a fixed two-token sequence in cl100k_base (`hello`,
+        // ` world`). This anchors the wrapper to ground truth: a wrong method or a
+        // silent tokenizer swap would move it off 2.
+        assert_eq!(Cl100kEstimator::new().unwrap().estimate("hello world"), 2);
+    }
+
+    #[test]
+    fn exact_estimate_is_pure() {
+        let cl100k = Cl100kEstimator::new().unwrap();
+        let input = "{\"user\":\"alice\",\"count\":42,\"tags\":[\"a\",\"b\"]}";
+        assert_eq!(cl100k.estimate(input), cl100k.estimate(input));
+    }
+
+    #[test]
+    fn heuristic_over_counts_dense_json() {
+        // The reason feature `tiktoken` exists (roadmap #2): the heuristic charges
+        // one token per ASCII punctuation byte, but a JSON-trained BPE merges pairs
+        // like `,"`, `":`, `{"`. On punctuation-dense JSON the exact count is
+        // therefore never above the heuristic — the exact estimator closes the
+        // over-claim the heuristic can leave in the do-no-harm gate.
+        let json = "{\"user\":\"alice\",\"count\":42,\"tags\":[\"a\",\"b\"],\"ok\":true}";
+        let exact = Cl100kEstimator::new().unwrap().estimate(json);
+        let heuristic = HeuristicEstimator.estimate(json);
+        assert!(
+            exact <= heuristic,
+            "exact cl100k {exact} unexpectedly above heuristic {heuristic} on dense JSON"
+        );
     }
 }
