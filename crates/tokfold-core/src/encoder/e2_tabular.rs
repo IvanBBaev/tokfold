@@ -22,35 +22,40 @@
 //! The body is structural-minified JSON, except every tabularized array is written,
 //! at its exact value position, as a NEWLINE-INTRODUCED table block. A literal
 //! newline (`U+000A`) never occurs inside minified JSON — JSON forbids raw control
-//! bytes in strings — so a newline unambiguously marks "a table block begins here".
-//! A literal tab (`U+0009`) likewise never occurs inside a value, so it is the
-//! in-block field separator.
+//! bytes in strings — so a newline unambiguously marks a block/row boundary. Within
+//! a block the fields are separated by JSON's own punctuation (`,` and `:`), not a
+//! tab: a real BPE tokenizer (cl100k/o200k) merges `,"` and `":"` into single tokens
+//! but never merges a `\t"` boundary, so a tab layout spends most of the key-dedup
+//! saving straight back at the tokenizer. Emitting each row as minified JSON reuses
+//! the punctuation the tokenizer already prices cheaply.
 //!
 //! A table block replacing an `N`-element array is:
 //!
 //! ```text
 //! \n
-//! #<N>\t<key_0>\t<key_1>\t…\t<key_{H-1}>\n   header: element count, then the H hoisted keys
-//! <row>\n                                     exactly N rows follow
+//! #<N>[<key_0>,<key_1>,…,<key_{H-1}>]\n   header: element count, then the H hoisted keys as a JSON array
+//! <row>\n                                 exactly N rows follow
 //! …
 //! ```
 //!
-//! Keys are raw JSON string lexemes (quotes included). After the `N`-th row the
-//! surrounding minified JSON resumes immediately: the count `N` terminates the
-//! block, there is no end marker.
+//! Keys are raw JSON string lexemes (quotes included), so `[<key_0>,…]` is itself a
+//! minified JSON array. After the `N`-th row the surrounding minified JSON resumes
+//! immediately: the count `N` terminates the block, there is no end marker.
 //!
 //! Each row is one of:
 //!
-//! * **plain** — `+\t<v_0>\t<v_1>\t…\t<v_{H-1}>`. The element's keys equal the
-//!   header keys in order; the `H` cells are its values, in header order.
-//! * **deviating** — `*\t<m>\t<k_0>\t<v_0>\t…\t<k_{m-1}>\t<v_{m-1}>`. The element is
-//!   still an object but its ordered key list differs (missing, extra, reordered or
-//!   duplicated keys); it is written self-describingly as its own `m` key/value
-//!   pairs in source order.
+//! * **plain** — `+[<v_0>,<v_1>,…,<v_{H-1}>]`. The element's keys equal the header
+//!   keys in order, so only the `H` values are written, as a minified JSON array in
+//!   header order; the decoder pairs them back with the header keys.
+//! * **deviating** — `*{<k_0>:<v_0>,…,<k_{m-1}>:<v_{m-1}>}`. The element is still an
+//!   object but its ordered key list differs (missing, extra, reordered or duplicated
+//!   keys); it is written self-describingly as a minified JSON object in source order.
+//!   The object is self-delimiting, so no pair count precedes it.
 //!
 //! Each `<v>` is a minified-JSON value (verbatim scalars; compact `{…}` / `[…]` for
-//! nested containers). No cell can contain a tab or a newline, so a row is
-//! reconstructed by splitting on tabs.
+//! nested containers). A row body is thus valid minified JSON prefixed by its one
+//! marker byte; it can hold no raw newline, so the block is reconstructed by
+//! splitting on newlines and scanning each row's top-level JSON elements.
 //!
 //! # Reversibility
 //!
@@ -83,10 +88,11 @@ use rustc_hash::{FxHashMap, FxHasher};
 
 use crate::tape::{Node, NodeKind, Span, Tape};
 
-/// Table block introducer and in-block separators. These bytes cannot occur inside
-/// minified JSON, which is what makes the block boundaries unambiguous.
+/// Table block/row boundary. A newline cannot occur inside minified JSON, which is
+/// what makes the block boundaries unambiguous. Fields within a row are separated by
+/// JSON's own `,`/`:` punctuation rather than a tab, because that tokenizes far
+/// cheaper (see the module docs).
 const BLOCK: char = '\n';
-const FIELD: char = '\t';
 /// Row-position markers: header, plain row, deviating row.
 const HEADER: char = '#';
 const PLAIN: char = '+';
@@ -354,10 +360,14 @@ fn emit_table(
     out.push(BLOCK);
     out.push(HEADER);
     push_usize(out, elems.len());
-    for key in &plan.header_keys {
-        out.push(FIELD);
+    out.push('[');
+    for (i, key) in plan.header_keys.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
         out.push_str(span_str(input, *key)?);
     }
+    out.push(']');
     out.push(BLOCK);
 
     for (elem_start, elem_end) in elems {
@@ -384,20 +394,29 @@ fn emit_row(
 
     if members_match_header(&members, header, input) {
         out.push(PLAIN);
-        for (_, val_lo, val_hi) in &members {
-            out.push(FIELD);
+        out.push('[');
+        for (i, (_, val_lo, val_hi)) in members.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
             emit_compact(nodes, input, out, *val_lo, *val_hi)?;
         }
+        out.push(']');
     } else {
+        // The element is written as its own minified JSON object. The object is
+        // self-delimiting, so — unlike the tab layout — no leading pair count is
+        // needed; `{ … }` states its own extent.
         out.push(DEVIATED);
-        out.push(FIELD);
-        push_usize(out, members.len());
-        for (key, val_lo, val_hi) in &members {
-            out.push(FIELD);
+        out.push('{');
+        for (i, (key, val_lo, val_hi)) in members.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
             out.push_str(span_str(input, *key)?);
-            out.push(FIELD);
+            out.push(':');
             emit_compact(nodes, input, out, *val_lo, *val_hi)?;
         }
+        out.push('}');
     }
 
     out.push(BLOCK);
@@ -621,6 +640,52 @@ mod tests {
         out
     }
 
+    /// Split a minified-JSON array or object `s` (which begins with its opening `[`
+    /// or `{`) into its top-level element slices, brackets excluded. Delimiters (`,`
+    /// `:` `[` `]` `{` `}`) that occur *inside* a nested container or a string are not
+    /// split points, so this tracks brace/bracket depth and string state with `\`
+    /// escapes — a naive `split(',')` would corrupt any value holding those bytes.
+    fn split_top_level(s: &str) -> Vec<&str> {
+        let bytes = s.as_bytes();
+        let mut elems: Vec<&str> = Vec::new();
+        let mut depth = 0i32;
+        let mut in_str = false;
+        let mut esc = false;
+        let mut start = 1usize; // skip the opening bracket
+        for i in 1..bytes.len() {
+            let c = bytes[i];
+            if in_str {
+                if esc {
+                    esc = false;
+                } else if c == b'\\' {
+                    esc = true;
+                } else if c == b'"' {
+                    in_str = false;
+                }
+                continue;
+            }
+            match c {
+                b'"' => in_str = true,
+                b'[' | b'{' => depth += 1,
+                b']' | b'}' if depth > 0 => depth -= 1,
+                b']' | b'}' => {
+                    // The outer container's closing bracket: emit the final element
+                    // (unless the container was empty) and stop.
+                    if i > start {
+                        elems.push(&s[start..i]);
+                    }
+                    return elems;
+                }
+                b',' if depth == 0 => {
+                    elems.push(&s[start..i]);
+                    start = i + 1;
+                }
+                _ => {}
+            }
+        }
+        elems
+    }
+
     /// Reference decoder for the documented `tbl` body grammar: rebuild minified
     /// JSON, expanding every table block back into an array. Proves the body is
     /// self-contained reversible from the rendering alone.
@@ -631,43 +696,38 @@ mod tests {
         while idx < lines.len() {
             let line = lines[idx];
             if let Some(header) = line.strip_prefix('#') {
-                let fields: Vec<&str> = header.split('\t').collect();
-                let count: usize = fields[0].parse().unwrap();
-                let keys = &fields[1..];
+                // `#<N>[<key0>,<key1>,…]`: the decimal count runs up to the `[` that
+                // opens the JSON array of hoisted keys.
+                let bracket = header.find('[').unwrap();
+                let count: usize = header[..bracket].parse().unwrap();
+                let keys = split_top_level(&header[bracket..]);
                 idx += 1;
                 out.push('[');
                 for r in 0..count {
                     if r > 0 {
                         out.push(',');
                     }
-                    let row: Vec<&str> = lines[idx].split('\t').collect();
+                    let row = lines[idx];
                     idx += 1;
-                    out.push('{');
-                    match row.first().copied() {
-                        Some("+") => {
+                    match row.as_bytes().first().copied() {
+                        // Plain `+[v0,v1,…]`: pair the values back with header keys.
+                        Some(b'+') => {
+                            let vals = split_top_level(&row[1..]);
+                            out.push('{');
                             for (ki, key) in keys.iter().enumerate() {
                                 if ki > 0 {
                                     out.push(',');
                                 }
                                 out.push_str(key);
                                 out.push(':');
-                                out.push_str(row[1 + ki]);
+                                out.push_str(vals[ki]);
                             }
+                            out.push('}');
                         }
-                        Some("*") => {
-                            let m: usize = row[1].parse().unwrap();
-                            for j in 0..m {
-                                if j > 0 {
-                                    out.push(',');
-                                }
-                                out.push_str(row[2 + 2 * j]);
-                                out.push(':');
-                                out.push_str(row[3 + 2 * j]);
-                            }
-                        }
+                        // Deviating `*{…}`: the object is already minified JSON.
+                        Some(b'*') => out.push_str(&row[1..]),
                         other => panic!("unexpected row marker {other:?}"),
                     }
-                    out.push('}');
                 }
                 out.push(']');
             } else {
@@ -699,7 +759,7 @@ mod tests {
         assert_eq!(body.matches("\"id\"").count(), 1);
         assert_eq!(body.matches("\"name\"").count(), 1);
         // Header lists the shared keys; three plain rows follow.
-        assert!(body.contains("#3\t\"id\"\t\"name\""), "body: {body:?}");
+        assert!(body.contains("#3[\"id\",\"name\"]"), "body: {body:?}");
         assert_eq!(body.matches('+').count(), 3);
     }
 
@@ -708,11 +768,11 @@ mod tests {
         // Two elements share {a,b}; the third deviates (missing b, extra c).
         let input = r#"[{"a":1,"b":2},{"a":3,"b":4},{"a":5,"c":6}]"#;
         let body = assert_roundtrip(input);
-        assert!(body.contains("#3\t\"a\"\t\"b\""), "body: {body:?}");
+        assert!(body.contains("#3[\"a\",\"b\"]"), "body: {body:?}");
         assert_eq!(body.matches('+').count(), 2, "two plain rows");
         assert_eq!(body.matches('*').count(), 1, "one deviating row");
         // The deviating row self-describes its own keys and values.
-        assert!(body.contains("*\t2\t\"a\"\t5\t\"c\"\t6"), "body: {body:?}");
+        assert!(body.contains("*{\"a\":5,\"c\":6}"), "body: {body:?}");
     }
 
     #[test]
@@ -763,12 +823,12 @@ mod tests {
         // both values in order.
         let input = r#"[{"a":1,"a":2},{"a":3,"a":4}]"#;
         let body = assert_roundtrip(input);
-        assert!(body.contains("#2\t\"a\"\t\"a\""), "body: {body:?}");
+        assert!(body.contains("#2[\"a\",\"a\"]"), "body: {body:?}");
 
         // Deviating case: an element with duplicate keys against a single-key header.
         let input = r#"[{"a":1},{"a":2},{"a":3,"a":4}]"#;
         let body = assert_roundtrip(input);
-        assert!(body.contains("*\t2\t\"a\"\t3\t\"a\"\t4"), "body: {body:?}");
+        assert!(body.contains("*{\"a\":3,\"a\":4}"), "body: {body:?}");
     }
 
     #[test]
