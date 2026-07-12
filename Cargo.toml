@@ -11,6 +11,8 @@ authors = ["Ivan Baev <ivanbbaev@gmail.com>"]
 description = "Reversible, structure-aware context compression for LLM agents"
 keywords = ["llm", "compression", "tokens", "agent", "mcp"]
 categories = ["compression", "text-processing"]
+repository = "https://github.com/IvanBBaev/tokfold"
+homepage = "https://github.com/IvanBBaev/tokfold"
 
 [workspace.dependencies]
 tokfold-core = { path = "crates/tokfold-core", version = "0.0.1" }

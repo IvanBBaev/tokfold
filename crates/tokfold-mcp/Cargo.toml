@@ -8,6 +8,8 @@ authors.workspace = true
 description = "EXPERIMENTAL MCP stdio proxy library for tokfold. Not hardened; not for production."
 keywords.workspace = true
 categories.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [lints]
 workspace = true
