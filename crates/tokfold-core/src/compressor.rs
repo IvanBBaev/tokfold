@@ -214,7 +214,8 @@ pub struct Stats {
     pub est_tokens_after: usize,
     /// Which encoder shaped the rendering.
     pub encoder: EncoderId,
-    /// Id of the estimator that drove selection (`format` field 4).
+    /// Id of the estimator that drove selection. Reported here only — the archive
+    /// header's `tokenizer_id` (`format` field 4) is always `0` in v0.0.1.
     pub tokenizer_id: u16,
     /// Fidelity of the reconstruction. Always [`Fidelity::Lossless`] in v0.0.1.
     pub fidelity: Fidelity,
@@ -551,12 +552,16 @@ mod tests {
         }
     }
 
-    /// The recovery archive is estimator-independent: swapping the configured
-    /// [`TokenEstimator`] — the *only* thing the opt-in `tiktoken` feature does — may
-    /// change which rendering is selected but must leave the `TKFD` archive
-    /// byte-identical. This regression-locks the "non-format-affecting" contract: the
-    /// header always records `tokenizer_id = 0` (see `compress`), so an exact GPT
-    /// estimator produces the same recoverable bytes as the default heuristic.
+    /// The recovery archive is estimator-independent: the header hardcodes
+    /// `tokenizer_id = 0` and copies the original bytes (see `compress`), so swapping
+    /// the configured [`TokenEstimator`] — the *only* thing the opt-in `tiktoken`
+    /// feature does — leaves the `TKFD` archive byte-identical even though the two
+    /// estimators report different ids in [`Stats`]. This is a regression lock on the
+    /// "non-format-affecting" contract, not a claim that the two estimators pick
+    /// different encoders on this corpus (they need not): its value is that a future
+    /// refactor leaking the estimator id into the archive would break it. The differing
+    /// reported id (heuristic `0` vs cl100k `2`) is asserted below so archive-equality
+    /// is a genuine invariant, not a config compared with itself.
     #[cfg(feature = "tiktoken")]
     #[test]
     fn estimator_choice_does_not_change_recovery_archive() {
@@ -572,6 +577,11 @@ mod tests {
             let bytes = input.as_bytes();
             let a = heuristic.compress(bytes).unwrap();
             let b = exact.compress(bytes).unwrap();
+            // The two configs really are different estimators: the reported id differs
+            // (heuristic 0 vs cl100k 2). Without this the archive-equality assertion
+            // would be vacuous — a config trivially matches itself.
+            assert_eq!(a.stats.tokenizer_id, 0, "heuristic id for {input:?}");
+            assert_eq!(b.stats.tokenizer_id, 2, "cl100k id for {input:?}");
             assert_eq!(
                 a.archive, b.archive,
                 "recovery archive diverged by estimator for {input:?}"

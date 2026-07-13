@@ -14,9 +14,12 @@
 //!   [`ByteLenEstimator`], which exists only as a reference point and is never the
 //!   default.
 //!
-//! The chosen estimator's [`TokenEstimator::tokenizer_id`] is written into the
-//! archive header (`format` field 4) so a decoder records which cost model selected
-//! the encoding.
+//! The chosen estimator's [`TokenEstimator::tokenizer_id`] is reported out-of-band in
+//! [`Stats::tokenizer_id`](crate::Stats::tokenizer_id); it is **not** written to the
+//! archive. In v0.0.1 the recovery archive is a passthrough blob whose header
+//! `tokenizer_id` field (`format` field 4) is always `0`, and the decoder fails closed
+//! on any non-zero value — so ids `2..=4` name cost models that never appear in a valid
+//! archive.
 
 /// A cost model that rates text in tokens for encoder selection.
 ///
@@ -29,18 +32,25 @@ pub trait TokenEstimator: Send + Sync {
     /// Estimate the token count of `text`. Pure: equal input yields equal output.
     fn estimate(&self, text: &str) -> usize;
 
-    /// Stable id written into the archive header (`format` field 4).
+    /// Stable id reported out-of-band in
+    /// [`Stats::tokenizer_id`](crate::Stats::tokenizer_id) — the record of which cost
+    /// model selected the encoding.
     ///
-    /// Ids are frozen in [`ids`]; a given estimator must always return the same one.
+    /// It is **not** written to the archive: the header's `tokenizer_id` (`format`
+    /// field 4) is always `0` in v0.0.1. Ids are frozen in [`ids`]; a given estimator
+    /// must always return the same one.
     fn tokenizer_id(&self) -> u16;
 }
 
-/// Frozen tokenizer ids for the header's `tokenizer_id` field (§3).
+/// Frozen ids naming the cost model that drove selection (§3), reported in
+/// [`Stats::tokenizer_id`](crate::Stats::tokenizer_id).
 ///
-/// Ids are part of the wire format: once shipped, a value's meaning never changes.
-/// Ids `0` and `1` are always available; `2` and `3` name an implementation that
-/// ships only under feature `tiktoken`; `4` is a reserved name with no
-/// implementation in v0.0.1.
+/// They are the reserved value space of the header's `tokenizer_id` field: once
+/// shipped, a value's meaning never changes. A valid v0.0.1 archive header always
+/// carries `0` (passthrough) regardless of the selector, so `1..=4` are meanings the
+/// field may name but this build never writes. Ids `0` and `1` are always available;
+/// `2` and `3` name an implementation that ships only under feature `tiktoken`; `4` is
+/// a reserved name with no implementation in v0.0.1.
 pub mod ids {
     /// [`super::HeuristicEstimator`] — the default cost model.
     pub const HEURISTIC: u16 = 0;
@@ -57,6 +67,9 @@ pub mod ids {
     pub const O200K_BASE: u16 = 3;
 
     /// Reserved: a Hugging Face tokenizer (feature `hf`). Not implemented in v0.0.1.
+    ///
+    /// Any future implementation MUST embed its vocabulary at compile time, never load
+    /// `tokenizer.json` from disk or network, to preserve the crate's sans-io guarantee.
     pub const HUGGING_FACE: u16 = 4;
 }
 
@@ -262,7 +275,7 @@ mod exact {
     ///
     /// Ground truth for the GPT family rather than an approximation, so unlike
     /// [`HeuristicEstimator`](super::HeuristicEstimator) the gate it drives cannot
-    /// over- or under-count that family. Opt-in only (see [`exact`](self)).
+    /// over- or under-count that family. Opt-in only, under feature `tiktoken`.
     pub struct Cl100kEstimator {
         bpe: CoreBPE,
     }
@@ -301,7 +314,7 @@ mod exact {
     /// Exact `o200k_base` tokenizer (GPT-4o), [`ids::O200K_BASE`].
     ///
     /// The newer GPT-4o vocabulary; the corpus aggregates it as a robustness
-    /// cross-check against [`Cl100kEstimator`]. Opt-in only (see [`exact`](self)).
+    /// cross-check against [`Cl100kEstimator`]. Opt-in only, under feature `tiktoken`.
     pub struct O200kEstimator {
         bpe: CoreBPE,
     }
@@ -338,8 +351,9 @@ mod exact {
     }
 }
 
-/// Exact GPT tokenizer estimators (feature `tiktoken`). See [`exact`].
+/// Exact GPT tokenizer estimators, available under feature `tiktoken`.
 #[cfg(feature = "tiktoken")]
+#[cfg_attr(docsrs, doc(cfg(feature = "tiktoken")))]
 pub use exact::{Cl100kEstimator, O200kEstimator, TokenizerLoadError};
 
 #[cfg(test)]
@@ -470,9 +484,12 @@ mod tiktoken_tests {
     #[test]
     fn o200k_matches_known_bpe_count() {
         // The o200k_base twin of the cl100k anchor above: "hello world" is `hello` +
-        // ` world`, two tokens. Without a hard numeric anchor a mis-wired o200k (one
-        // that silently loaded cl100k's tables, or fell back to the heuristic) would
-        // still pass the empty-string and id checks — this pins it to ground truth.
+        // ` world`, two tokens. This pins the wrapper to ground truth — a broken encode
+        // path or a silent heuristic fallback (the heuristic scores "hello world" as 4)
+        // would move it off 2. It does NOT by itself catch an o200k that loaded cl100k's
+        // tables (cl100k also returns 2 here); that swap is caught by
+        // `o200k_and_cl100k_are_distinct_tokenizers`. Together the two tests cover both
+        // mis-wirings.
         assert_eq!(O200kEstimator::new().unwrap().estimate("hello world"), 2);
     }
 

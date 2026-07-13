@@ -84,7 +84,8 @@ We will not do that.
 - **Zero telemetry.** Nothing is phoned home, counted, or logged off-box.
 - **No ML model.** The default token estimator is a pure arithmetic scanner, not a
   learned model — no weights to download, no inference to run, no megabytes of BPE
-  data at rest.
+  data at rest in the default build. (The opt-in, non-default `tiktoken` feature
+  embeds exact GPT BPE tables; see [What is in v0.0.1](#what-is-in-v001--and-what-is-not).)
 - **Deterministic output.** The same logical input produces byte-identical output,
   every time, on every machine.
 
@@ -111,8 +112,9 @@ design*. That is not a bug to be closed; it is the cost of the guarantee.
 
 The axes tokfold actually optimizes for are:
 
-1. **Latency** — it is embeddable and starts instantly; there is no model to load
-   and no service to call.
+1. **Latency** — it is embeddable and starts instantly; in the default build there is
+   no model to load and no service to call. (The opt-in `tiktoken` estimator loads its
+   embedded BPE tables once on construction.)
 2. **Fidelity risk** — bounded, because the transform is reversible and the recovery
    path is checksum-verified.
 
@@ -201,9 +203,12 @@ the original bytes unmodified. The engine never repairs input.
 
 Present: the parser, the archive format, the token estimator, and the first
 encoders (passthrough, whitespace minification, shape-deduplicated tabular
-re-encoding). Reserved but **not implemented**: legend folding, alternative
-tokenizer backends, language bindings, and any hardened MCP proxy. This is a
-skeleton; treat every part of it as subject to change.
+re-encoding). An opt-in, non-default `tiktoken` feature adds exact GPT tokenizer
+estimators (`cl100k_base`, `o200k_base`) for the do-no-harm gate; it embeds megabytes
+of BPE tables and is off by default, so it never changes the archive format. Reserved
+but **not implemented**: legend folding, Hugging Face tokenizer backends, language
+bindings, and any hardened MCP proxy. This is a skeleton; treat every part of it as
+subject to change.
 
 ---
 
