@@ -2,20 +2,20 @@
 //!
 //! # Why the set is sealed
 //!
-//! [`Encoder`] is a `pub(crate)` enum, never a public trait. A third-party encoder
+//! `Encoder` is a `pub(crate)` enum, never a public trait. A third-party encoder
 //! could emit a rendering it cannot reversibly reconstruct, silently breaking the
 //! archive contract (§2.3), and its trait would freeze this module's internal
 //! interfaces into public API. The **only** public extension point in the crate is
-//! [`TokenEstimator`](crate::estimator::TokenEstimator): a caller may supply a cost
+//! [`TokenEstimator`]: a caller may supply a cost
 //! model, not a codec. An encoder reaches callers solely as an id inside `Stats`
 //! (§7).
 //!
 //! # The candidate rule (§7, §8.2)
 //!
-//! Selection is a comparison, not a guess. For every enabled encoder [`select`]
+//! Selection is a comparison, not a guess. For every enabled encoder `select`
 //! renders a candidate and keeps it only when the estimator rates it *strictly*
 //! below the original; the lowest estimate wins, ties broken by the lower encoder
-//! id for determinism (§10). If nothing wins the result is [`Encoder::Passthrough`]
+//! id for determinism (§10). If nothing wins the result is `Encoder::Passthrough`
 //! at ratio 1.0 — "couldn't compress" is a statistic, never an error.
 //!
 //! This byte-blind rule is mandatory, not cosmetic: minification is **not**
