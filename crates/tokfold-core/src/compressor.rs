@@ -551,6 +551,38 @@ mod tests {
         }
     }
 
+    /// The recovery archive is estimator-independent: swapping the configured
+    /// [`TokenEstimator`] — the *only* thing the opt-in `tiktoken` feature does — may
+    /// change which rendering is selected but must leave the `TKFD` archive
+    /// byte-identical. This regression-locks the "non-format-affecting" contract: the
+    /// header always records `tokenizer_id = 0` (see `compress`), so an exact GPT
+    /// estimator produces the same recoverable bytes as the default heuristic.
+    #[cfg(feature = "tiktoken")]
+    #[test]
+    fn estimator_choice_does_not_change_recovery_archive() {
+        use crate::estimator::Cl100kEstimator;
+
+        let heuristic = Compressor::new(Config::default());
+        let exact = Compressor::new(
+            Config::builder()
+                .estimator(Arc::new(Cl100kEstimator::new().unwrap()))
+                .build(),
+        );
+        for input in corpus() {
+            let bytes = input.as_bytes();
+            let a = heuristic.compress(bytes).unwrap();
+            let b = exact.compress(bytes).unwrap();
+            assert_eq!(
+                a.archive, b.archive,
+                "recovery archive diverged by estimator for {input:?}"
+            );
+            // Both archives must still reconstruct the exact original, and each must be
+            // decodable by either compressor (recovery ignores the estimator entirely).
+            assert_eq!(heuristic.decompress(&b.archive).unwrap(), bytes);
+            assert_eq!(exact.decompress(&a.archive).unwrap(), bytes);
+        }
+    }
+
     #[test]
     fn a_compressible_input_selects_an_encoder_and_still_reconstructs() {
         let c = compressor();

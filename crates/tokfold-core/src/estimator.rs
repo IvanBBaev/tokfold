@@ -468,6 +468,41 @@ mod tiktoken_tests {
     }
 
     #[test]
+    fn o200k_matches_known_bpe_count() {
+        // The o200k_base twin of the cl100k anchor above: "hello world" is `hello` +
+        // ` world`, two tokens. Without a hard numeric anchor a mis-wired o200k (one
+        // that silently loaded cl100k's tables, or fell back to the heuristic) would
+        // still pass the empty-string and id checks — this pins it to ground truth.
+        assert_eq!(O200kEstimator::new().unwrap().estimate("hello world"), 2);
+    }
+
+    #[test]
+    fn o200k_and_cl100k_are_distinct_tokenizers() {
+        // The two exact estimators must not be one table behind two names. Rather than
+        // bet on a single hand-picked string (o200k's larger, more multilingual vocab
+        // diverges from cl100k in ways that are easy to guess wrong), scan a diverse
+        // battery and require divergence on at least one — enough to prove
+        // `O200kEstimator` is not a relabeled `Cl100kEstimator`.
+        let cl100k = Cl100kEstimator::new().unwrap();
+        let o200k = O200kEstimator::new().unwrap();
+        let battery = [
+            "你好世界，这是一段中文测试文本",
+            "🎉🎊✨🥳 emoji then prose",
+            "supercalifragilisticexpialidocious antidisestablishmentarianism",
+            "def foo(x):\n    return x + 1  # inline comment",
+            "Ĉ Ĝ Ĥ Ĵ Ŝ Ŭ Esperanto diacritics",
+        ];
+        let diverges = battery
+            .iter()
+            .any(|s| cl100k.estimate(s) != o200k.estimate(s));
+        assert!(
+            diverges,
+            "o200k and cl100k produced identical counts across the whole battery — \
+             they appear to be the same tokenizer"
+        );
+    }
+
+    #[test]
     fn exact_estimate_is_pure() {
         let cl100k = Cl100kEstimator::new().unwrap();
         let input = "{\"user\":\"alice\",\"count\":42,\"tags\":[\"a\",\"b\"]}";
