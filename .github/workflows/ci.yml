@@ -51,22 +51,28 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # The one required check.
+          # The one required check. `--all-features` also exercises the opt-in
+          # `tiktoken` estimator tests, which default features leave uncompiled.
           - os: ubuntu-latest
             toolchain: stable
             required: true
             flags: ""
+            features: "--all-features"
           # Signal-only: catches platform-specific breakage.
           - os: macos-latest
             toolchain: stable
             required: false
             flags: ""
+            features: "--all-features"
           # Signal-only: MSRV guard. `--locked` proves the committed Cargo.lock
-          # still resolves under the minimum supported Rust version.
+          # still resolves under the minimum supported Rust version. Default
+          # features only: this leg's contract is that the DEFAULT consumer build
+          # works on the MSRV, so it deliberately does not enable `tiktoken`.
           - os: ubuntu-latest
             toolchain: "1.85"
             required: false
             flags: "--locked"
+            features: ""
     steps:
       - name: Checkout
         # actions/checkout: spec left the version open; v4 chosen as the current
@@ -99,8 +105,13 @@ jobs:
         if: matrix.required
         run: cargo clippy --all-targets --all-features ${{ matrix.flags }} -- -D warnings
 
+      # PROPTEST_CASES=1024 raises the property suite from its local default of 32
+      # to the strength the module docs promise for CI; the tests read this env var
+      # themselves, so an unset local run stays at 32.
       - name: Test
-        run: cargo test --workspace ${{ matrix.flags }}
+        env:
+          PROPTEST_CASES: "1024"
+        run: cargo test --workspace ${{ matrix.features }} ${{ matrix.flags }}
 
       # cargo-deny and the publish dry-run are platform- and toolchain-independent,
       # so they run once on the required leg only. cargo-deny needs the advisory
