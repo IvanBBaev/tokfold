@@ -593,6 +593,125 @@ mod tests {
         }
     }
 
+    /// The configured estimator genuinely drives *encoder selection*, not merely
+    /// the reported id. On inputs sitting near the do-no-harm threshold, swapping
+    /// the default heuristic for an exact `tiktoken` tokenizer changes which
+    /// encoder wins — in both directions — which is the end-to-end payoff of the
+    /// opt-in feature and the claim that
+    /// `estimator_choice_does_not_change_recovery_archive` deliberately does *not*
+    /// make. Two realistic shapes, verified against the exact `cl100k_base` /
+    /// `o200k_base` tables (frozen vocabularies, as stable as the `"hello world"`
+    /// anchor test):
+    ///
+    /// * **False positive** — a small homogeneous array. The heuristic over-counts
+    ///   and picks E2 tabular; both exact tokenizers see that hoisting three short,
+    ///   already-cheap key sets is not a token win and pass through. The exact gate
+    ///   *suppresses* a transform the heuristic wrongly rated as helpful.
+    /// * **False negative** — a small pretty-printed config object. The heuristic
+    ///   under-counts the per-line indentation and passes through; both exact
+    ///   tokenizers charge that whitespace and pick E1 minify. The exact gate
+    ///   *enables* a real win the heuristic missed.
+    ///
+    /// Whichever encoder wins, every estimator still honors do-no-harm
+    /// (`token_ratio <= 1.0`) and every archive still reconstructs byte-for-byte
+    /// under any config, because recovery ignores the estimator entirely.
+    #[cfg(feature = "tiktoken")]
+    #[test]
+    fn exact_estimator_changes_encoder_selection_in_both_directions() {
+        use crate::estimator::{Cl100kEstimator, O200kEstimator};
+
+        let heuristic = Compressor::new(Config::default());
+        let cl100k = Compressor::new(
+            Config::builder()
+                .estimator(Arc::new(Cl100kEstimator::new().unwrap()))
+                .build(),
+        );
+        let o200k = Compressor::new(
+            Config::builder()
+                .estimator(Arc::new(O200kEstimator::new().unwrap()))
+                .build(),
+        );
+
+        // False positive: heuristic picks E2 (id 2); both exact tokenizers pass
+        // through (id 0). Selection diverges by estimator.
+        let pos_input = "[{\"id\":0,\"name\":\"item0\",\"active\":true},{\"id\":1,\"name\":\"item1\",\"active\":true},{\"id\":2,\"name\":\"item2\",\"active\":true}]";
+        let pos_heur = heuristic.compress(pos_input.as_bytes()).unwrap();
+        let pos_cl = cl100k.compress(pos_input.as_bytes()).unwrap();
+        let pos_o2 = o200k.compress(pos_input.as_bytes()).unwrap();
+        assert_ne!(
+            pos_heur.stats.encoder,
+            EncoderId(0),
+            "heuristic should pick a real encoder on the small array"
+        );
+        assert_eq!(
+            pos_cl.stats.encoder,
+            EncoderId(0),
+            "cl100k should suppress it back to passthrough"
+        );
+        assert_eq!(
+            pos_o2.stats.encoder,
+            EncoderId(0),
+            "o200k should suppress it back to passthrough"
+        );
+        assert_ne!(
+            pos_heur.stats.encoder, pos_cl.stats.encoder,
+            "the exact gate must change the winning encoder"
+        );
+
+        // False negative: heuristic passes through (id 0); both exact tokenizers
+        // pick E1 minify (id 1). Selection diverges the other way.
+        let neg_input = "{\n    \"enabled\": true,\n    \"retries\": 3,\n    \"timeout\": 30,\n    \"verbose\": false,\n    \"region\": \"us-east-1\"\n}";
+        let neg_heur = heuristic.compress(neg_input.as_bytes()).unwrap();
+        let neg_cl = cl100k.compress(neg_input.as_bytes()).unwrap();
+        let neg_o2 = o200k.compress(neg_input.as_bytes()).unwrap();
+        assert_eq!(
+            neg_heur.stats.encoder,
+            EncoderId(0),
+            "heuristic should pass through the pretty config object"
+        );
+        assert_eq!(
+            neg_cl.stats.encoder,
+            EncoderId(1),
+            "cl100k should pick E1 minify"
+        );
+        assert_eq!(
+            neg_o2.stats.encoder,
+            EncoderId(1),
+            "o200k should pick E1 minify"
+        );
+        assert_ne!(
+            neg_heur.stats.encoder, neg_cl.stats.encoder,
+            "the exact gate must change the winning encoder"
+        );
+
+        // Invariants that hold irrespective of which encoder won: do-no-harm under
+        // each estimator, and byte-exact recovery from every archive decoded by
+        // any config (recovery never consults the estimator).
+        for (input, artifacts) in [
+            (pos_input, [&pos_heur, &pos_cl, &pos_o2]),
+            (neg_input, [&neg_heur, &neg_cl, &neg_o2]),
+        ] {
+            for artifact in artifacts {
+                assert!(
+                    artifact.stats.token_ratio() <= 1.0,
+                    "do-no-harm violated for {input:?}"
+                );
+                for engine in [&heuristic, &cl100k, &o200k] {
+                    assert_eq!(
+                        engine.decompress(&artifact.archive).unwrap(),
+                        input.as_bytes(),
+                        "recovery must be byte-exact and estimator-independent for {input:?}"
+                    );
+                }
+            }
+        }
+
+        // The reported id attributes each outcome to the estimator that produced it.
+        assert_eq!(pos_heur.stats.tokenizer_id, 0);
+        assert_eq!(pos_cl.stats.tokenizer_id, 2);
+        assert_eq!(pos_o2.stats.tokenizer_id, 3);
+    }
+
     #[test]
     fn a_compressible_input_selects_an_encoder_and_still_reconstructs() {
         let c = compressor();
