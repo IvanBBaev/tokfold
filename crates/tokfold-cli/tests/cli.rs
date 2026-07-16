@@ -157,3 +157,43 @@ fn mcp_prints_experimental_notice_and_exits_non_zero() {
         "mcp must surface the experimental notice on stderr"
     );
 }
+
+#[test]
+fn stdout_reader_closing_the_pipe_early_is_a_clean_exit() {
+    use std::io::Read as _;
+    use std::thread;
+
+    // A payload far larger than any OS pipe buffer that is NOT valid JSON, so `compress`
+    // passes it through unchanged: the child's stdout is then guaranteed to exceed the
+    // pipe buffer, so it cannot finish writing once the reader goes away.
+    let big = vec![b'x'; 4 * 1024 * 1024];
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tokfold"))
+        .arg("compress")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn tokfold");
+
+    // Feed stdin from a separate thread so closing stdout can happen concurrently;
+    // driving both pipes from this thread would deadlock once the unread stdout fills.
+    let mut stdin = child.stdin.take().expect("child stdin");
+    let writer = thread::spawn(move || stdin.write_all(&big));
+
+    // Read one byte to be sure the child has started writing, then drop stdout to close
+    // the read end. The child's next write then sees BrokenPipe, which must still exit 0.
+    let mut stdout = child.stdout.take().expect("child stdout");
+    let mut first = [0_u8; 1];
+    let _ = stdout.read(&mut first);
+    drop(stdout);
+
+    let status = child.wait().expect("wait for tokfold");
+    // The child may abandon the stdin read once its output pipe breaks, so the writer's
+    // own result is expected to be `Ok` or a `BrokenPipe` error — either is acceptable.
+    let _ = writer.join().expect("join stdin writer");
+    assert!(
+        status.success(),
+        "a downstream closing the pipe early must exit 0, got {status:?}"
+    );
+}

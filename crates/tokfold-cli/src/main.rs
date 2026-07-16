@@ -166,13 +166,21 @@ fn read_source(path: Option<&Path>) -> Result<Vec<u8>> {
     }
 }
 
-/// Write `bytes` to standard output and flush, so a downstream pipe sees the whole
-/// payload before the process exits.
+/// Write `bytes` to standard output and flush, so a downstream reader that consumes the
+/// whole stream sees the entire payload before the process exits.
+///
+/// A reader that closes the pipe early (`… | head`, a model harness that stops reading)
+/// surfaces as [`io::ErrorKind::BrokenPipe`], because Rust starts every process with
+/// `SIGPIPE` ignored. That is a routine end of consumption, not a `tokfold` failure, so
+/// it resolves to a clean exit — otherwise a `set -o pipefail` shell or an agent harness
+/// that inspects the exit code would misread a normal early close as an error (exit 2).
 fn write_stdout(bytes: &[u8]) -> Result<()> {
     let mut out = io::stdout().lock();
-    out.write_all(bytes).context("writing to standard output")?;
-    out.flush().context("flushing standard output")?;
-    Ok(())
+    match out.write_all(bytes).and_then(|()| out.flush()) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        Err(e) => Err(e).context("writing to standard output"),
+    }
 }
 
 /// Write `bytes` to `path`, replacing any existing file.
