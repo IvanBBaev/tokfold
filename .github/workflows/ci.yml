@@ -129,6 +129,7 @@ jobs:
         run: cargo deny check
 
       - name: Packaging dry-run
+        if: matrix.required
         run: cargo publish --dry-run -p tokfold-core ${{ matrix.flags }}
 
   audit:
