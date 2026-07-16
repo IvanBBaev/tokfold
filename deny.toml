@@ -31,14 +31,9 @@ ignore = []
 allow = ["MIT", "Apache-2.0", "BSD-3-Clause", "Unicode-3.0", "Zlib"]
 confidence-threshold = 0.93
 
-# Narrow, per-crate exceptions rather than widening the global allow list.
-# arrayref is BSD-2-Clause (permissive, OSI/FSF approved) and enters the tree only
-# transitively through blake3, which is a tokfold-cli dependency -- never a
-# tokfold-core one. Scoping the allowance to this single crate keeps the global
-# policy tight.
-[[licenses.exceptions]]
-crate = "arrayref"
-allow = ["BSD-2-Clause"]
+# No per-crate license exceptions are needed: every crate in the resolved graph is
+# covered by the allow list above. Add a narrow [[licenses.exceptions]] entry rather
+# than widening `allow` if a future dependency introduces another permissive license.
 
 [bans]
 # A second copy of a crate bloats the tree and the audit surface; warn, do not
