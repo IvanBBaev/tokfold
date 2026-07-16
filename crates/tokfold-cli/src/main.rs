@@ -15,7 +15,9 @@
 //!   launch-gating milestone (D4 step 1).
 //!
 //! Exit codes are normative: `0` success, `2` bad input (usage, I/O, or an input the
-//! compressor rejects on `stats`), `3` a corrupt or unrecoverable archive on `expand`.
+//! compressor rejects on `stats`), `3` a corrupt or unrecoverable archive on `expand`,
+//! `69` the experimental `mcp` subcommand is unavailable in v0.0.1 (sysexits
+//! `EX_UNAVAILABLE`, so callers can tell "not implemented" from a real input error).
 //! `anyhow` is confined to this binary; the library crates never depend on it.
 
 #![forbid(unsafe_code)]
