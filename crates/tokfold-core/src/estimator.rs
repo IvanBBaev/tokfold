@@ -39,10 +39,13 @@ pub trait TokenEstimator: Send + Sync {
     fn tokenizer_id(&self) -> u16;
 }
 
-/// Frozen tokenizer ids for the header's `tokenizer_id` field (§3).
+/// Frozen ids for the `tokenizer_id` slot the wire format reserves (§3), reported
+/// out-of-band on [`Stats`](crate::Stats).
 ///
-/// Ids are part of the wire format: once shipped, a value's meaning never changes.
-/// Values `2..=4` are reserved names only — no implementation ships in v0.0.1.
+/// The slot exists in the header layout, but v0.0.1's compressor always writes `0`
+/// there and [`decompress`](crate::Compressor::decompress) rejects any other value as
+/// `Corrupt`; a shipped id's meaning is frozen regardless. Values `2..=4` are reserved
+/// names only — no implementation ships in v0.0.1.
 pub mod ids {
     /// [`super::HeuristicEstimator`] — the default cost model.
     pub const HEURISTIC: u16 = 0;
