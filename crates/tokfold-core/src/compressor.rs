@@ -214,7 +214,8 @@ pub struct Stats {
     pub est_tokens_after: usize,
     /// Which encoder shaped the rendering.
     pub encoder: EncoderId,
-    /// Id of the estimator that drove selection (`format` field 4).
+    /// Id of the estimator that drove selection. Reported here only; the archive
+    /// header's `tokenizer_id` is always `0` in v0.0.1 (selection is out-of-band).
     pub tokenizer_id: u16,
     /// Fidelity of the reconstruction. Always [`Fidelity::Lossless`] in v0.0.1.
     pub fidelity: Fidelity,
