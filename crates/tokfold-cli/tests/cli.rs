@@ -148,9 +148,14 @@ fn stats_rejects_invalid_json_with_exit_2() {
 }
 
 #[test]
-fn mcp_prints_experimental_notice_and_exits_non_zero() {
+fn mcp_prints_experimental_notice_and_exits_69() {
     let out = run_tokfold(&["mcp"], b"");
-    assert!(!out.status.success(), "mcp must exit non-zero");
+    assert_eq!(
+        out.status.code(),
+        Some(69),
+        "mcp must exit 69 (EX_UNAVAILABLE), distinct from bad input (2), stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("EXPERIMENTAL"),
