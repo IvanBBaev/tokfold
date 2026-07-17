@@ -116,7 +116,10 @@ impl Flags {
 pub struct Header {
     /// Which sealed encoder produced the payload (`0` = Passthrough).
     pub encoder_id: u8,
-    /// Tokenizer under which the encoder-selection candidate rule was evaluated.
+    /// The slot the wire format reserves for the tokenizer under which the
+    /// encoder-selection candidate rule was evaluated. v0.0.1 always writes `0` here and
+    /// reports the configured cost model out-of-band on [`crate::Stats`]; `decompress`
+    /// rejects any other value as `Corrupt`.
     pub tokenizer_id: u16,
     /// Optional-feature flags (bits 0..=2).
     pub flags: Flags,
