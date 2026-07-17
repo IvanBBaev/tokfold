@@ -15,4 +15,7 @@ homepage.workspace = true
 workspace = true
 
 [dependencies]
+# v0.0.1 is a placeholder with no proxy code, so nothing here calls into core yet.
+# The edge is declared deliberately rather than dropped: the proxy is core's consumer
+# by design, and the milestone that implements it starts from the real crate shape.
 tokfold-core.workspace = true

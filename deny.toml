@@ -19,16 +19,20 @@ all-features = true
 [advisories]
 # Vulnerabilities are always denied in the v2 schema -- there is no knob to
 # downgrade them, which is exactly the policy we want.
-# `unmaintained = "all"` surfaces unmaintained advisories (workspace and
-# transitive) as warnings rather than hard failures.
+# `unmaintained` takes a scope, not a level: "all" means an unmaintained advisory
+# against any crate -- workspace or transitive -- fails the check, exactly like a
+# vulnerability. `yanked` is a level, and "warn" is the one advisory class we do
+# downgrade.
 unmaintained = "all"
 yanked = "warn"
 ignore = []
 
 [licenses]
-# Permissive licenses only. Unicode-3.0 covers unicode-ident; Zlib and
-# BSD-3-Clause cover common low-level transitive crates.
-allow = ["MIT", "Apache-2.0", "BSD-3-Clause", "Unicode-3.0", "Zlib"]
+# Permissive licenses only, and only what the resolved graph actually carries:
+# MIT and Apache-2.0 (most crates are dual-licensed under both) plus Unicode-3.0
+# for unicode-ident. cargo-deny reports an allowance no crate matches as
+# `license-not-encountered`, so this list stays as narrow as the graph.
+allow = ["MIT", "Apache-2.0", "Unicode-3.0"]
 confidence-threshold = 0.93
 
 # No per-crate license exceptions are needed: every crate in the resolved graph is
