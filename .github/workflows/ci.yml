@@ -27,8 +27,12 @@ on:
     - cron: "0 6 * * 1"
 
 # Cancel superseded runs on the same ref so a burst of pushes does not queue up.
+# The event name is part of the key on purpose: a scheduled run carries the default
+# branch ref, so a ref-only group would put the weekly audit and pushes to main in
+# the same bucket and let a push cancel the audit -- the one job whose entire value
+# is running on its own schedule against a fresh advisory database.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 # Least privilege: nothing here needs write access to the repo.
