@@ -96,7 +96,13 @@ fn framed(enc: Encoder, body: &str) -> String {
 /// The returned string is the full rendering the model reads: the sentinel line
 /// followed by the encoder body. [`Encoder::Passthrough`] always applies and
 /// returns the input verbatim behind a `raw` sentinel; the other encoders return
-/// `None` when they cannot improve on — or do not fit — the input.
+/// `None` only when the input does not fit their shape — E1 when a span cannot be
+/// resolved, E2 when no array qualifies.
+///
+/// Rendering is not deciding: no encoder here measures its candidate against the
+/// input, so a body returned by this function may well cost more than it saves.
+/// [`select`] alone applies the token gate that keeps such a candidate from
+/// winning.
 pub(crate) fn render(enc: Encoder, tape: &Tape, input: &str) -> Option<String> {
     match enc {
         Encoder::Passthrough => Some(framed(enc, input)),
