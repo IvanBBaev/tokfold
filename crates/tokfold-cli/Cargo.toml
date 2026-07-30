@@ -8,6 +8,8 @@ authors.workspace = true
 description = "Command-line interface for tokfold, the reversible LLM context compression engine"
 keywords.workspace = true
 categories.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [lints]
 workspace = true
