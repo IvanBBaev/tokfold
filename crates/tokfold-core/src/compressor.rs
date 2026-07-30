@@ -2,9 +2,9 @@
 //! [`Artifact`] a `compress` call returns.
 //!
 //! This module is the only entry point a caller needs. It wires the frozen pieces
-//! together — UTF-8 validation, the lexeme-preserving [`tape`](crate::tape) parser,
-//! the sealed [`encoder`](crate::encoder) candidate rule, and the
-//! [`format`](crate::format) archive framing — behind a small, sans-io, synchronous
+//! together — UTF-8 validation, the lexeme-preserving [`tape`] parser,
+//! the sealed [`encoder`] candidate rule, and the
+//! [`format`](mod@crate::format) archive framing — behind a small, sans-io, synchronous
 //! surface.
 //!
 //! # Two outputs, two jobs
@@ -24,7 +24,7 @@
 //! the original bytes verbatim. Which encoder actually shaped the *rendering* is
 //! reported separately in [`Stats::encoder`], alongside the configured estimator's
 //! [`Stats::tokenizer_id`]. This mirrors the frozen `passthrough_archive` /
-//! `decode_full` pattern in [`format`](crate::format) and lets
+//! `decode_full` pattern in [`format`](mod@crate::format) and lets
 //! [`decompress`](Compressor::decompress) reconstruct the original byte-for-byte and
 //! verify its `SHA-256` before returning anything.
 //!

@@ -150,7 +150,7 @@ fn emit_string(lexeme: &str, out: &mut String) {
 
 /// Re-emit a JSON string lexeme with canonical escapes.
 ///
-/// Redundant escapes are unwound (`\/` -> `/`, `A` -> `A`), surrogate pairs are
+/// Redundant escapes are unwound (`\/` -> `/`, `\u0041` -> `A`), surrogate pairs are
 /// folded into their scalar, control characters use the shortest legal escape, and
 /// lone surrogates are copied verbatim. On any unexpected shape the lexeme is copied
 /// verbatim rather than risk corrupting a value.
@@ -417,9 +417,9 @@ mod tests {
 
     #[test]
     fn control_chars_use_short_or_u_escapes() {
-        assert_eq!(mini("\"\\u0000\""), "\"\\u0000\""); // NUL ->  
+        assert_eq!(mini("\"\\u0000\""), "\"\\u0000\""); // NUL -> \u0000
         assert_eq!(mini("\"\\u0008\""), "\"\\b\""); // BS -> \b
-        assert_eq!(mini("\"\\u001f\""), "\"\\u001f\""); // US -> 
+        assert_eq!(mini("\"\\u001f\""), "\"\\u001f\""); // US -> \u001f
     }
 
     #[test]

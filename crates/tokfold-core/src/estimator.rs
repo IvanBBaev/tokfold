@@ -120,7 +120,7 @@ const fn non_ascii_run_tokens(bytes: usize) -> usize {
 /// * **ASCII alphanumeric** — `ceil(len / 3.7)` tokens (at least one), the density
 ///   `cl100k` achieves on identifiers and words.
 /// * **Whitespace** — free for a lone separator, one token for a run of two or more
-///   (`cl100k` has dedicated indentation tokens); see [`WHITESPACE_RUN_MIN_TOKENIZED`].
+///   (`cl100k` has dedicated indentation tokens); see `WHITESPACE_RUN_MIN_TOKENIZED`.
 /// * **ASCII punctuation, symbols and controls** — one token each.
 /// * **Non-ASCII** — `ceil(bytes / 2)`, reflecting multi-byte UTF-8 fragmenting
 ///   into several BPE tokens.
