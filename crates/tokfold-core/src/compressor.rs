@@ -848,4 +848,55 @@ mod tests {
         assert_eq!(cfg.max_depth, 512);
         assert_eq!(cfg.estimator.tokenizer_id(), 0); // HeuristicEstimator
     }
+
+    /// The estimator is a *selection* input, not an archive input. Swapping the cost
+    /// model can change which encoder wins the candidate rule, but the archive is a
+    /// passthrough recovery blob over the original bytes either way — so it stays
+    /// byte-identical, and either compressor reconstructs the other's archive exactly.
+    #[test]
+    fn a_different_estimator_never_changes_the_archive() {
+        let heuristic = compressor();
+        let byte_len = Compressor::new(
+            Config::builder()
+                .estimator(Arc::new(crate::estimator::ByteLenEstimator))
+                .build(),
+        );
+
+        for input in corpus() {
+            let h = heuristic.compress(input.as_bytes()).unwrap();
+            let b = byte_len.compress(input.as_bytes()).unwrap();
+
+            assert_eq!(
+                h.archive, b.archive,
+                "archive diverged under a different estimator for {input:?}"
+            );
+
+            // The configured cost model is reported out of band on `Stats`; the header
+            // records 0 whichever estimator drove selection.
+            assert_eq!(h.stats.tokenizer_id, 0, "heuristic id for {input:?}");
+            assert_eq!(b.stats.tokenizer_id, 1, "byte-len id for {input:?}");
+
+            // Neither archive is bound to the compressor that produced it.
+            assert_eq!(
+                heuristic.decompress(&b.archive).unwrap(),
+                input.as_bytes(),
+                "heuristic could not expand the byte-len archive for {input:?}"
+            );
+            assert_eq!(
+                byte_len.decompress(&h.archive).unwrap(),
+                input.as_bytes(),
+                "byte-len could not expand the heuristic archive for {input:?}"
+            );
+        }
+    }
+
+    /// `Compressor` is sans-io and shareable: callers are expected to hold one behind
+    /// an `Arc` and compress from several threads. This fails to compile if either type
+    /// loses the bound — for instance if the boxed estimator stopped requiring it.
+    #[test]
+    fn compressor_and_config_are_send_and_sync() {
+        const fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<Compressor>();
+        assert_send_sync::<Config>();
+    }
 }
