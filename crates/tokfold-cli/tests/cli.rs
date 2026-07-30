@@ -151,9 +151,49 @@ fn stats_rejects_invalid_json_with_exit_2() {
 fn mcp_prints_experimental_notice_and_exits_non_zero() {
     let out = run_tokfold(&["mcp"], b"");
     assert!(!out.status.success(), "mcp must exit non-zero");
+    // "non-zero" is not the contract: `main.rs` documents EXIT_MCP_UNAVAILABLE = 69
+    // (sysexits EX_UNAVAILABLE) precisely so a caller can tell "this subcommand does
+    // not exist yet" apart from "your input was bad". Pin the number, or the
+    // distinction can be lost without a single test going red.
+    assert_eq!(
+        out.status.code(),
+        Some(69),
+        "mcp must exit with EXIT_MCP_UNAVAILABLE (69), not just any non-zero code"
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("EXPERIMENTAL"),
         "mcp must surface the experimental notice on stderr"
+    );
+}
+
+/// `cmd_compress` documents that the recovery archive is persisted *before* the
+/// rendering reaches stdout, "so a caller never sees output without its recovery
+/// blob". Nothing tested that ordering, and it is exactly the kind of contract a
+/// harmless-looking refactor reverses.
+///
+/// Point `--archive` at a path inside a directory that does not exist: the write
+/// must fail, and stdout must then be completely empty.
+#[test]
+fn a_failed_archive_write_suppresses_the_rendering() {
+    let unwritable = archive_path("no_such_directory").join("archive.tkfd");
+    let unwritable_str = unwritable.to_str().expect("utf-8 archive path");
+    assert!(
+        !unwritable.parent().expect("parent").exists(),
+        "test precondition: the archive's parent directory must not exist"
+    );
+
+    let out = run_tokfold(
+        &["compress", "--archive", unwritable_str],
+        COMPRESSIBLE_JSON,
+    );
+    assert!(
+        !out.status.success(),
+        "a failed archive write must not report success"
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "rendering was emitted despite the archive write failing: {:?}",
+        String::from_utf8_lossy(&out.stdout)
     );
 }

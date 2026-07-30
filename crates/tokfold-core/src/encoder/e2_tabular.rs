@@ -5,7 +5,10 @@
 //! Finds arrays whose elements are all JSON objects sharing a key set, hoists the
 //! shared keys **once** as a header, and emits each element as a compact row of
 //! values. Keys that would otherwise repeat on every element are stated a single
-//! time — the source of the 50–90% target on repetitive tool output.
+//! time, which is where most of this engine's measured saving on repetitive tool
+//! output comes from. No specific savings figure is claimed here: the corpus that
+//! would make one reproducible is not published, and per `README.md` an
+//! unreproducible number must not ship.
 //!
 //! Only the *outermost* qualifying array on any path is tabularized: an
 //! array-of-objects nested inside a row cell stays compact JSON, so a row never
@@ -619,6 +622,10 @@ mod tests {
         clippy::too_many_lines
     )]
 
+    use proptest::collection::vec as prop_vec;
+    use proptest::prelude::{Strategy, proptest};
+    use proptest::sample::select;
+
     use super::{emit_compact, render};
     use crate::tape::{self, Tape};
 
@@ -689,6 +696,14 @@ mod tests {
     /// Reference decoder for the documented `tbl` body grammar: rebuild minified
     /// JSON, expanding every table block back into an array. Proves the body is
     /// self-contained reversible from the rendering alone.
+    ///
+    /// The block has no end marker — the header's declared count `N` is its *only*
+    /// terminator — so this decoder holds the body to that count instead of trusting
+    /// it. Exactly `N` row lines must follow the header, each carrying a row marker,
+    /// and the line after the block must not be a row. A body that declares `N` but
+    /// carries a different number of rows is corrupt and panics here rather than
+    /// silently decoding to a shorter or longer array; a lenient reader would let a
+    /// dropped-row bug through as a plausible-looking result.
     fn reconstruct(body: &str) -> String {
         let lines: Vec<&str> = body.split('\n').collect();
         let mut out = String::new();
@@ -702,6 +717,11 @@ mod tests {
                 let count: usize = header[..bracket].parse().unwrap();
                 let keys = split_top_level(&header[bracket..]);
                 idx += 1;
+                assert!(
+                    idx + count <= lines.len(),
+                    "header declares {count} rows but only {} lines follow it",
+                    lines.len() - idx
+                );
                 out.push('[');
                 for r in 0..count {
                     if r > 0 {
@@ -713,6 +733,13 @@ mod tests {
                         // Plain `+[v0,v1,…]`: pair the values back with header keys.
                         Some(b'+') => {
                             let vals = split_top_level(&row[1..]);
+                            assert_eq!(
+                                vals.len(),
+                                keys.len(),
+                                "plain row {r} carries {} cells for {} header keys: {row:?}",
+                                vals.len(),
+                                keys.len()
+                            );
                             out.push('{');
                             for (ki, key) in keys.iter().enumerate() {
                                 if ki > 0 {
@@ -726,10 +753,23 @@ mod tests {
                         }
                         // Deviating `*{…}`: the object is already minified JSON.
                         Some(b'*') => out.push_str(&row[1..]),
-                        other => panic!("unexpected row marker {other:?}"),
+                        other => panic!(
+                            "header declares {count} rows but line {r} of the block is not a \
+                             row (marker {other:?}, line {row:?})"
+                        ),
                     }
                 }
                 out.push(']');
+                // Nothing marks the end of the block, so the count is only verified
+                // once both sides are checked: the first line after the block is
+                // resumed minified JSON, which can never open with a row marker
+                // (JSON continues with `,`, `}` or `]`, or the body ends).
+                if let Some(next) = lines.get(idx) {
+                    assert!(
+                        !next.starts_with(['+', '*']),
+                        "header declares {count} rows but an undeclared row follows: {next:?}"
+                    );
+                }
             } else {
                 // A minified-JSON segment: copy it verbatim (it holds no newline).
                 out.push_str(line);
@@ -871,5 +911,179 @@ mod tests {
         // Values that are objects/arrays render compactly as cells and round-trip.
         let input = r#"[{"a":{"p":1},"b":[1,2]},{"a":{"p":2},"b":[3,4]}]"#;
         assert_roundtrip(input);
+    }
+
+    // -----------------------------------------------------------------------
+    // Property tests.
+    //
+    // Every hand-written case above uses two or three elements, which leaves the
+    // header's declared row count effectively untested: a body that emits only the
+    // first three rows of an N-row array while still declaring N passes all of them.
+    // These generators run the element count to 32 so that count is load-bearing.
+    // -----------------------------------------------------------------------
+
+    /// One generated element: ordered `(key lexeme, value lexeme)` pairs.
+    type ObjectSpec = Vec<(&'static str, &'static str)>;
+
+    /// Key lexemes the generator draws from. Sampling with repetition also produces
+    /// objects with duplicate keys, which the encoder must preserve in order.
+    const KEY_LEXEMES: &[&str] = &[
+        r#""id""#,
+        r#""name""#,
+        r#""value""#,
+        r#""nested""#,
+        r#""flag""#,
+        r#""with space""#,
+        r#""esc\"aped""#,
+        r#""""#,
+    ];
+
+    /// Value lexemes covering every JSON type: strings (empty, escaped, and one full
+    /// of the delimiters the row splitter keys on), integer and float lexemes, the
+    /// three literals, and nested arrays/objects — including a nested array of
+    /// objects, which must stay compact inside a cell rather than become a table.
+    const VALUE_LEXEMES: &[&str] = &[
+        r#""""#,
+        r#""plain""#,
+        r#""with \"quotes\"""#,
+        r#""back\\slash""#,
+        r#""escaped\nnewline""#,
+        r#""escaped\ttab""#,
+        r#""unicode é \ud834""#,
+        r#""punctuation ,:[]{}\\""#,
+        "\"emoji \u{1F680}\"",
+        "0",
+        "-0",
+        "42",
+        "-17",
+        "1.0",
+        "3.14159",
+        "1e3",
+        "2.5e10",
+        "-1.5E-7",
+        "true",
+        "false",
+        "null",
+        "[]",
+        "{}",
+        "[1,2,3]",
+        r#"["a",null,false]"#,
+        r#"{"p":1,"q":[true,{}]}"#,
+        r#"[{"x":1},{"x":2}]"#,
+        r#"{"nested":{"deep":["v",-0.5]}}"#,
+    ];
+
+    /// Where the generated array sits in the document. A table block is spliced in at
+    /// the array's value position, so the wrapper decides what the decoder has to
+    /// resume into after the block's last row — the boundary the row count guards.
+    #[derive(Clone, Copy, Debug)]
+    enum Wrap {
+        /// The array is the whole document; the body ends right after the last row.
+        Bare,
+        /// Under an object key, so the block resumes into `,"ok":true}`.
+        UnderKey,
+        /// Twice inside an outer array: two blocks separated only by a comma line.
+        Twice,
+    }
+
+    const WRAPS: &[Wrap] = &[Wrap::Bare, Wrap::UnderKey, Wrap::Twice];
+
+    /// Render the generated elements as a JSON array lexeme.
+    fn array_lexeme(objects: &[ObjectSpec]) -> String {
+        let mut s = String::from("[");
+        for (i, obj) in objects.iter().enumerate() {
+            if i > 0 {
+                s.push(',');
+            }
+            s.push('{');
+            for (j, (key, value)) in obj.iter().enumerate() {
+                if j > 0 {
+                    s.push(',');
+                }
+                s.push_str(key);
+                s.push(':');
+                s.push_str(value);
+            }
+            s.push('}');
+        }
+        s.push(']');
+        s
+    }
+
+    /// Place the array lexeme into its surrounding document.
+    fn wrap_document(arr: &str, wrap: Wrap) -> String {
+        match wrap {
+            Wrap::Bare => arr.to_owned(),
+            Wrap::UnderKey => format!(r#"{{"results":{arr},"ok":true}}"#),
+            Wrap::Twice => format!("[{arr},{arr}]"),
+        }
+    }
+
+    /// `n` objects (1..=32) sharing one ordered key list of 1..=5 keys, each with
+    /// independently drawn values — the shape E2 tabularizes. Yields the document
+    /// text and `n`, so the test can also demand that E2 fires when the array
+    /// qualifies (`n >= 2`) instead of passing vacuously on a declined input.
+    fn homogeneous_document() -> impl Strategy<Value = (String, usize)> {
+        (
+            prop_vec(select(KEY_LEXEMES), 1..=5),
+            1usize..=32,
+            select(WRAPS),
+        )
+            .prop_flat_map(|(keys, n, wrap)| {
+                let width = keys.len();
+                prop_vec(select(VALUE_LEXEMES), n * width).prop_map(move |values| {
+                    let objects: Vec<ObjectSpec> = values
+                        .chunks(width)
+                        .map(|row| keys.iter().copied().zip(row.iter().copied()).collect())
+                        .collect();
+                    (wrap_document(&array_lexeme(&objects), wrap), n)
+                })
+            })
+    }
+
+    /// Arrays whose elements draw their key lists independently (0..=4 members each),
+    /// so most have no shape occurring twice. This is the decline path — and, when
+    /// two elements happen to coincide, the deviating-row path.
+    fn heterogeneous_document() -> impl Strategy<Value = String> {
+        (
+            prop_vec(
+                prop_vec((select(KEY_LEXEMES), select(VALUE_LEXEMES)), 0..=4),
+                1..=32,
+            ),
+            select(WRAPS),
+        )
+            .prop_map(|(objects, wrap)| wrap_document(&array_lexeme(&objects), wrap))
+    }
+
+    proptest! {
+        /// Homogeneous arrays of up to 32 elements must reconstruct to the canonical
+        /// minified document, and E2 must actually fire whenever the array qualifies.
+        #[test]
+        fn prop_homogeneous_tables_reconstruct((doc, n) in homogeneous_document()) {
+            let rendered = e2(&doc);
+            if n >= 2 {
+                assert!(rendered.is_some(), "E2 declined a qualifying array: {doc:?}");
+            }
+            if let Some(body) = rendered {
+                assert_eq!(
+                    reconstruct(&body),
+                    compact(&doc),
+                    "reconstruction mismatch for {doc:?}\nbody: {body:?}"
+                );
+            }
+        }
+
+        /// Heterogeneous arrays: E2 either declines or emits a table with deviating
+        /// rows. Whichever it does, any body it produced must reconstruct.
+        #[test]
+        fn prop_heterogeneous_arrays_decline_or_reconstruct(doc in heterogeneous_document()) {
+            if let Some(body) = e2(&doc) {
+                assert_eq!(
+                    reconstruct(&body),
+                    compact(&doc),
+                    "reconstruction mismatch for {doc:?}\nbody: {body:?}"
+                );
+            }
+        }
     }
 }
