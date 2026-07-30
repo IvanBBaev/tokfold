@@ -8,6 +8,10 @@ authors.workspace = true
 description = "Command-line interface for tokfold, the reversible LLM context compression engine"
 keywords.workspace = true
 categories.workspace = true
+repository.workspace = true
+# See tokfold-core/Cargo.toml: README plus symlinked licence texts, because
+# `cargo package` ships only what lives inside the package root.
+readme = "README.md"
 
 [lints]
 workspace = true

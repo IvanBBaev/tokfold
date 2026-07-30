@@ -11,6 +11,7 @@ authors = ["Ivan Baev <ivanbbaev@gmail.com>"]
 description = "Reversible, structure-aware context compression for LLM agents"
 keywords = ["llm", "compression", "tokens", "agent", "mcp"]
 categories = ["compression", "text-processing"]
+repository = "https://github.com/IvanBBaev/tokfold"
 
 [workspace.dependencies]
 tokfold-core = { path = "crates/tokfold-core", version = "0.0.1" }
@@ -39,9 +40,11 @@ missing_errors_doc = "allow"
 must_use_candidate = "allow"
 missing_const_for_fn = "allow"
 
-# `panic = "abort"` is deliberately NOT set: the MCP proxy relies on
-# `catch_unwind` as a last-resort bulkhead so a panic cannot kill the agent's
-# stdio pipe.
+# `panic = "abort"` is deliberately NOT set, so panics unwind. Nothing in this
+# workspace calls `catch_unwind` today -- an earlier version of this comment claimed
+# the MCP layer relied on one, which was never true. Unwinding is kept so that an
+# embedder, or a future stdio bulkhead in the binary, can install one; switching to
+# abort would foreclose that and is not a decision to make silently.
 [profile.profiling]
 inherits = "release"
 debug = true

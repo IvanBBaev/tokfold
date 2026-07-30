@@ -8,6 +8,10 @@ authors.workspace = true
 description = "EXPERIMENTAL MCP stdio proxy library for tokfold. Not hardened; not for production."
 keywords.workspace = true
 categories.workspace = true
+repository.workspace = true
+# See tokfold-core/Cargo.toml: README plus symlinked licence texts, because
+# `cargo package` ships only what lives inside the package root.
+readme = "README.md"
 
 [lints]
 workspace = true

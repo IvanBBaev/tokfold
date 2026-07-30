@@ -48,9 +48,26 @@ wildcards = "warn"
 
 # Networking crates are denied outright in the workspace. See the confidentiality
 # note at the top of this file: core sees secrets, so it must never be able to
-# open a socket. These are HTTP/RPC clients and servers plus common async runtimes
-# used to build them.
+# open a socket. The list is layered on purpose:
+#
+#   1. HTTP/RPC/WebSocket clients and servers -- the obvious exfiltration tools.
+#   2. Socket primitives -- the layer those tools are *built on*. Banning only
+#      layer 1 would leave the guarantee overstated: a dependency needs nothing
+#      more than `socket2` (or `mio`, or an async runtime's net module) to open a
+#      TCP/UDP connection, and no HTTP crate has to appear in the graph for that
+#      to happen.
+#   3. DNS resolvers -- a resolver alone can exfiltrate data in query names over
+#      UDP without ever completing a "real" connection.
+#
+# What this ban does NOT enforce, stated plainly so the guarantee is not read as
+# wider than it is: `std::net` is part of the standard library and cannot be
+# denied here, so this file cannot stop *first-party* code in this workspace from
+# opening a socket -- that is held by review and by core being sans-io by design.
+# Nor are `libc`/`nix` banned: they expose raw syscalls (and therefore sockets),
+# but they are also the substrate of ordinary non-network crates, so banning them
+# would be noise rather than signal.
 deny = [
+    # 1. HTTP / RPC / WebSocket stacks.
     { crate = "reqwest", reason = "HTTP client -- no network in core (confidentiality)" },
     { crate = "hyper", reason = "HTTP stack -- no network in core (confidentiality)" },
     { crate = "ureq", reason = "HTTP client -- no network in core (confidentiality)" },
@@ -61,11 +78,33 @@ deny = [
     { crate = "axum", reason = "HTTP server -- no network in core (confidentiality)" },
     { crate = "warp", reason = "HTTP server -- no network in core (confidentiality)" },
     { crate = "tonic", reason = "gRPC stack -- no network in core (confidentiality)" },
+    { crate = "tungstenite", reason = "WebSocket client/server -- no network in core (confidentiality)" },
+    { crate = "tokio-tungstenite", reason = "WebSocket over tokio -- no network in core (confidentiality)" },
+    { crate = "async-tungstenite", reason = "WebSocket over async runtimes -- no network in core (confidentiality)" },
+    { crate = "quinn", reason = "QUIC stack -- no network in core (confidentiality)" },
+
+    # 2. Socket / TCP / UDP primitives -- the capability itself, not a protocol.
+    { crate = "socket2", reason = "raw socket construction -- opens TCP/UDP directly (confidentiality)" },
+    { crate = "net2", reason = "raw socket construction (socket2's predecessor) -- opens TCP/UDP directly" },
+    { crate = "mio", reason = "non-blocking TCP/UDP sockets -- the layer tokio's net module is built on" },
+    { crate = "quinn-udp", reason = "UDP socket layer for QUIC -- opens UDP directly" },
+    { crate = "async-io", reason = "async runtime I/O layer with TCP/UDP sockets" },
+    { crate = "async-net", reason = "async TCP/UDP/Unix sockets" },
+    { crate = "async-std", reason = "async runtime whose `net` module opens sockets" },
+    { crate = "smol", reason = "async runtime whose `net` module opens sockets" },
+
+    # 3. DNS resolvers -- exfiltration via query names needs nothing else.
+    { crate = "hickory-resolver", reason = "DNS resolver -- UDP/TCP egress (confidentiality)" },
+    { crate = "hickory-proto", reason = "DNS protocol/socket layer -- UDP/TCP egress (confidentiality)" },
+    { crate = "trust-dns-resolver", reason = "DNS resolver (hickory's former name) -- UDP/TCP egress" },
+    { crate = "trust-dns-proto", reason = "DNS protocol/socket layer (hickory's former name) -- UDP/TCP egress" },
 ]
 
 # tokio itself is not banned (it may appear as a build-time utility), but its
 # networking features are: `net` pulls in sockets, which is the exact capability
-# core must not have. This fires only if tokio enters the graph.
+# core must not have. This fires only if tokio enters the graph. `mio` -- what
+# `tokio/net` is built on -- is denied outright above, so this rule is the
+# readable statement of intent and mio is the backstop.
 [[bans.features]]
 crate = "tokio"
 deny = ["net"]

@@ -8,6 +8,13 @@ authors.workspace = true
 description = "Reversible, structure-aware context compression engine for LLM agents (core)"
 keywords.workspace = true
 categories.workspace = true
+repository.workspace = true
+# A published crate must carry its own README and licence texts: `cargo package`
+# cannot reach outside the package root, so a file at the workspace root is not
+# shipped. LICENSE-MIT and LICENSE-APACHE here are symlinks to the workspace-root
+# texts (cargo dereferences them into the .crate tarball), which keeps one copy
+# of each licence in the tree.
+readme = "README.md"
 
 [lints]
 workspace = true
