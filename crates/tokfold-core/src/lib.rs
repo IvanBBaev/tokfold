@@ -37,6 +37,7 @@
 //! the CLI or proxy layer via an API call, never from here.
 
 #![forbid(unsafe_code)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub mod compressor;
 pub mod encoder;
@@ -50,4 +51,7 @@ pub mod tape;
 pub use compressor::{Artifact, Compressor, Config, ConfigBuilder, EncoderId, Profile, Stats};
 pub use error::{CompressError, DecompressError};
 pub use estimator::{ByteLenEstimator, HeuristicEstimator, TokenEstimator};
+#[cfg(feature = "tiktoken")]
+#[cfg_attr(docsrs, doc(cfg(feature = "tiktoken")))]
+pub use estimator::{Cl100kEstimator, O200kEstimator, TokenizerLoadError};
 pub use fidelity::Fidelity;

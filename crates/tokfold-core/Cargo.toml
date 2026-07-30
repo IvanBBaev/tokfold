@@ -18,15 +18,18 @@ workspace = true
 thiserror.workspace = true
 sha2.workspace = true
 rustc-hash.workspace = true
+tiktoken-rs = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest.workspace = true
 
 [features]
 default = []
-# Reserved, not implemented in v0.0.1. See docs: exact tokenizers pull megabytes
-# of BPE data and must never be enabled by default.
-tiktoken = []
+# `tiktoken` links exact GPT tokenizers (cl100k_base = id 2, o200k_base = id 3) for
+# the do-no-harm gate — see `estimator::Cl100kEstimator`. Exact tokenizers pull
+# megabytes of embedded BPE data, so this is opt-in and must never be enabled by
+# default. `hf` is reserved and not implemented in v0.0.1.
+tiktoken = ["dep:tiktoken-rs"]
 hf = []
 
 [package.metadata.docs.rs]
