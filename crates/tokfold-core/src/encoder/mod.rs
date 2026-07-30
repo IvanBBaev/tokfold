@@ -2,20 +2,20 @@
 //!
 //! # Why the set is sealed
 //!
-//! [`Encoder`] is a `pub(crate)` enum, never a public trait. A third-party encoder
+//! `Encoder` is a `pub(crate)` enum, never a public trait. A third-party encoder
 //! could emit a rendering it cannot reversibly reconstruct, silently breaking the
 //! archive contract (§2.3), and its trait would freeze this module's internal
 //! interfaces into public API. The **only** public extension point in the crate is
-//! [`TokenEstimator`](crate::estimator::TokenEstimator): a caller may supply a cost
+//! [`TokenEstimator`]: a caller may supply a cost
 //! model, not a codec. An encoder reaches callers solely as an id inside `Stats`
 //! (§7).
 //!
 //! # The candidate rule (§7, §8.2)
 //!
-//! Selection is a comparison, not a guess. For every enabled encoder [`select`]
+//! Selection is a comparison, not a guess. For every enabled encoder `select`
 //! renders a candidate and keeps it only when the estimator rates it *strictly*
 //! below the original; the lowest estimate wins, ties broken by the lower encoder
-//! id for determinism (§10). If nothing wins the result is [`Encoder::Passthrough`]
+//! id for determinism (§10). If nothing wins the result is `Encoder::Passthrough`
 //! at ratio 1.0 — "couldn't compress" is a statistic, never an error.
 //!
 //! This byte-blind rule is mandatory, not cosmetic: minification is **not**
@@ -126,11 +126,17 @@ pub(crate) struct Selection {
 /// fallback and is skipped if present. Determinism is load-bearing (§10): the same
 /// inputs always yield the same selection, so the tie-break to the lower encoder id
 /// is part of the contract, not an implementation detail.
+///
+/// `min_saving_bps` raises the bar from "any strict token win" to "a win of at least
+/// this fraction of the input estimate", so a caller can refuse decisions that sit
+/// inside the estimator's known calibration error. At `0` the rule is byte-for-byte
+/// the v0.0.1 rule.
 pub(crate) fn select(
     tape: &Tape,
     input: &str,
     estimator: &dyn TokenEstimator,
     enabled: &[Encoder],
+    min_saving_bps: u32,
 ) -> Selection {
     let est_before = estimator.estimate(input);
     let mut best: Option<(usize, Encoder, String)> = None;
@@ -144,8 +150,8 @@ pub(crate) fn select(
             continue; // encoder does not apply to this input
         };
         let est = estimator.estimate(&candidate);
-        if est >= est_before {
-            continue; // do-no-harm: keep only a strict token win
+        if !clears_margin(est, est_before, min_saving_bps) {
+            continue; // do-no-harm: keep only a win that clears the margin
         }
         let wins = match &best {
             None => true,
@@ -172,6 +178,30 @@ pub(crate) fn select(
     }
 }
 
+/// The do-no-harm gate: whether a candidate's estimated saving is large enough to
+/// keep it.
+///
+/// Two conditions, deliberately separate. The strict `<` is the v0.0.1 rule and is
+/// kept unconditionally, so a zero margin can never silently relax the gate to `<=`.
+/// The second condition then demands that the saving be at least `bps` basis points
+/// of the input estimate.
+///
+/// The comparison is cross-multiplied rather than divided so it stays exact integer
+/// arithmetic — a float ratio would reintroduce rounding into a decision that must be
+/// bit-deterministic (§10). `u64` keeps the product safe for the 16 MiB input ceiling
+/// on a 32-bit target: the largest factor is `est_before * 10_000`, and `est_before`
+/// cannot exceed the input's character count.
+const fn clears_margin(est_after: usize, est_before: usize, bps: u32) -> bool {
+    if est_after >= est_before {
+        return false;
+    }
+    let saved = (est_before - est_after) as u64;
+    saved.saturating_mul(BPS_SCALE) >= (est_before as u64).saturating_mul(bps as u64)
+}
+
+/// Basis-point scale: 10 000 bps = 100%.
+const BPS_SCALE: u64 = 10_000;
+
 /// Whether a candidate should replace the current best: strictly fewer estimated
 /// tokens, or an equal estimate broken by the lower encoder id. The id tie-break
 /// keeps selection deterministic across runs (§10), which is what preserves the
@@ -184,9 +214,12 @@ const fn prefers(new_est: usize, new_id: u8, best_est: usize, best_id: u8) -> bo
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use super::{Encoder, prefers, render, select};
+    use super::{Encoder, clears_margin, prefers, render, select};
     use crate::estimator::{ByteLenEstimator, HeuristicEstimator};
     use crate::tape;
+
+    /// The v0.0.1 candidate rule: any strict token win is kept.
+    const NO_MARGIN: u32 = 0;
 
     fn tape_of(input: &str) -> tape::Tape {
         tape::parse(input, 512).unwrap()
@@ -245,6 +278,7 @@ mod tests {
             input,
             &ByteLenEstimator,
             &[Encoder::E1Minify, Encoder::E2Tabular],
+            NO_MARGIN,
         );
         assert_eq!(sel.encoder, Encoder::Passthrough);
         assert_eq!(sel.est_tokens_after, sel.est_tokens_before);
@@ -253,7 +287,9 @@ mod tests {
 
     #[test]
     fn select_do_no_harm_holds() {
-        // Whatever wins, the reported after-count never exceeds the before-count.
+        // Whatever wins, the reported after-count never exceeds the before-count, and
+        // an accepted rendering satisfies the gate that admitted it — at every margin,
+        // not just at zero.
         let inputs = [
             "{\"a\":1}",
             "{ \"a\" : 1 , \"b\" : [ 2 , 3 ] }",
@@ -262,13 +298,106 @@ mod tests {
         ];
         for input in inputs {
             let t = tape_of(input);
-            let sel = select(&t, input, &HeuristicEstimator, &[Encoder::E1Minify]);
-            assert!(
-                sel.est_tokens_after <= sel.est_tokens_before,
-                "harm on {input:?}"
-            );
-            if sel.encoder != Encoder::Passthrough {
-                assert!(sel.est_tokens_after < sel.est_tokens_before);
+            for bps in MARGIN_LADDER {
+                let sel = select(&t, input, &HeuristicEstimator, &[Encoder::E1Minify], bps);
+                assert!(
+                    sel.est_tokens_after <= sel.est_tokens_before,
+                    "harm on {input:?} at {bps} bps"
+                );
+                if sel.encoder != Encoder::Passthrough {
+                    assert!(
+                        clears_margin(sel.est_tokens_after, sel.est_tokens_before, bps),
+                        "accepted a rendering that does not clear its own gate: \
+                         {input:?} at {bps} bps"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Margins swept by the gate tests: zero (the v0.0.1 rule), the measured heuristic
+    /// over-claim, values either side of it, and the 100% extreme.
+    const MARGIN_LADDER: [u32; 7] = [0, 100, 300, 600, 1200, 5000, 10_000];
+
+    #[test]
+    fn clears_margin_is_exact_at_the_boundary() {
+        // 100 -> 94 saves exactly 600 bps of the input: accepted at 600, refused at 601.
+        assert!(clears_margin(94, 100, 600));
+        assert!(!clears_margin(94, 100, 601));
+        // A zero margin is the strict v0.0.1 rule and never relaxes to `<=`.
+        assert!(clears_margin(99, 100, NO_MARGIN));
+        assert!(!clears_margin(100, 100, NO_MARGIN));
+        assert!(!clears_margin(101, 100, NO_MARGIN));
+        // A degenerate input is not a win at any margin.
+        assert!(!clears_margin(0, 0, NO_MARGIN));
+        // A 100% margin demands a rendering that costs nothing at all.
+        assert!(clears_margin(0, 100, 10_000));
+        assert!(!clears_margin(1, 100, 10_000));
+    }
+
+    #[test]
+    fn a_margin_refuses_a_win_the_v0_0_1_rule_would_keep() {
+        // The mechanism has to actually bite, or every other margin test passes
+        // vacuously. Take a real E1 win and ask for one basis point more than it
+        // claims.
+        let input = pretty_object(20);
+        let t = tape_of(&input);
+        let kept = select(
+            &t,
+            &input,
+            &HeuristicEstimator,
+            &[Encoder::E1Minify],
+            NO_MARGIN,
+        );
+        assert_eq!(kept.encoder, Encoder::E1Minify, "expected a win to refuse");
+
+        let saved = kept.est_tokens_before - kept.est_tokens_after;
+        let claimed_bps = u32::try_from(saved * 10_000 / kept.est_tokens_before).unwrap();
+        let refused = select(
+            &t,
+            &input,
+            &HeuristicEstimator,
+            &[Encoder::E1Minify],
+            claimed_bps + 1,
+        );
+        assert_eq!(refused.encoder, Encoder::Passthrough);
+        assert_eq!(refused.est_tokens_after, refused.est_tokens_before);
+        assert!(
+            refused
+                .rendering
+                .starts_with("\u{27E6}tkfd:v1:raw\u{27E7}\n")
+        );
+    }
+
+    #[test]
+    fn raising_the_margin_only_ever_removes_winners() {
+        // Monotonicity: a higher bar can turn a winner into passthrough, never the
+        // reverse. Without this, a margin could silently *enable* an encoder on some
+        // input and the knob would not be the conservatism dial it is documented as.
+        let inputs = [
+            "{\"a\":1}".to_string(),
+            pretty_object(2),
+            pretty_object(20),
+            pretty_object(60),
+            "[\n  1,\n  2,\n  3\n]".to_string(),
+        ];
+        for input in inputs {
+            let t = tape_of(&input);
+            let mut still_winning = true;
+            for bps in MARGIN_LADDER {
+                let sel = select(
+                    &t,
+                    &input,
+                    &HeuristicEstimator,
+                    &[Encoder::E1Minify, Encoder::E2Tabular],
+                    bps,
+                );
+                let won = sel.encoder != Encoder::Passthrough;
+                assert!(
+                    still_winning || !won,
+                    "raising the margin to {bps} bps re-enabled an encoder on {input:?}"
+                );
+                still_winning = won;
             }
         }
     }
@@ -286,6 +415,7 @@ mod tests {
             &input,
             &HeuristicEstimator,
             &[Encoder::E1Minify, Encoder::E2Tabular],
+            NO_MARGIN,
         );
         assert_eq!(sel.encoder, Encoder::E1Minify);
         assert!(sel.est_tokens_after < sel.est_tokens_before);
@@ -299,7 +429,13 @@ mod tests {
         // shipping a framed rendering that is a net token loss.
         let input = "{\n    \"alpha\": 1,\n    \"beta\": 2\n}";
         let t = tape_of(input);
-        let sel = select(&t, input, &HeuristicEstimator, &[Encoder::E1Minify]);
+        let sel = select(
+            &t,
+            input,
+            &HeuristicEstimator,
+            &[Encoder::E1Minify],
+            NO_MARGIN,
+        );
         assert_eq!(sel.encoder, Encoder::Passthrough);
         assert_eq!(sel.est_tokens_after, sel.est_tokens_before);
     }
@@ -308,8 +444,20 @@ mod tests {
     fn select_is_deterministic() {
         let input = "{\n  \"x\": [1, 2, 3],\n  \"y\": \"value\"\n}";
         let t = tape_of(input);
-        let a = select(&t, input, &HeuristicEstimator, &[Encoder::E1Minify]);
-        let b = select(&t, input, &HeuristicEstimator, &[Encoder::E1Minify]);
+        let a = select(
+            &t,
+            input,
+            &HeuristicEstimator,
+            &[Encoder::E1Minify],
+            NO_MARGIN,
+        );
+        let b = select(
+            &t,
+            input,
+            &HeuristicEstimator,
+            &[Encoder::E1Minify],
+            NO_MARGIN,
+        );
         assert_eq!(a.encoder, b.encoder);
         assert_eq!(a.rendering, b.rendering);
         assert_eq!(a.est_tokens_after, b.est_tokens_after);
