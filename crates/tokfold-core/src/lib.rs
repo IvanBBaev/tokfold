@@ -25,7 +25,13 @@
 //! * **Total on valid JSON.** If no encoder reduces the estimated token count, the
 //!   engine returns a passthrough artifact. "Couldn't compress" is a statistic,
 //!   never an error.
-//! * **Do no harm.** Estimated rendering tokens never exceed estimated input tokens.
+//! * **Do no harm.** When an encoder wins, its rendering — sentinel frame included —
+//!   costs fewer estimated tokens than the input. The passthrough fallback is the one
+//!   exception: it re-emits the input behind an 18-byte `raw` sentinel, a constant
+//!   overhead of about 10 estimated (11 real `cl100k`) tokens that
+//!   [`Stats::token_ratio`] does not attribute to compression — it reports exactly
+//!   `1.0`. The guarantee is therefore "compressing never makes it worse", not "the
+//!   rendering is never longer than the input".
 //! * **Fail closed.** Any integrity mismatch on decode returns an error rather than
 //!   partially recovered bytes.
 //!

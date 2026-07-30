@@ -65,7 +65,13 @@ const CONTINUATION_BIT: u8 = 0x80;
 /// decode and are never represented here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Flags {
-    /// Bit 0: a `--byte-exact` sidecar accompanies the archive.
+    /// Bit 0: a byte-exact sidecar accompanies the archive.
+    ///
+    /// Reserved in v0.0.1: nothing sets it. No encoder emits a sidecar, and the
+    /// `tokfold` binary has no flag that asks for one — the bit exists so the
+    /// opt-in byte-exact mode can arrive without a format version bump. It is
+    /// still decoded and round-tripped, so an archive written by a future build
+    /// reads back with the bit intact.
     pub has_sidecar: bool,
     /// Bit 1: the payload may be safely truncated by a size-limited consumer.
     pub truncation_tolerated: bool,
