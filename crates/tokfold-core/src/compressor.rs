@@ -51,6 +51,11 @@ const DEFAULT_MAX_INPUT_BYTES: usize = 16 * 1024 * 1024;
 /// [`CompressError::DepthExceeded`] rather than overflowing the stack.
 const DEFAULT_MAX_DEPTH: usize = 512;
 
+/// Ceiling for the candidate-rule margin: 10 000 bps = 100%. A larger value asks a
+/// rendering to save more than the whole input, which nothing can do, so it is
+/// clamped rather than accepted as a way to disable compression by accident.
+const MAX_SAVING_BPS: u32 = 10_000;
+
 /// Encoders offered under [`Profile::Conservative`]: minification only, the
 /// lowest-risk transform.
 const CONSERVATIVE_ENCODERS: &[Encoder] = &[Encoder::E1Minify];
@@ -97,6 +102,7 @@ pub struct Config {
     max_input_bytes: usize,
     max_depth: usize,
     estimator: Arc<dyn TokenEstimator>,
+    min_saving_bps: Option<u32>,
 }
 
 impl Config {
@@ -123,6 +129,7 @@ pub struct ConfigBuilder {
     max_input_bytes: usize,
     max_depth: usize,
     estimator: Arc<dyn TokenEstimator>,
+    min_saving_bps: Option<u32>,
 }
 
 impl ConfigBuilder {
@@ -132,6 +139,7 @@ impl ConfigBuilder {
             max_input_bytes: DEFAULT_MAX_INPUT_BYTES,
             max_depth: DEFAULT_MAX_DEPTH,
             estimator: Arc::new(HeuristicEstimator),
+            min_saving_bps: None,
         }
     }
 
@@ -166,6 +174,29 @@ impl ConfigBuilder {
         self
     }
 
+    /// Sets the smallest estimated token saving a rendering must show to be kept,
+    /// in basis points of the input estimate (10 000 bps = 100%).
+    ///
+    /// Unset, the effective margin is whatever the configured estimator declares via
+    /// [`TokenEstimator::over_claim_bps`] — `0` for both estimators shipped in
+    /// v0.0.1, i.e. "keep any strict token win". Setting it explicitly overrides the
+    /// estimator's declaration in both directions.
+    ///
+    /// Raise this when a mis-selection is expensive and the cost model is inexact:
+    /// with the default [`HeuristicEstimator`] a claimed saving in the low single
+    /// digits sits inside the model's measured error, so it may not be a real saving
+    /// at all. [`HeuristicEstimator::MEASURED_OVER_CLAIM_BPS`] is that measurement.
+    /// The trade is real in both directions — the error is two-sided, so a large
+    /// margin also discards genuine wins the model under-rates, and anything much
+    /// above ~1100 bps retires E1 on typical pretty-printed JSON.
+    ///
+    /// Values above 10 000 are clamped: no rendering can save more than everything.
+    #[must_use]
+    pub fn min_saving_bps(mut self, min_saving_bps: u32) -> Self {
+        self.min_saving_bps = Some(min_saving_bps);
+        self
+    }
+
     /// Finalizes the configuration.
     #[must_use]
     pub fn build(self) -> Config {
@@ -174,6 +205,7 @@ impl ConfigBuilder {
             max_input_bytes: self.max_input_bytes,
             max_depth: self.max_depth,
             estimator: self.estimator,
+            min_saving_bps: self.min_saving_bps,
         }
     }
 }
@@ -188,6 +220,14 @@ impl Default for ConfigBuilder {
 ///
 /// Exposed in [`Stats`] so callers can attribute a result to an encoder without the
 /// sealed [`Encoder`](crate::encoder) enum leaking into the public API.
+///
+/// The type is `#[non_exhaustive]`, so downstream crates cannot construct one — a
+/// later version may add fields. Compare against the associated constants instead
+/// ([`PASSTHROUGH`](Self::PASSTHROUGH), [`E1_MINIFY`](Self::E1_MINIFY),
+/// [`E2_TABULAR`](Self::E2_TABULAR)); without them the derived `PartialEq` would be
+/// unusable outside this crate, because there would be no way to build the
+/// right-hand side. The wire id stays readable through the public field for ids a
+/// given build does not name.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EncoderId(
@@ -197,11 +237,27 @@ pub struct EncoderId(
     pub u8,
 );
 
+impl EncoderId {
+    /// No encoder beat the input; the rendering is the original bytes (wire id `0`).
+    pub const PASSTHROUGH: Self = Self(0);
+    /// Whitespace minification (wire id `1`).
+    pub const E1_MINIFY: Self = Self(1);
+    /// Shape-deduplicated tabular re-encoding (wire id `2`).
+    pub const E2_TABULAR: Self = Self(2);
+}
+
 /// What a compression pass achieved.
 ///
 /// The `*_before` / `*_after` pairs describe the model-facing rendering; the ratios
 /// are the headline numbers. A passthrough result reports both ratios as exactly
-/// `1.0` — "couldn't compress" is a statistic, never harm.
+/// `1.0` — "couldn't compress" is a statistic, never an error.
+///
+/// That `1.0` is a floor, not a measurement: a passthrough rendering still carries the
+/// 18-byte `raw` sentinel, which costs about 10 estimated (11 real `cl100k`) tokens
+/// more than the bare input. The `*_after` fields are *set* equal to their `*_before`
+/// counterparts on that path rather than measured, so the framing overhead is
+/// deliberately not attributed to compression. Callers that must account for every
+/// token should measure [`Artifact::rendering`] directly.
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct Stats {
@@ -212,13 +268,22 @@ pub struct Stats {
     pub bytes_after: usize,
     /// Estimated tokens of the original input, per the configured estimator.
     pub est_tokens_before: usize,
-    /// Estimated tokens of the rendering; equals `est_tokens_before` for passthrough.
+    /// Estimated tokens of the rendering. On the passthrough path this is *set* to
+    /// `est_tokens_before` rather than measured, so it under-reports the sentinel
+    /// frame by about 10 tokens; see the type-level doc.
     pub est_tokens_after: usize,
     /// Which encoder shaped the rendering.
     pub encoder: EncoderId,
     /// Id of the estimator that drove selection. Reported here only — the archive
     /// header's `tokenizer_id` (`format` field 4) is always `0` in v0.0.1.
     pub tokenizer_id: u16,
+    /// The margin, in basis points of `est_tokens_before`, that this pass actually
+    /// applied — the configured override if there was one, otherwise the estimator's
+    /// declared [`over_claim_bps`](TokenEstimator::over_claim_bps), clamped to
+    /// 10 000. Reported so a passthrough result is explainable after the fact: it
+    /// distinguishes "no encoder produced a win" from "a win was produced and
+    /// refused for being inside the estimator's error budget".
+    pub min_saving_bps: u32,
     /// Fidelity of the reconstruction. Always [`Fidelity::Lossless`] in v0.0.1.
     pub fidelity: Fidelity,
 }
@@ -253,8 +318,9 @@ impl Stats {
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct Artifact {
-    /// Token-reduced, sentinel-framed text for model context. Canonicalized, so not
-    /// byte-identical to the input.
+    /// Sentinel-framed text for model context. When an encoder won it is token-reduced
+    /// and canonicalized, so not byte-identical to the input; on the passthrough path
+    /// it is the input verbatim behind a `raw` sentinel, so it is neither.
     pub rendering: String,
     /// `TKFD` recovery blob that reconstructs the exact original via
     /// [`decompress`](Compressor::decompress).
@@ -307,7 +373,14 @@ impl Compressor {
         //    token win, or fall back to passthrough at ratio 1.0.
         let estimator: &dyn TokenEstimator = &*self.config.estimator;
         let enabled = enabled_encoders(self.config.profile);
-        let selection = encoder::select(&parsed, text, estimator, enabled);
+        //    An explicit override wins over the estimator's declared error budget;
+        //    clamped because a margin above 100% is unsatisfiable by construction.
+        let min_saving_bps = self
+            .config
+            .min_saving_bps
+            .unwrap_or_else(|| estimator.over_claim_bps())
+            .min(MAX_SAVING_BPS);
+        let selection = encoder::select(&parsed, text, estimator, enabled, min_saving_bps);
 
         // 5. Recovery archive: a passthrough TKFD blob wrapping the original bytes.
         //    Only passthrough is byte-exact reversible, so the archive header always
@@ -348,6 +421,7 @@ impl Compressor {
             est_tokens_after: selection.est_tokens_after,
             encoder: EncoderId(selection.encoder.id()),
             tokenizer_id: estimator.tokenizer_id(),
+            min_saving_bps,
             fidelity: Fidelity::Lossless,
         };
 
@@ -525,7 +599,15 @@ mod tests {
             );
             assert_eq!(art.stats.byte_ratio(), 1.0, "byte_ratio for {input:?}");
             assert_eq!(art.stats.token_ratio(), 1.0, "token_ratio for {input:?}");
+            // `fidelity` is set to `Lossless` unconditionally in v0.0.1, so asserting
+            // the tag alone is true by construction and catches nothing. Assert what
+            // the tag *claims* instead: the archive gives the input back byte for byte.
             assert!(matches!(art.stats.fidelity, Fidelity::Lossless));
+            assert_eq!(
+                c.decompress(&art.archive).unwrap(),
+                input.as_bytes(),
+                "Lossless was reported but the archive did not reproduce {input:?}"
+            );
         }
     }
 
@@ -898,5 +980,326 @@ mod tests {
         const fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<Compressor>();
         assert_send_sync::<Config>();
+    }
+
+    /// The profile -> candidate-set map is part of the selection contract, so pin it
+    /// directly instead of inferring it from one lucky input: swapping
+    /// `Aggressive` onto the conservative set was previously invisible, because no
+    /// test ever built an `Aggressive` compressor.
+    #[test]
+    fn enabled_encoders_are_frozen_per_profile() {
+        assert_eq!(
+            enabled_encoders(Profile::Conservative),
+            [Encoder::E1Minify].as_slice()
+        );
+        assert_eq!(
+            enabled_encoders(Profile::Balanced),
+            [Encoder::E1Minify, Encoder::E2Tabular].as_slice()
+        );
+        assert_eq!(
+            enabled_encoders(Profile::Aggressive),
+            enabled_encoders(Profile::Balanced),
+            "Aggressive is documented as identical to Balanced until E3 lands"
+        );
+    }
+
+    /// The order of the candidate slice is pinned above; this proves the pin is a
+    /// determinism guard and not a behavioural claim. `prefers` breaks an estimate
+    /// tie on the lower encoder id, so reversing the slice must select the same
+    /// encoder and emit the same bytes.
+    #[test]
+    fn selection_does_not_depend_on_candidate_order() {
+        for input in corpus() {
+            let parsed = tape::parse(&input, DEFAULT_MAX_DEPTH).unwrap();
+            let estimator = HeuristicEstimator;
+            let forward = encoder::select(
+                &parsed,
+                &input,
+                &estimator,
+                &[Encoder::E1Minify, Encoder::E2Tabular],
+                0,
+            );
+            let reversed = encoder::select(
+                &parsed,
+                &input,
+                &estimator,
+                &[Encoder::E2Tabular, Encoder::E1Minify],
+                0,
+            );
+            assert_eq!(forward.encoder, reversed.encoder, "on {input:?}");
+            assert_eq!(forward.rendering, reversed.rendering, "on {input:?}");
+        }
+    }
+
+    /// Aggressive must actually compress what Balanced compresses — the assertion the
+    /// profile map above cannot make on its own.
+    #[test]
+    fn aggressive_profile_matches_balanced_byte_for_byte() {
+        let input = homogeneous_array(12);
+        let cfg = Config::builder().profile(Profile::Aggressive).build();
+        let aggressive = Compressor::new(cfg).compress(input.as_bytes()).unwrap();
+        let balanced = compressor().compress(input.as_bytes()).unwrap();
+        assert_eq!(aggressive.stats.encoder, EncoderId::E2_TABULAR);
+        assert_eq!(aggressive.rendering, balanced.rendering);
+        assert_eq!(aggressive.archive, balanced.archive);
+    }
+
+    /// The associated constants are the only way a downstream crate can name an
+    /// encoder (`EncoderId` is `#[non_exhaustive]`), so their numeric values are
+    /// public API. The rest of the suite compares against `EncoderId(0)` / `(1)`
+    /// literals, which leaves the constants themselves unpinned.
+    #[test]
+    fn encoder_id_constants_are_the_wire_ids() {
+        assert_eq!(EncoderId::PASSTHROUGH.0, 0);
+        assert_eq!(EncoderId::E1_MINIFY.0, 1);
+        assert_eq!(EncoderId::E2_TABULAR.0, 2);
+
+        let c = compressor();
+        assert_eq!(
+            c.compress(b"42").unwrap().stats.encoder,
+            EncoderId::PASSTHROUGH
+        );
+        assert_eq!(
+            c.compress(pretty_object(30).as_bytes())
+                .unwrap()
+                .stats
+                .encoder,
+            EncoderId::E1_MINIFY
+        );
+        assert_eq!(
+            c.compress(homogeneous_array(12).as_bytes())
+                .unwrap()
+                .stats
+                .encoder,
+            EncoderId::E2_TABULAR
+        );
+    }
+
+    #[test]
+    fn the_applied_margin_is_reported_and_clamped_at_one_hundred_percent() {
+        let input = pretty_object(30);
+        let stats = |bps: u32| {
+            Compressor::new(Config::builder().min_saving_bps(bps).build())
+                .compress(input.as_bytes())
+                .unwrap()
+                .stats
+        };
+        // Below the ceiling the configured margin is reported verbatim.
+        assert_eq!(stats(600).min_saving_bps, 600);
+        // Above it the margin is clamped, never passed through: a margin over 100%
+        // is unsatisfiable, so it would silently disable compression instead.
+        assert_eq!(MAX_SAVING_BPS, 10_000);
+        assert_eq!(stats(50_000).min_saving_bps, MAX_SAVING_BPS);
+        assert_eq!(stats(50_000).encoder, EncoderId::PASSTHROUGH);
+        // Unset, the reported margin is the estimator's declaration — 0 in v0.0.1,
+        // which is what keeps E1's win on this input.
+        let default_stats = compressor().compress(input.as_bytes()).unwrap().stats;
+        assert_eq!(default_stats.min_saving_bps, 0);
+        assert_eq!(default_stats.encoder, EncoderId::E1_MINIFY);
+    }
+
+    /// A custom estimator must be the one actually consulted, must have its declared
+    /// over-claim adopted as the default margin, and must be named in `Stats`. None
+    /// of the three was covered: no test in the workspace built a `Config` with a
+    /// non-default estimator.
+    #[test]
+    fn the_configured_estimator_drives_and_labels_selection() {
+        /// The shipped heuristic, but declaring a 90% error budget.
+        #[derive(Debug)]
+        struct CautiousHeuristic;
+        impl TokenEstimator for CautiousHeuristic {
+            fn estimate(&self, text: &str) -> usize {
+                HeuristicEstimator.estimate(text)
+            }
+            fn tokenizer_id(&self) -> u16 {
+                4242
+            }
+            fn over_claim_bps(&self) -> u32 {
+                9_000
+            }
+        }
+
+        let input = pretty_object(30);
+        let cfg = Config::builder()
+            .estimator(Arc::new(CautiousHeuristic))
+            .build();
+        let stats = Compressor::new(cfg)
+            .compress(input.as_bytes())
+            .unwrap()
+            .stats;
+        assert_eq!(
+            stats.tokenizer_id, 4242,
+            "Stats must report the configured estimator, not the default"
+        );
+        assert_eq!(
+            stats.min_saving_bps, 9_000,
+            "an unset margin must fall back to the estimator's declared over-claim"
+        );
+        assert_eq!(
+            stats.encoder,
+            EncoderId::PASSTHROUGH,
+            "a 90% bar must refuse E1's ~11% win on this input"
+        );
+    }
+
+    /// The size guard is `>`, so an input of exactly `max_input_bytes` is accepted.
+    /// `oversized_input_is_rejected` only probes 7 bytes against a limit of 4, which
+    /// leaves the boundary itself untested in both directions.
+    #[test]
+    fn input_of_exactly_the_ceiling_is_accepted() {
+        let input = b"{\"a\":1}"; // 7 bytes
+        let at_limit = Config::builder().max_input_bytes(input.len()).build();
+        assert!(
+            Compressor::new(at_limit).compress(input).is_ok(),
+            "an input of exactly max_input_bytes must be accepted"
+        );
+        let below = Config::builder().max_input_bytes(input.len() - 1).build();
+        assert!(matches!(
+            Compressor::new(below).compress(input),
+            Err(CompressError::InputTooLarge { size: 7, limit: 6 })
+        ));
+    }
+
+    /// `decompress` gates each fixed header field separately and aims a `Corrupt` at
+    /// the field it rejected. The suite proved the *rejection* but never the offset,
+    /// so all three field offsets could be shifted silently.
+    #[test]
+    fn decompress_names_the_header_field_it_rejected() {
+        // Frozen TKFD layout: magic[0..4] | version[4] | encoder_id[5] |
+        // tokenizer_id[6..8] | flags[8..10] | original_len varint | checksum[32].
+        assert_eq!(ENCODER_ID_OFFSET, 5);
+        assert_eq!(TOKENIZER_ID_OFFSET, 6);
+        assert_eq!(FLAGS_OFFSET, 8);
+        // `ORIGINAL_LEN_OFFSET` aims the `Corrupt` for an `original_len` that does not
+        // fit a `usize`. That conversion cannot fail where `usize` is 64 bits, so the
+        // branch is unreachable on every target this workspace builds for and no test
+        // can exercise it. Pinning the constant is a layout guard only — it is NOT
+        // behavioural coverage of that branch.
+        assert_eq!(ORIGINAL_LEN_OFFSET, 10);
+
+        let c = compressor();
+        let art = c.compress(b"{\"a\":1}").unwrap();
+        let corrupt_at = |index: usize, value: u8| {
+            let mut a = art.archive.clone();
+            a[index] = value;
+            c.decompress(&a)
+        };
+        assert!(
+            matches!(
+                corrupt_at(ENCODER_ID_OFFSET, 1),
+                Err(DecompressError::Corrupt { byte_offset: 5 })
+            ),
+            "encoder_id"
+        );
+        assert!(
+            matches!(
+                corrupt_at(TOKENIZER_ID_OFFSET, 1),
+                Err(DecompressError::Corrupt { byte_offset: 6 })
+            ),
+            "tokenizer_id, low byte"
+        );
+        assert!(
+            matches!(
+                corrupt_at(TOKENIZER_ID_OFFSET + 1, 1),
+                Err(DecompressError::Corrupt { byte_offset: 6 })
+            ),
+            "tokenizer_id, high byte: the offset names the field, not the byte"
+        );
+        // Bit 0 of `flags` is a defined flag (`has_sidecar`), so the header decodes
+        // and is then refused by the metadata gate rather than as a reserved bit.
+        assert!(
+            matches!(
+                corrupt_at(FLAGS_OFFSET, 0b0001),
+                Err(DecompressError::Corrupt { byte_offset: 8 })
+            ),
+            "flags"
+        );
+    }
+
+    /// A payload that does not match the length the header claims is an integrity
+    /// failure, not framing corruption. `decompress_fails_closed_on_corruption` only
+    /// asserts `is_err()`, so the variant was free to change.
+    #[test]
+    fn a_payload_length_mismatch_is_reported_as_a_checksum_mismatch() {
+        let c = compressor();
+        let art = c.compress(homogeneous_array(6).as_bytes()).unwrap();
+
+        let truncated = &art.archive[..art.archive.len() - 1];
+        assert!(
+            matches!(
+                c.decompress(truncated),
+                Err(DecompressError::ChecksumMismatch)
+            ),
+            "a short payload"
+        );
+
+        let mut overlong = art.archive.clone();
+        overlong.push(0x00);
+        assert!(
+            matches!(
+                c.decompress(&overlong),
+                Err(DecompressError::ChecksumMismatch)
+            ),
+            "a long payload"
+        );
+    }
+
+    /// `Stats` is never built with a zero denominator by `compress` (empty input is
+    /// invalid JSON), so the ratio guards and their orientation were unreachable from
+    /// the public path and completely untested. Build `Stats` directly.
+    #[test]
+    fn ratios_are_after_over_before_and_report_no_change_on_a_zero_denominator() {
+        let mk = |bytes_before, bytes_after, est_before, est_after| Stats {
+            bytes_before,
+            bytes_after,
+            est_tokens_before: est_before,
+            est_tokens_after: est_after,
+            encoder: EncoderId::PASSTHROUGH,
+            tokenizer_id: 0,
+            min_saving_bps: 0,
+            fidelity: Fidelity::Lossless,
+        };
+        // Orientation: after / before, so a real saving reads below 1.
+        assert_eq!(mk(100, 25, 80, 20).byte_ratio(), 0.25);
+        assert_eq!(mk(100, 25, 80, 20).token_ratio(), 0.25);
+        // A zero denominator reports "no change" — never 0.0, which would read as a
+        // 100% saving, and never NaN.
+        assert_eq!(mk(0, 0, 0, 0).byte_ratio(), 1.0);
+        assert_eq!(mk(0, 0, 0, 0).token_ratio(), 1.0);
+    }
+
+    /// The passthrough rendering is the input *plus* an 18-byte sentinel line, so the
+    /// text handed to the model is strictly more expensive than the input — while
+    /// `Stats` reports both ratios as exactly `1.0`.
+    ///
+    /// This test pins that measurement; it takes no position on whether the reporting
+    /// should change, which is an open product decision.
+    #[test]
+    fn passthrough_framing_costs_tokens_the_stats_do_not_report() {
+        let c = compressor();
+        let est = HeuristicEstimator;
+        // The framing costs 10 estimated tokens, or 11 when the input opens with
+        // exactly one whitespace character: it merges with the sentinel's trailing
+        // newline into a two-character run, which the heuristic charges where a
+        // one-character run is free.
+        for (input, extra_tokens) in [("{\"a\":1}", 10), (" {\"a\":1}", 11)] {
+            let art = c.compress(input.as_bytes()).unwrap();
+            assert_eq!(art.stats.encoder, EncoderId::PASSTHROUGH, "{input:?}");
+            assert_eq!(
+                art.rendering,
+                format!("\u{27E6}tkfd:v1:raw\u{27E7}\n{input}")
+            );
+            // What Stats says: nothing changed.
+            assert_eq!(art.stats.est_tokens_after, art.stats.est_tokens_before);
+            assert_eq!(art.stats.token_ratio(), 1.0);
+            assert_eq!(art.stats.byte_ratio(), 1.0);
+            // What the model is actually charged.
+            assert_eq!(art.rendering.len(), input.len() + 18, "{input:?}");
+            assert_eq!(
+                est.estimate(&art.rendering),
+                est.estimate(input) + extra_tokens,
+                "framing cost for {input:?}"
+            );
+        }
     }
 }

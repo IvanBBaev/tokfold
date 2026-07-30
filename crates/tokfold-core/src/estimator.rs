@@ -20,6 +20,15 @@
 //! `tokenizer_id` field (`format` field 4) is always `0`, and the decoder fails closed
 //! on any non-zero value — so ids `2..=4` name cost models that never appear in a valid
 //! archive.
+//!
+//! # Declared calibration error
+//!
+//! An estimator may also declare how far it is known to over-claim, via
+//! [`TokenEstimator::over_claim_bps`]. The candidate rule then refuses a rendering
+//! whose claimed saving does not clear that margin. The mechanism is what lets an
+//! inexact cost model state its own error budget once instead of every caller
+//! re-deriving it; see [`ConfigBuilder::min_saving_bps`](crate::ConfigBuilder::min_saving_bps)
+//! to override it per configuration.
 
 /// A cost model that rates text in tokens for encoder selection.
 ///
@@ -40,6 +49,28 @@ pub trait TokenEstimator: Send + Sync {
     /// field 4) is always `0` in v0.0.1. Ids are frozen in [`ids`]; a given estimator
     /// must always return the same one.
     fn tokenizer_id(&self) -> u16;
+
+    /// This model's declared one-sided over-claim, in basis points of the input
+    /// estimate. Default: `0`.
+    ///
+    /// The candidate rule keeps a rendering only when its *claimed* saving exceeds
+    /// this margin, so an estimator that is known to rate its own output too cheaply
+    /// can state that error budget once rather than leaving every caller to re-derive
+    /// it. `0` means "no declared error": the gate then keeps any strict token win,
+    /// which is exactly the v0.0.1 rule. An estimator that is exact for its target
+    /// tokenizer should keep the default — its comparison is already sound.
+    ///
+    /// The value is empirical, never a proof. A margin shrinks the band of inputs
+    /// where a mis-estimate can keep a token-losing rendering; with an inexact model
+    /// it cannot close that band, because the calibration error is two-sided and a
+    /// margin large enough to cover the worst over-claim also discards genuine wins.
+    ///
+    /// This is a *provided* method on purpose. [`TokenEstimator`] is the crate's only
+    /// public extension point, so a required method would break every third-party
+    /// implementor on upgrade.
+    fn over_claim_bps(&self) -> u32 {
+        0
+    }
 }
 
 /// Frozen ids naming the cost model that drove selection (§3), reported in
@@ -145,19 +176,53 @@ const fn non_ascii_run_tokens(bytes: usize) -> usize {
 /// The constants above are FORMAT-AFFECTING (see their docs): they influence
 /// encoder selection, so they are named and frozen rather than inlined.
 ///
-/// **Accuracy.** Within roughly ±10% of `cl100k` on the target corpus — structured
-/// tool output, JSON and logs — which is what the engine compresses. Natural-language
-/// prose is over-counted (short words each round up to a whole token, whereas
-/// `cl100k` packs many common words together with their leading space), so a prose
-/// estimate is an upper bound, not a match. Absolute accuracy is secondary anyway:
-/// selection compares two estimates from this same model, and any consistent bias
-/// cancels.
+/// **Accuracy.** This is a *relative* signal, not an absolute token count, and the
+/// two must not be confused. Measured against `cl100k` on the reference corpus of
+/// agent tool output, it over-counts absolute tokens substantially: roughly +67%
+/// size-weighted over the rows the engine compresses, and between +30% and +127% per
+/// fixture. Every short run rounds up to a whole token, and natural-language prose is
+/// over-counted the most, because `cl100k` packs many common words together with
+/// their leading space.
+///
+/// What the engine relies on is narrower and does hold: selection compares two
+/// estimates produced by this same model, so most of that bias cancels. The residual
+/// one-sided error on the reported *saving* is measured and stated as
+/// [`HeuristicEstimator::MEASURED_OVER_CLAIM_BPS`]. Do not use `estimate` anywhere an
+/// absolute token count matters — bill, budget or context-window arithmetic — use an
+/// exact tokenizer for that.
 ///
 /// **Purity.** `estimate` reads only its argument and uses only integer arithmetic,
 /// so it is deterministic across processes — a precondition for prompt-cache-safe
 /// output (§10).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct HeuristicEstimator;
+
+impl HeuristicEstimator {
+    /// The measured one-sided over-claim of this model against real BPE tokenizers,
+    /// in basis points: **600 bps = 6.00 percentage points**.
+    ///
+    /// Derived from the reference corpus of agent tool output (11 fixtures, real
+    /// `cl100k_base` and `o200k_base` counts): size-weighted over the rows this
+    /// engine actually compresses, the heuristic claims a 32.4% saving where the real
+    /// saving is 26.4%. The floor is not a modelling accident — sweeping the cost
+    /// constants bottoms out near +2.8 pp, so the residual is structural.
+    ///
+    /// The error is **two-sided**, which is why this is not simply "the" safe margin:
+    /// per-fixture it ranges from −20.8 pp (the heuristic under-claims, i.e. a real
+    /// win is discarded) to +18.9 pp. 600 bps is the aggregate over-claim, chosen
+    /// because it rejects no fixture in the reference corpus while removing the
+    /// decisions most at risk of flipping sign, and because E1's claimed saving on
+    /// canonical 4-space-indented JSON asymptotes near 11.2% — a margin much above
+    /// this would retire that encoder on the commonest real shape.
+    ///
+    /// Not applied by default: [`TokenEstimator::over_claim_bps`] returns `0` for
+    /// this estimator so v0.0.1 selection is byte-for-byte unchanged. Opt in with
+    /// [`ConfigBuilder::min_saving_bps`](crate::ConfigBuilder::min_saving_bps).
+    /// Making it the default would change which encoder wins for a band of inputs
+    /// and is therefore a format change, not a tuning tweak — see the FORMAT-AFFECTING
+    /// note on the cost constants above.
+    pub const MEASURED_OVER_CLAIM_BPS: u32 = 600;
+}
 
 impl TokenEstimator for HeuristicEstimator {
     fn estimate(&self, text: &str) -> usize {
@@ -376,6 +441,35 @@ mod tests {
     }
 
     #[test]
+    fn shipped_estimators_declare_no_margin() {
+        // Both v0.0.1 estimators leave the candidate rule at "any strict token win",
+        // so selection is unchanged from the release that predates the margin.
+        // `HeuristicEstimator::MEASURED_OVER_CLAIM_BPS` records the measurement
+        // without applying it; promoting it to the default is a format change.
+        assert_eq!(HeuristicEstimator.over_claim_bps(), 0);
+        assert_eq!(ByteLenEstimator.over_claim_bps(), 0);
+        assert_eq!(HeuristicEstimator::MEASURED_OVER_CLAIM_BPS, 600);
+    }
+
+    #[test]
+    fn a_third_party_estimator_compiles_without_the_new_method() {
+        // `TokenEstimator` is the crate's only public extension point, so
+        // `over_claim_bps` must stay a *provided* method: an implementor written
+        // against v0.0.1 has to keep compiling and inherit the zero default. This
+        // test exists to fail at compile time if it is ever made required.
+        struct Minimal;
+        impl TokenEstimator for Minimal {
+            fn estimate(&self, text: &str) -> usize {
+                text.len()
+            }
+            fn tokenizer_id(&self) -> u16 {
+                ids::BYTE_LEN
+            }
+        }
+        assert_eq!(Minimal.over_claim_bps(), 0);
+    }
+
+    #[test]
     fn concatenation_is_monotone() {
         let estimator = HeuristicEstimator;
         // Includes a pair whose boundary merges two alphanumeric runs
@@ -427,6 +521,94 @@ mod tests {
             est <= len / 2,
             "estimate {est} implausibly high for {len} bytes"
         );
+    }
+
+    /// Exact-value pins for every rule in [`HeuristicEstimator::estimate`].
+    ///
+    /// The cost constants are FORMAT-AFFECTING: they decide which encoder wins, so a
+    /// silent recalibration is a format change. Yet before this table no test in the
+    /// workspace pinned a single estimate — `ascii_prose_lands_in_a_sane_band` only
+    /// bounds one string to `len/6 ..= len/2`, a band wide enough that any constant
+    /// could be nudged, either `div_ceil` turned into a truncating divide, or a
+    /// mid-loop run flush deleted, without a test going red.
+    ///
+    /// Each row is hand-computed from the documented model and names the rule it
+    /// pins. A row that changes is a deliberate format decision, not a tuning tweak.
+    #[test]
+    fn estimate_pins_every_cost_rule_to_an_exact_value() {
+        let e = HeuristicEstimator;
+        let cases: &[(&str, usize, &str)] = &[
+            ("", 0, "empty input costs nothing"),
+            // Alphanumeric runs: ceil(len * 10 / 37).
+            ("a", 1, "a one-character run still costs a whole token"),
+            ("abcd", 2, "ceil(40/37) = 2"),
+            (
+                "abcdefg",
+                2,
+                "ceil(70/37) = 2; a wider tenths scale would say 3",
+            ),
+            (
+                "abcdefghijklmno",
+                5,
+                "ceil(150/37) = 5; 3.8 chars per token would say 4",
+            ),
+            // Whitespace runs: charged one token only from length 2 up.
+            ("a b", 2, "a single space between words is free"),
+            (
+                "a  b",
+                3,
+                "a two-character whitespace run costs exactly one token",
+            ),
+            (
+                "a  ",
+                2,
+                "a trailing whitespace run is flushed after the loop",
+            ),
+            // ASCII, neither alphanumeric nor whitespace: one token each.
+            (
+                "{}",
+                2,
+                "each punctuation character costs exactly one token",
+            ),
+            (
+                "\u{0}\u{0}",
+                2,
+                "every non-alphanumeric, non-whitespace ASCII byte is punctuation, \
+                 control characters included",
+            ),
+            ("  ,", 2, "punctuation flushes a pending whitespace run"),
+            // Non-ASCII runs: ceil(bytes / 2), counted in bytes, not characters.
+            (
+                "\u{e9}\u{e9}\u{e9}",
+                3,
+                "three 2-byte characters are ceil(6/2); they are not an alphanumeric run",
+            ),
+            ("\u{20ac}", 2, "a 3-byte character is ceil(3/2) = 2, not 1"),
+            (
+                "\u{a0}",
+                1,
+                "U+00A0 is Unicode whitespace but not ASCII whitespace, so it is \
+                 charged as non-ASCII bytes",
+            ),
+            (
+                "a\u{e9}",
+                2,
+                "a trailing non-ASCII run is flushed after the loop",
+            ),
+            (
+                "\u{e9}a",
+                2,
+                "an alphanumeric character flushes the pending non-ASCII run",
+            ),
+            (
+                "\u{e9} a",
+                2,
+                "a whitespace character flushes the pending non-ASCII run",
+            ),
+        ];
+        for (input, expected, why) in cases {
+            assert_eq!(e.estimate(input), *expected, "estimate({input:?}): {why}");
+        }
     }
 
     #[test]

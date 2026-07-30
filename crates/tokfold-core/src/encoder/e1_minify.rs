@@ -151,9 +151,11 @@ fn emit_string(lexeme: &str, out: &mut String) {
 /// Re-emit a JSON string lexeme with canonical escapes.
 ///
 /// Redundant escapes are unwound (`\/` -> `/`, `\u0041` -> `A`), surrogate pairs are
-/// folded into their scalar, control characters use the shortest legal escape, and
-/// lone surrogates are copied verbatim. On any unexpected shape the lexeme is copied
-/// verbatim rather than risk corrupting a value.
+/// folded into their scalar, and control characters use the shortest legal escape.
+///
+/// A string that contains **any** lone surrogate escape is exempt: equality spec §4
+/// compares such a string by its raw body bytes, so no part of it may be rewritten.
+/// The whole lexeme is then copied verbatim, as it is on any unexpected shape.
 fn canonicalize(lexeme: &str, out: &mut String) {
     let bytes = lexeme.as_bytes();
     let inner = match lexeme.get(1..lexeme.len().saturating_sub(1)) {
@@ -167,6 +169,16 @@ fn canonicalize(lexeme: &str, out: &mut String) {
             return;
         }
     };
+
+    if has_lone_surrogate(inner) {
+        // Equality spec §4 compares any string containing a lone surrogate by its
+        // *raw body bytes*, because such a string cannot be unescaped to UTF-8.
+        // Canonicalizing anything inside it -- folding a valid pair that appears
+        // elsewhere in the same string, or unwinding `\/` -- can therefore make two
+        // section-4-distinct documents render identically. Copy the lexeme verbatim.
+        out.push_str(lexeme);
+        return;
+    }
 
     out.push('"');
     let ib = inner.as_bytes();
@@ -193,6 +205,47 @@ fn canonicalize(lexeme: &str, out: &mut String) {
         }
     }
     out.push('"');
+}
+
+/// Whether the string body `inner` contains a `\uXXXX` escape for an *unpaired*
+/// surrogate.
+///
+/// Walks escapes exactly the way [`canonicalize`] does, so a `\\` immediately before
+/// a `u` is never mistaken for a `\u` escape and a well-formed surrogate pair is
+/// consumed whole rather than reported as two lone halves.
+fn has_lone_surrogate(inner: &str) -> bool {
+    let ib = inner.as_bytes();
+    let mut i = 0usize;
+    while let Some(&b) = ib.get(i) {
+        if b != b'\\' {
+            // A literal byte: skip the whole UTF-8 scalar it leads.
+            i = i.saturating_add(if b < 0x80 { 1 } else { utf8_len(b) });
+            continue;
+        }
+        match ib.get(i + 1) {
+            // Only `\u` can carry a surrogate; every other escape is two bytes.
+            Some(b'u') => {}
+            Some(_) => {
+                i = i.saturating_add(2);
+                continue;
+            }
+            // Unreachable for a parser-validated lexeme; advance to stay finite.
+            None => return false,
+        }
+        let Some(cp) = read_hex4(ib, i + 2) else {
+            // Unreachable: the parser guarantees four hex digits.
+            i = i.saturating_add(2);
+            continue;
+        };
+        if combine_surrogate_pair(cp, ib, i).is_some() {
+            i = i.saturating_add(12);
+        } else if is_surrogate(cp) {
+            return true;
+        } else {
+            i = i.saturating_add(6);
+        }
+    }
+    false
 }
 
 /// Canonicalize the escape at `i` (where `ib[i] == b'\\'`). Returns the next index.

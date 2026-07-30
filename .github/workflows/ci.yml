@@ -7,12 +7,21 @@
 # red result there does not block a merge (see `continue-on-error` below).
 # Windows is deliberately absent until the `mcp` subcommand is real.
 #
-# Third-party action pins: Swatinem/rust-cache@v2 is fixed by the project spec.
-# actions/checkout and taiki-e/install-action were left unpinned by the spec;
-# the chosen major-version tags are noted at their call sites. The Rust toolchain
-# is installed via the runner's preinstalled rustup rather than a third-party
-# action, which keeps one fewer dependency to pin and lets `rustup override`
-# cleanly beat the repo's rust-toolchain.toml on the MSRV leg.
+# Every cargo invocation passes `--locked`: CI must fail when the committed
+# Cargo.lock no longer matches the manifests, instead of silently resolving a
+# fresh graph that nobody has reviewed or audited.
+#
+# Third-party action pins: every third-party action is pinned to a full commit
+# SHA, with the human-readable tag in a trailing comment. A tag (`@v4`) is a
+# mutable ref -- whoever controls the action repo can repoint it at new code that
+# then runs with this workflow's token. The SHA is immutable, so an update is a
+# reviewable diff. Bump the SHA and the comment together. Installed tools
+# (cargo-deny, cargo-audit) are version-pinned for the same reason: an
+# unqualified `tool: cargo-deny` installs whatever is newest at run time, so the
+# policy this repo is checked against could change without a commit here.
+# The Rust toolchain is installed via the runner's preinstalled rustup rather
+# than a third-party action, which keeps one fewer dependency to pin and lets
+# `rustup override` cleanly beat the repo's rust-toolchain.toml on the MSRV leg.
 
 name: ci
 
@@ -24,7 +33,21 @@ on:
     # Weekly re-scan (Mondays 06:00 UTC). A PR-only audit misses advisories that
     # are published *after* code has already shipped; this job re-checks the
     # released tree against a fresh advisory database. See the `audit` job.
+    #
+    # LIMITATION (GitHub platform behaviour, not something this file can undo):
+    # GitHub disables `schedule` triggers automatically after 60 days without
+    # repository activity, and only emails the repo owner. On a low-traffic repo
+    # the weekly audit therefore stops silently. Two mitigations:
+    #   1. `workflow_dispatch` below -- the audit can always be run by hand
+    #      (`gh workflow run ci.yml`), which is also how you confirm it still
+    #      works after a quiet period.
+    #   2. If the schedule has been disabled, re-enable it with
+    #      `gh workflow enable ci.yml` (or the Actions tab); pushing a commit
+    #      alone does not restore a disabled schedule.
     - cron: "0 6 * * 1"
+  # Manual trigger: runs the full matrix *and* the audit job. Kept as the
+  # escape hatch for the 60-day schedule auto-disable described above.
+  workflow_dispatch:
 
 # Cancel superseded runs on the same ref so a burst of pushes does not queue up.
 # The event name is part of the key on purpose: a scheduled run carries the default
@@ -44,7 +67,7 @@ env:
 
 jobs:
   test:
-    # Push/PR only; the scheduled trigger drives the `audit` job instead.
+    # Push/PR/manual; the scheduled trigger drives the `audit` job instead.
     if: github.event_name != 'schedule'
     name: test (${{ matrix.os }}, ${{ matrix.toolchain }})
     runs-on: ${{ matrix.os }}
@@ -60,13 +83,13 @@ jobs:
           - os: ubuntu-latest
             toolchain: stable
             required: true
-            flags: ""
+            flags: "--locked"
             features: "--all-features"
           # Signal-only: catches platform-specific breakage.
           - os: macos-latest
             toolchain: stable
             required: false
-            flags: ""
+            flags: "--locked"
             features: "--all-features"
           # Signal-only: MSRV guard. `--locked` proves the committed Cargo.lock
           # still resolves under the minimum supported Rust version. Default
@@ -79,9 +102,7 @@ jobs:
             features: ""
     steps:
       - name: Checkout
-        # actions/checkout: spec left the version open; v4 chosen as the current
-        # major.
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install Rust ${{ matrix.toolchain }}
         # Uses the runner's preinstalled rustup. `override set` makes cargo use
@@ -93,7 +114,7 @@ jobs:
           rustc --version
 
       - name: Cache cargo build artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       # rustfmt and clippy are toolchain-version-sensitive: their lint sets drift
       # between releases (lints get added, renamed, or deprecated). Running
@@ -107,54 +128,88 @@ jobs:
 
       - name: Clippy
         if: matrix.required
-        run: cargo clippy --all-targets --all-features ${{ matrix.flags }} -- -D warnings
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
 
-      # PROPTEST_CASES=1024 raises the property suite from its local default of 32
-      # to the strength the module docs promise for CI; the tests read this env var
-      # themselves, so an unset local run stays at 32.
+      # PROPTEST_CASES is read by `tests/roundtrip.rs::config()`, which defaults to
+      # 32 so a local `cargo test` stays fast. Without this variable CI ran the
+      # same 32 cases the developer machine does -- 32x fewer than the suite's own
+      # module docs claim -- so the property suite was far weaker in the one place
+      # it is meant to be strongest. Raising it here (not in the code default) keeps
+      # the local loop quick while the gating leg actually searches.
       - name: Test
         env:
           PROPTEST_CASES: "1024"
         run: cargo test --workspace ${{ matrix.features }} ${{ matrix.flags }}
+
+      # rustdoc is a third compiler front end with its own lint set (broken
+      # intra-doc links, invalid rustdoc attributes), none of which `cargo test`
+      # or `cargo clippy` can see. `--all-features` documents the optional
+      # `tiktoken` items too, so a link into them cannot rot unnoticed. Same
+      # toolchain-drift argument as rustfmt/clippy: required leg only.
+      #
+      # `--cfg docsrs` is deliberately NOT passed here even though
+      # [package.metadata.docs.rs] sets it. That cfg enables
+      # `#![feature(doc_cfg)]` in tokfold-core, and a `#![feature]` attribute is a
+      # hard error off nightly -- docs.rs builds on nightly, this leg is stable.
+      # Mirroring the flag would fail the build for a reason unrelated to the docs.
+      - name: Docs (rustdoc)
+        if: matrix.required
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --workspace --all-features --no-deps --locked
 
       # cargo-deny and the publish dry-run are platform- and toolchain-independent,
       # so they run once on the required leg only. cargo-deny needs the advisory
       # database, which the runner fetches over the network.
       - name: Install cargo-deny
         if: matrix.required
-        # taiki-e/install-action: spec left the version open; v2 chosen as the
-        # current major. Installs a prebuilt binary (no from-source compile).
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2
         with:
-          tool: cargo-deny
+          # Version-pinned: cargo-deny's config schema and default lint levels
+          # change between releases, so an unpinned install can turn a green
+          # policy red (or the reverse) with no commit in this repo.
+          tool: cargo-deny@0.20.2
 
       - name: Supply-chain policy (cargo-deny)
         if: matrix.required
         run: cargo deny check
 
-      - name: Packaging dry-run
+      # Packaging must be checked for *every* publishable crate: a manifest can
+      # be unpublishable (missing README, a path dependency without a version,
+      # an excluded file the build needs) in a way nothing else in CI notices.
+      # `--workspace` packages all three crates and verifies each against the
+      # just-packaged copies of its workspace dependencies, which is why this is
+      # stable-only -- multi-package `cargo publish` needs a recent cargo, and
+      # the MSRV leg's 1.85 cargo does not have it.
+      - name: Packaging dry-run (all crates)
         if: matrix.required
-        run: cargo publish --dry-run -p tokfold-core ${{ matrix.flags }}
+        run: cargo publish --dry-run --workspace --locked
 
   audit:
-    # Scheduled-only companion to CI: re-audits already-shipped code weekly.
-    if: github.event_name == 'schedule'
+    # Scheduled (and manual) companion to CI: re-audits already-shipped code.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     name: audit (weekly)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install Rust stable
+        # Deliberately unpinned: an advisory re-scan should run on the current
+        # stable toolchain, and no compiled artifact of this job is shipped.
         run: |
           rustup toolchain install stable --profile minimal
           rustup override set stable
 
       - name: Install cargo-audit
-        # taiki-e/install-action: version chosen as noted above.
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2
         with:
-          tool: cargo-audit
+          # Version-pinned like cargo-deny above. The *advisory database* is
+          # still fetched fresh on every run -- that is the moving part this job
+          # exists for; the tool binary is not.
+          tool: cargo-audit@0.22.2
 
       - name: Audit dependencies
+        # cargo-audit reads the committed Cargo.lock directly; it has no
+        # `--locked` flag of its own (that is a cargo-resolver option).
         run: cargo audit
