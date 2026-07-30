@@ -184,14 +184,16 @@ impl Default for ConfigBuilder {
     }
 }
 
-/// The frozen wire id of the encoder that produced a rendering.
+/// The frozen id of the encoder that produced a rendering.
 ///
 /// Exposed in [`Stats`] so callers can attribute a result to an encoder without the
 /// sealed [`Encoder`](crate::encoder) enum leaking into the public API.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EncoderId(
-    /// The wire id: `0` = passthrough, `1` = E1 minify, `2` = E2 tabular.
+    /// The frozen id: `0` = passthrough, `1` = E1 minify, `2` = E2 tabular. Reported
+    /// out-of-band via [`Stats::encoder`]; v0.0.1's compressor always records
+    /// `encoder_id = 0` in the archive header, since the archive is a passthrough blob.
     pub u8,
 );
 
@@ -214,7 +216,8 @@ pub struct Stats {
     pub est_tokens_after: usize,
     /// Which encoder shaped the rendering.
     pub encoder: EncoderId,
-    /// Id of the estimator that drove selection (`format` field 4).
+    /// Id of the estimator that drove selection. Reported here only; the archive
+    /// header's `tokenizer_id` is always `0` in v0.0.1 (selection is out-of-band).
     pub tokenizer_id: u16,
     /// Fidelity of the reconstruction. Always [`Fidelity::Lossless`] in v0.0.1.
     pub fidelity: Fidelity,

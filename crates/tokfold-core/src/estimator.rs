@@ -14,9 +14,11 @@
 //!   [`ByteLenEstimator`], which exists only as a reference point and is never the
 //!   default.
 //!
-//! The chosen estimator's [`TokenEstimator::tokenizer_id`] is written into the
-//! archive header (`format` field 4) so a decoder records which cost model selected
-//! the encoding.
+//! The chosen estimator's [`TokenEstimator::tokenizer_id`] is reported out-of-band on
+//! [`Stats`](crate::Stats), *not* written to the wire. The recovery archive is always a
+//! passthrough blob whose header `tokenizer_id` is fixed at `0` in v0.0.1, and
+//! [`decompress`](crate::Compressor::decompress) rejects any other value as `Corrupt`.
+//! The id records which cost model drove *selection*, never how to decode.
 
 /// A cost model that rates text in tokens for encoder selection.
 ///
@@ -29,16 +31,21 @@ pub trait TokenEstimator: Send + Sync {
     /// Estimate the token count of `text`. Pure: equal input yields equal output.
     fn estimate(&self, text: &str) -> usize;
 
-    /// Stable id written into the archive header (`format` field 4).
+    /// Stable id of this cost model, reported out-of-band on [`Stats`](crate::Stats).
     ///
-    /// Ids are frozen in [`ids`]; a given estimator must always return the same one.
+    /// It is never written to the archive header, which is fixed at `0` in v0.0.1; it
+    /// records only which model drove selection. Ids are frozen in [`ids`]; a given
+    /// estimator must always return the same one.
     fn tokenizer_id(&self) -> u16;
 }
 
-/// Frozen tokenizer ids for the header's `tokenizer_id` field (§3).
+/// Frozen ids for the `tokenizer_id` slot the wire format reserves (§3), reported
+/// out-of-band on [`Stats`](crate::Stats).
 ///
-/// Ids are part of the wire format: once shipped, a value's meaning never changes.
-/// Values `2..=4` are reserved names only — no implementation ships in v0.0.1.
+/// The slot exists in the header layout, but v0.0.1's compressor always writes `0`
+/// there and [`decompress`](crate::Compressor::decompress) rejects any other value as
+/// `Corrupt`; a shipped id's meaning is frozen regardless. Values `2..=4` are reserved
+/// names only — no implementation ships in v0.0.1.
 pub mod ids {
     /// [`super::HeuristicEstimator`] — the default cost model.
     pub const HEURISTIC: u16 = 0;

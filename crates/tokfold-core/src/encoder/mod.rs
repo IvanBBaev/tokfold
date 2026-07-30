@@ -34,8 +34,10 @@ mod e1_minify;
 mod e2_tabular;
 
 /// The sealed set of encoders. See the module docs for why this is an enum and not
-/// a public trait. Ids are frozen: they are written into the archive header's
-/// `encoder_id` field (§3) and must never be renumbered.
+/// a public trait. Ids are frozen (§3) and must never be renumbered; they identify the
+/// winning encoder out-of-band via `Stats.encoder` and the rendering's sentinel tag,
+/// not on the wire — v0.0.1 always records `encoder_id = 0` (passthrough) in the
+/// archive header.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Encoder {
     /// No transformation; the input is emitted verbatim behind a `raw` sentinel. id 0.
@@ -47,7 +49,9 @@ pub(crate) enum Encoder {
 }
 
 impl Encoder {
-    /// The frozen wire id written into the archive header's `encoder_id` field (§3).
+    /// The frozen id (§3) for this encoder. In v0.0.1 the compressor writes only
+    /// `encoder_id = 0` (passthrough) to the archive header; ids 1 and 2 identify the
+    /// rendering out-of-band via `Stats.encoder` and the sentinel tag, never on the wire.
     pub(crate) const fn id(self) -> u8 {
         match self {
             Self::Passthrough => 0,
