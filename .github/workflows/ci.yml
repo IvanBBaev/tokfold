@@ -27,8 +27,12 @@ on:
     - cron: "0 6 * * 1"
 
 # Cancel superseded runs on the same ref so a burst of pushes does not queue up.
+# The event name is part of the key on purpose: a scheduled run carries the default
+# branch ref, so a ref-only group would put the weekly audit and pushes to main in
+# the same bucket and let a push cancel the audit -- the one job whose entire value
+# is running on its own schedule against a fresh advisory database.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 # Least privilege: nothing here needs write access to the repo.
@@ -51,22 +55,28 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # The one required check.
+          # The one required check. `--all-features` also exercises the opt-in
+          # `tiktoken` estimator tests, which default features leave uncompiled.
           - os: ubuntu-latest
             toolchain: stable
             required: true
             flags: ""
+            features: "--all-features"
           # Signal-only: catches platform-specific breakage.
           - os: macos-latest
             toolchain: stable
             required: false
             flags: ""
+            features: "--all-features"
           # Signal-only: MSRV guard. `--locked` proves the committed Cargo.lock
-          # still resolves under the minimum supported Rust version.
+          # still resolves under the minimum supported Rust version. Default
+          # features only: this leg's contract is that the DEFAULT consumer build
+          # works on the MSRV, so it deliberately does not enable `tiktoken`.
           - os: ubuntu-latest
             toolchain: "1.85"
             required: false
             flags: "--locked"
+            features: ""
     steps:
       - name: Checkout
         # actions/checkout: spec left the version open; v4 chosen as the current
@@ -99,8 +109,13 @@ jobs:
         if: matrix.required
         run: cargo clippy --all-targets --all-features ${{ matrix.flags }} -- -D warnings
 
+      # PROPTEST_CASES=1024 raises the property suite from its local default of 32
+      # to the strength the module docs promise for CI; the tests read this env var
+      # themselves, so an unset local run stays at 32.
       - name: Test
-        run: cargo test --workspace ${{ matrix.flags }}
+        env:
+          PROPTEST_CASES: "1024"
+        run: cargo test --workspace ${{ matrix.features }} ${{ matrix.flags }}
 
       # cargo-deny and the publish dry-run are platform- and toolchain-independent,
       # so they run once on the required leg only. cargo-deny needs the advisory
@@ -118,6 +133,7 @@ jobs:
         run: cargo deny check
 
       - name: Packaging dry-run
+        if: matrix.required
         run: cargo publish --dry-run -p tokfold-core ${{ matrix.flags }}
 
   audit:
