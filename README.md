@@ -1,5 +1,7 @@
 # tokfold
 
+[![ci](https://github.com/IvanBBaev/tokfold/actions/workflows/ci.yml/badge.svg)](https://github.com/IvanBBaev/tokfold/actions/workflows/ci.yml)
+
 An embeddable Rust engine that **reversibly** compresses LLM agent context — tool
 outputs, JSON, logs — to cut token cost.
 
@@ -16,9 +18,13 @@ for the command line.
 
 - The public API is **unstable** and will change without deprecation windows.
 - **Not published** to any registry. There is no `cargo add tokfold`, no
-  crates.io page, no docs.rs page, and no CI badge, because none of those exist yet.
+  crates.io page and no docs.rs page, because none of those exist yet. The only
+  way to get the binary or the crate is to build from this repository. The one
+  badge above is the CI badge: the workflow in `.github/workflows/ci.yml` really
+  does run on every push and pull request, so that badge reflects a real result.
 - The engine crate is `tokfold-core`; the CLI binary is `tokfold`; the MCP
-  integration (`tokfold-mcp`) is an experimental stub.
+  integration (`tokfold-mcp`) serves the engine as tools over stdio and is
+  **experimental and unhardened** — it sees everything passed through it.
 
 This README describes what the project *is* and what it *refuses to claim*. It
 contains no benchmark numbers on purpose — see [Benchmarks](#benchmarks).
@@ -205,10 +211,13 @@ Present: the parser, the archive format, the token estimator, and the first
 encoders (passthrough, whitespace minification, shape-deduplicated tabular
 re-encoding). An opt-in, non-default `tiktoken` feature adds exact GPT tokenizer
 estimators (`cl100k_base`, `o200k_base`) for the do-no-harm gate; it embeds megabytes
-of BPE tables and is off by default, so it never changes the archive format. Reserved
-but **not implemented**: legend folding, Hugging Face tokenizer backends, language
-bindings, and any hardened MCP proxy. This is a skeleton; treat every part of it as
-subject to change.
+of BPE tables and is off by default, so it never changes the archive format. An
+experimental MCP server (`tokfold mcp`) exposes compress, decompress, and estimate as
+tools over stdio; it is unhardened and unaudited, and hardening it gates any launch.
+Reserved but **not implemented**: legend folding, Hugging Face tokenizer backends,
+language bindings, and the MCP *proxy* shape — an upstream connection and a
+content-addressed archive store, which needs its own threat model. This is a skeleton;
+treat every part of it as subject to change.
 
 ---
 
