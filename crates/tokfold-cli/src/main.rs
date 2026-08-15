@@ -10,15 +10,19 @@
 //!   any integrity error exits `3` and emits nothing.
 //! * `stats` — report what a compression pass would achieve, without emitting the
 //!   payload.
-//! * `mcp` — an experimental stub. It prints the crate's experimental notice and
-//!   exits non-zero; the proxy sits in the secrets path and is a separate,
-//!   launch-gating milestone (D4 step 1).
+//! * `mcp` — serve the engine as Model Context Protocol tools over stdio. It prints
+//!   the crate's experimental notice to stderr before serving anything: the server
+//!   sits in the secrets path and its hardening audit is a separate, launch-gating
+//!   milestone.
 //!
 //! Exit codes are normative: `0` success, `2` bad input (usage, I/O, or an input the
-//! compressor rejects on `stats`), `3` a corrupt or unrecoverable archive on `expand`,
-//! `69` the experimental `mcp` subcommand is unavailable in v0.0.1 (sysexits
-//! `EX_UNAVAILABLE`, so callers can tell "not implemented" from a real input error).
+//! compressor rejects on `stats`), `3` a corrupt or unrecoverable archive on `expand`.
 //! `anyhow` is confined to this binary; the library crates never depend on it.
+//!
+//! `mcp` exits `0` when the client closes the stream — on clean end-of-input and on a
+//! broken pipe alike, since a client that hangs up has ended the session rather than
+//! failed it. Until v0.0.1 it instead exited `69` unconditionally as an unimplemented
+//! stub; that code is gone now that the subcommand does something.
 
 #![forbid(unsafe_code)]
 
@@ -37,11 +41,6 @@ const EXIT_BAD_INPUT: u8 = 2;
 
 /// A corrupt or otherwise unrecoverable archive handed to `expand`.
 const EXIT_CORRUPT: u8 = 3;
-
-/// The experimental `mcp` subcommand, which is unavailable in v0.0.1. Distinct from
-/// `EXIT_BAD_INPUT` and `EXIT_CORRUPT` so callers can tell "not implemented" apart
-/// from a genuine input error (mirrors sysexits `EX_UNAVAILABLE`).
-const EXIT_MCP_UNAVAILABLE: u8 = 69;
 
 /// Left-hand column width for the aligned `stats` report.
 const STATS_LABEL_WIDTH: usize = 20;
@@ -65,7 +64,7 @@ fn run(cli: &Cli) -> Result<ExitCode> {
         Command::Compress(args) => cmd_compress(args),
         Command::Expand(args) => cmd_expand(args),
         Command::Stats(args) => cmd_stats(args),
-        Command::Mcp => Ok(cmd_mcp()),
+        Command::Mcp => cmd_mcp(),
     }
 }
 
@@ -136,16 +135,17 @@ fn cmd_stats(args: &StatsArgs) -> Result<ExitCode> {
     }
 }
 
-/// `mcp`: an experimental stub. Prints the notice before anything else and exits
-/// non-zero. No proxy is built: it would sit in the secrets path, and hardening it
-/// gates any public launch.
-fn cmd_mcp() -> ExitCode {
+/// `mcp`: serve the engine as MCP tools on stdin/stdout until the client hangs up.
+///
+/// The notice goes out before the transport starts, and to stderr, for two separate
+/// reasons: an operator who never reads further has still seen it, and stdout belongs
+/// entirely to the protocol — one JSON-RPC message per line, nothing else — so a
+/// friendly banner there would corrupt the very first exchange.
+fn cmd_mcp() -> Result<ExitCode> {
     eprintln!("{}", tokfold_mcp::EXPERIMENTAL_NOTICE);
-    eprintln!(
-        "tokfold: the `mcp` subcommand is not implemented in v0.0.1 (the stdio proxy \
-         is a separate, launch-gating milestone)"
-    );
-    ExitCode::from(EXIT_MCP_UNAVAILABLE)
+    let mut server = tokfold_mcp::Server::new();
+    tokfold_mcp::stdio::serve_stdio(&mut server).context("mcp: the stdio transport failed")?;
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Build a [`Config`] from the shared profile flag; all other knobs stay at their
@@ -224,8 +224,11 @@ fn format_stats(stats: &Stats) -> Result<String> {
     Ok(out)
 }
 
-/// Human-readable name for a frozen encoder id (§3), or `unknown` for a value this
-/// build does not recognize.
+/// Human-readable name for a frozen encoder id, or `unknown` for a value this build
+/// does not recognize.
+///
+/// The numbers are wire constants: an archive written by any build records the id it
+/// used, so a name may be added here but an existing pairing may never change.
 fn encoder_name(id: u8) -> &'static str {
     match id {
         0 => "passthrough",
@@ -235,8 +238,11 @@ fn encoder_name(id: u8) -> &'static str {
     }
 }
 
-/// Human-readable name for a frozen tokenizer id (§3), or `unknown` for a value this
-/// build does not recognize.
+/// Human-readable name for a frozen tokenizer id, or `unknown` for a value this build
+/// does not recognize.
+///
+/// Same rule as [`encoder_name`]: the ids are recorded in archives, so they are
+/// append-only.
 fn tokenizer_name(id: u16) -> &'static str {
     use tokfold_core::estimator::ids;
     match id {
@@ -258,7 +264,7 @@ struct Cli {
     command: Command,
 }
 
-/// The subcommand set. `mcp` is experimental and unimplemented in v0.0.1.
+/// The subcommand set. `mcp` is experimental: it works, but it is not hardened.
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Compress input to a token-reduced rendering (and an optional recovery archive).
@@ -267,7 +273,8 @@ enum Command {
     Expand(ExpandArgs),
     /// Report what a compression pass achieves, without emitting the payload.
     Stats(StatsArgs),
-    /// EXPERIMENTAL stdio proxy. Prints a warning and exits non-zero; not built yet.
+    /// EXPERIMENTAL Model Context Protocol server on stdio. Unhardened; not for
+    /// production secrets.
     Mcp,
 }
 
@@ -326,5 +333,74 @@ impl From<ProfileArg> for Profile {
             ProfileArg::Balanced => Self::Balanced,
             ProfileArg::Aggressive => Self::Aggressive,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Unit tests for the two id→name tables.
+    //!
+    //! Everything else in this binary is covered end to end from `tests/cli.rs`, which
+    //! is the better place to assert behaviour. These two tables are the exception:
+    //! they translate *frozen wire ids*, and `stats` can only ever print the ids the
+    //! shipped configuration produces. Nothing on the command line selects a token
+    //! estimator, so ids 1–4 have no end-to-end path at all — yet an archive written by
+    //! another build (or by a library caller that swapped the estimator) can carry them,
+    //! which is precisely why the pairings must not drift. Testing them here is the only
+    //! way to pin them.
+
+    use super::{encoder_name, tokenizer_name};
+    use tokfold_core::estimator::ids;
+
+    #[test]
+    fn encoder_ids_keep_their_frozen_names() {
+        assert_eq!(encoder_name(0), "passthrough");
+        assert_eq!(encoder_name(1), "e1-minify");
+        assert_eq!(encoder_name(2), "e2-tabular");
+    }
+
+    #[test]
+    fn an_unknown_encoder_id_is_named_rather_than_hidden() {
+        // A build that meets an archive from a newer writer must still print a report;
+        // the id itself is always shown alongside, so nothing is lost.
+        assert_eq!(encoder_name(3), "unknown");
+        assert_eq!(encoder_name(u8::MAX), "unknown");
+    }
+
+    #[test]
+    fn tokenizer_ids_keep_their_frozen_names() {
+        assert_eq!(tokenizer_name(ids::HEURISTIC), "heuristic");
+        assert_eq!(tokenizer_name(ids::BYTE_LEN), "byte-length");
+        assert_eq!(tokenizer_name(ids::CL100K_BASE), "cl100k-base");
+        assert_eq!(tokenizer_name(ids::O200K_BASE), "o200k-base");
+        assert_eq!(tokenizer_name(ids::HUGGING_FACE), "hugging-face");
+    }
+
+    #[test]
+    fn the_five_tokenizer_ids_are_five_distinct_names() {
+        // A copy-paste that pointed two ids at one name would still satisfy the table
+        // test above if the expectation were copied with it.
+        let names = [
+            tokenizer_name(ids::HEURISTIC),
+            tokenizer_name(ids::BYTE_LEN),
+            tokenizer_name(ids::CL100K_BASE),
+            tokenizer_name(ids::O200K_BASE),
+            tokenizer_name(ids::HUGGING_FACE),
+        ];
+        let mut sorted = names;
+        sorted.sort_unstable();
+        let mut deduped = sorted.to_vec();
+        deduped.dedup();
+        assert_eq!(
+            deduped.len(),
+            names.len(),
+            "duplicate tokenizer name: {names:?}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_tokenizer_id_is_named_rather_than_hidden() {
+        assert_eq!(tokenizer_name(5), "unknown");
+        assert_eq!(tokenizer_name(u16::MAX), "unknown");
     }
 }
