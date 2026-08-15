@@ -1,12 +1,48 @@
 # Continuous integration for the tokfold workspace.
 #
-# Required check: only the (ubuntu-latest, stable) leg is meant to gate merges.
-# In branch protection, require the status check named exactly
-#   "test (ubuntu-latest, stable)".
-# The macOS and MSRV legs run for signal but are marked continue-on-error, so a
-# red result there does not block a merge (see `continue-on-error` below).
-# Windows is deliberately absent until the `mcp` subcommand is real.
+# ---------------------------------------------------------------------------
+# Job layout, and why it looks like this
+# ---------------------------------------------------------------------------
+# Every gating check used to live inside the `test` matrix behind
+# `if: matrix.required`. That made each gate depend on a *data value*: one
+# renamed, mistyped or forgotten `required:` key and rustfmt, clippy, rustdoc,
+# cargo-deny and the packaging check would all silently skip while the job still
+# reported green. A gate that can disappear without anyone noticing is not a
+# gate, so each one now has its own top-level job that runs unconditionally:
 #
+#   actionlint  -- lints this workflow itself, so a malformed job fails loudly
+#                  instead of being skipped or ignored by the runner
+#   fmt         -- cargo fmt --all --check
+#   clippy      -- cargo clippy --all-targets --all-features -D warnings
+#   docs        -- cargo doc with RUSTDOCFLAGS=-D warnings
+#   doc-drift   -- the shipped-docs-vs-code test in tokfold-mcp
+#   deny        -- cargo deny check (supply-chain policy)
+#   package     -- cargo publish --dry-run --workspace
+#
+# The `test` matrix is now only about *running the test suite* on each
+# OS/toolchain/feature combination. Its `required` key still exists, but its only
+# remaining job is to decide `continue-on-error`; no gate hangs off it.
+#
+# NOTE ON `package`: it runs `cargo publish --dry-run`, which packages and
+# verifies but uploads nothing. Nothing in this workflow authenticates to, or
+# publishes on, any package registry.
+#
+# In branch protection, require these status checks (exact names):
+#   actionlint
+#   fmt
+#   clippy
+#   docs
+#   doc-drift
+#   deny
+#   package
+#   test (ubuntu-stable-all-features)
+#   test (ubuntu-1.85-default-features)
+#   test (ubuntu-1.85-all-features)
+# The macOS and Windows legs run for signal only and are `continue-on-error`.
+#
+# ---------------------------------------------------------------------------
+# Conventions that apply to every job below
+# ---------------------------------------------------------------------------
 # Every cargo invocation passes `--locked`: CI must fail when the committed
 # Cargo.lock no longer matches the manifests, instead of silently resolving a
 # fresh graph that nobody has reviewed or audited.
@@ -16,12 +52,17 @@
 # mutable ref -- whoever controls the action repo can repoint it at new code that
 # then runs with this workflow's token. The SHA is immutable, so an update is a
 # reviewable diff. Bump the SHA and the comment together. Installed tools
-# (cargo-deny, cargo-audit) are version-pinned for the same reason: an
-# unqualified `tool: cargo-deny` installs whatever is newest at run time, so the
-# policy this repo is checked against could change without a commit here.
+# (cargo-deny, cargo-audit, actionlint) are version-pinned for the same reason:
+# an unqualified install pulls whatever is newest at run time, so the policy this
+# repo is checked against could change without a commit here.
 # The Rust toolchain is installed via the runner's preinstalled rustup rather
 # than a third-party action, which keeps one fewer dependency to pin and lets
-# `rustup override` cleanly beat the repo's rust-toolchain.toml on the MSRV leg.
+# `rustup override` cleanly beat the repo's rust-toolchain.toml on the MSRV legs.
+#
+# `persist-credentials: false` on every checkout: the default leaves the job's
+# GITHUB_TOKEN written into .git/config for the rest of the run, where any build
+# script, proc macro or test in this workspace's dependency tree could read it.
+# Nothing here pushes, so nothing here needs the credential to survive checkout.
 
 name: ci
 
@@ -30,33 +71,40 @@ on:
     branches: [main]
   pull_request:
   schedule:
-    # Weekly re-scan (Mondays 06:00 UTC). A PR-only audit misses advisories that
-    # are published *after* code has already shipped; this job re-checks the
-    # released tree against a fresh advisory database. See the `audit` job.
+    # Weekly slot (Mondays 06:00 UTC). Three jobs hang off it -- `audit`,
+    # `release-test` and `nightly` -- because all three answer questions that a
+    # per-PR run cannot: a PR-only audit misses advisories published *after* code
+    # shipped, and the release profile and the nightly toolchain are moving
+    # targets that no PR changes.
     #
     # LIMITATION (GitHub platform behaviour, not something this file can undo):
     # GitHub disables `schedule` triggers automatically after 60 days without
     # repository activity, and only emails the repo owner. On a low-traffic repo
-    # the weekly audit therefore stops silently. Two mitigations:
-    #   1. `workflow_dispatch` below -- the audit can always be run by hand
-    #      (`gh workflow run ci.yml`), which is also how you confirm it still
-    #      works after a quiet period.
+    # the weekly jobs therefore stop silently. Two mitigations:
+    #   1. `workflow_dispatch` below -- the weekly jobs can always be run by hand
+    #      (`gh workflow run ci.yml`), which is also how you confirm they still
+    #      work after a quiet period.
     #   2. If the schedule has been disabled, re-enable it with
     #      `gh workflow enable ci.yml` (or the Actions tab); pushing a commit
     #      alone does not restore a disabled schedule.
     - cron: "0 6 * * 1"
-  # Manual trigger: runs the full matrix *and* the audit job. Kept as the
-  # escape hatch for the 60-day schedule auto-disable described above.
+  # Manual trigger: runs the full matrix, every gate, *and* the weekly jobs.
+  # Kept as the escape hatch for the 60-day schedule auto-disable described above.
   workflow_dispatch:
 
-# Cancel superseded runs on the same ref so a burst of pushes does not queue up.
-# The event name is part of the key on purpose: a scheduled run carries the default
-# branch ref, so a ref-only group would put the weekly audit and pushes to main in
-# the same bucket and let a push cancel the audit -- the one job whose entire value
-# is running on its own schedule against a fresh advisory database.
+# Cancel superseded runs, but only for pull requests. A PR gets a new run on
+# every push and only the newest one is interesting, so cancelling is free. A
+# push to a branch is not the same: cancelling mid-run destroys the only CI
+# result that commit will ever have, and on a long-lived branch a burst of
+# pushes would leave a trail of commits whose status is "cancelled" rather than
+# pass or fail. Scheduled and manual runs are never cancelled either -- the
+# weekly jobs exist precisely to run on their own schedule against a fresh
+# advisory database and a fresh nightly.
+# The event name stays in the group key so a scheduled run (which carries the
+# default branch ref) can never share a bucket with a push to main.
 concurrency:
   group: ci-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Least privilege: nothing here needs write access to the repo.
 permissions:
@@ -66,103 +114,185 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  test:
-    # Push/PR/manual; the scheduled trigger drives the `audit` job instead.
+  # ---------------------------------------------------------------------------
+  # Gates. Each of these is a separate, unconditional job on purpose -- see the
+  # header. None of them may grow an `if:` that depends on matrix data.
+  # ---------------------------------------------------------------------------
+
+  actionlint:
+    # Lints this workflow file (and any sibling under .github/workflows). Without
+    # it a typo in a job key does not fail: GitHub either ignores the unknown key
+    # or skips the job, and the run still goes green. Since the gates above are
+    # now *jobs*, a workflow-level typo is exactly the failure mode that would
+    # bring back the silent-skip problem this restructure removed.
     if: github.event_name != 'schedule'
-    name: test (${{ matrix.os }}, ${{ matrix.toolchain }})
-    runs-on: ${{ matrix.os }}
-    # Non-required legs report for signal but must not block a merge.
-    continue-on-error: ${{ !matrix.required }}
-    strategy:
-      # Report every leg's result; do not abort siblings on the first failure.
-      fail-fast: false
-      matrix:
-        include:
-          # The one required check. `--all-features` also exercises the opt-in
-          # `tiktoken` estimator tests, which default features leave uncompiled.
-          - os: ubuntu-latest
-            toolchain: stable
-            required: true
-            flags: "--locked"
-            features: "--all-features"
-          # Signal-only: catches platform-specific breakage.
-          - os: macos-latest
-            toolchain: stable
-            required: false
-            flags: "--locked"
-            features: "--all-features"
-          # Signal-only: MSRV guard. `--locked` proves the committed Cargo.lock
-          # still resolves under the minimum supported Rust version. Default
-          # features only: this leg's contract is that the DEFAULT consumer build
-          # works on the MSRV, so it deliberately does not enable `tiktoken`.
-          - os: ubuntu-latest
-            toolchain: "1.85"
-            required: false
-            flags: "--locked"
-            features: ""
+    name: actionlint
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
-      - name: Install Rust ${{ matrix.toolchain }}
-        # Uses the runner's preinstalled rustup. `override set` makes cargo use
-        # this toolchain in the repo dir, overriding rust-toolchain.toml (needed
-        # so the MSRV leg actually runs on 1.85 rather than stable).
+      - name: Install actionlint
+        # Installed from the pinned release tarball and checksum-verified rather
+        # than through a third-party action or the upstream `curl | bash`
+        # installer: this is one binary, and a version plus a SHA-256 is a
+        # stronger pin than either. To bump: change the version in both places
+        # and take the new hash from
+        # https://github.com/rhysd/actionlint/releases/download/vX.Y.Z/actionlint_X.Y.Z_checksums.txt
+        env:
+          ACTIONLINT_VERSION: "1.7.12"
+          ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
         run: |
-          rustup toolchain install ${{ matrix.toolchain }} --profile minimal -c rustfmt -c clippy
-          rustup override set ${{ matrix.toolchain }}
+          set -euo pipefail
+          url="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl --proto '=https' --tlsv1.2 -sSfL "$url" -o actionlint.tar.gz
+          echo "${ACTIONLINT_SHA256}  actionlint.tar.gz" | sha256sum --check --strict -
+          tar -xzf actionlint.tar.gz actionlint
+          ./actionlint --version
+
+      - name: Lint workflows
+        # shellcheck and pyflakes are preinstalled on ubuntu-latest, so actionlint
+        # also checks the bodies of every `run:` block here.
+        run: ./actionlint -color
+
+  fmt:
+    if: github.event_name != 'schedule'
+    name: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust stable
+        # rustfmt and clippy are toolchain-version-sensitive: their rule sets
+        # drift between releases (rules get added, renamed, or deprecated).
+        # Running them on the MSRV toolchain turns that drift into spurious
+        # failures unrelated to the MSRV contract, so both gates are stable-only.
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal -c rustfmt
+          rustup override set stable
+          rustc --version
+
+      - name: Format check
+        run: cargo fmt --all --check
+
+  clippy:
+    if: github.event_name != 'schedule'
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust stable
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal -c clippy
+          rustup override set stable
           rustc --version
 
       - name: Cache cargo build artifacts
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
-      # rustfmt and clippy are toolchain-version-sensitive: their lint sets drift
-      # between releases (lints get added, renamed, or deprecated). Running
-      # `clippy -D warnings` on the MSRV or macOS legs turns that drift into
-      # spurious failures unrelated to the MSRV contract. Pin both to the single
-      # required stable leg; the other legs prove the code compiles and its tests
-      # pass on their toolchain/OS, which is the guarantee they actually exist for.
-      - name: Format check
-        if: matrix.required
-        run: cargo fmt --all --check
-
       - name: Clippy
-        if: matrix.required
+        # `--all-targets` so tests and benches are linted too: the workspace sets
+        # clippy pedantic+nursery to warn, and `-D warnings` makes every one of
+        # those a hard error wherever it appears.
         run: cargo clippy --all-targets --all-features --locked -- -D warnings
 
-      # PROPTEST_CASES is read by `tests/roundtrip.rs::config()`, which defaults to
-      # 32 so a local `cargo test` stays fast. Without this variable CI ran the
-      # same 32 cases the developer machine does -- 32x fewer than the suite's own
-      # module docs claim -- so the property suite was far weaker in the one place
-      # it is meant to be strongest. Raising it here (not in the code default) keeps
-      # the local loop quick while the gating leg actually searches.
-      - name: Test
-        env:
-          PROPTEST_CASES: "1024"
-        run: cargo test --workspace ${{ matrix.features }} ${{ matrix.flags }}
+  docs:
+    if: github.event_name != 'schedule'
+    name: docs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust stable
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal
+          rustup override set stable
+          rustc --version
+
+      - name: Cache cargo build artifacts
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       # rustdoc is a third compiler front end with its own lint set (broken
       # intra-doc links, invalid rustdoc attributes), none of which `cargo test`
       # or `cargo clippy` can see. `--all-features` documents the optional
-      # `tiktoken` items too, so a link into them cannot rot unnoticed. Same
-      # toolchain-drift argument as rustfmt/clippy: required leg only.
+      # `tiktoken` items too, so a link into them cannot rot unnoticed.
       #
       # `--cfg docsrs` is deliberately NOT passed here even though
       # [package.metadata.docs.rs] sets it. That cfg enables
       # `#![feature(doc_cfg)]` in tokfold-core, and a `#![feature]` attribute is a
-      # hard error off nightly -- docs.rs builds on nightly, this leg is stable.
+      # hard error off nightly -- docs.rs builds on nightly, this job is stable.
       # Mirroring the flag would fail the build for a reason unrelated to the docs.
       - name: Docs (rustdoc)
-        if: matrix.required
         env:
           RUSTDOCFLAGS: "-D warnings"
         run: cargo doc --workspace --all-features --no-deps --locked
 
-      # cargo-deny and the publish dry-run are platform- and toolchain-independent,
-      # so they run once on the required leg only. cargo-deny needs the advisory
-      # database, which the runner fetches over the network.
+  doc-drift:
+    # Documentation drift gate. rustdoc above only checks that the docs *compile*
+    # and that their links resolve; it cannot notice that a shipped README or
+    # crate-level doc comment promises behaviour the code no longer has.
+    # `tokfold-mcp/tests/experimental_notice.rs` asserts those claims against the
+    # code and the shipped files, so it is the cheap, honest form of that check --
+    # a normal test, no extra tooling, no new dependency.
+    #
+    # It is its own job (rather than only riding along inside `cargo test
+    # --workspace`) so that "the docs lie" is a distinct, nameable red check that
+    # branch protection can require and that nobody has to dig a log to find.
+    if: github.event_name != 'schedule'
+    name: doc-drift
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust stable
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal
+          rustup override set stable
+          rustc --version
+
+      - name: Cache cargo build artifacts
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Docs vs. code (experimental notice)
+        run: cargo test -p tokfold-mcp --test experimental_notice --all-features --locked
+
+  deny:
+    if: github.event_name != 'schedule'
+    name: deny
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust stable
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal
+          rustup override set stable
+          rustc --version
+
       - name: Install cargo-deny
-        if: matrix.required
         uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2
         with:
           # Version-pinned: cargo-deny's config schema and default lint levels
@@ -171,19 +301,169 @@ jobs:
           tool: cargo-deny@0.20.2
 
       - name: Supply-chain policy (cargo-deny)
-        if: matrix.required
+        # Needs the advisory database, which the runner fetches over the network.
         run: cargo deny check
+
+  package:
+    if: github.event_name != 'schedule'
+    name: package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust stable
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal
+          rustup override set stable
+          rustc --version
+
+      - name: Cache cargo build artifacts
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       # Packaging must be checked for *every* publishable crate: a manifest can
       # be unpublishable (missing README, a path dependency without a version,
       # an excluded file the build needs) in a way nothing else in CI notices.
       # `--workspace` packages all three crates and verifies each against the
       # just-packaged copies of its workspace dependencies, which is why this is
-      # stable-only -- multi-package `cargo publish` needs a recent cargo, and
-      # the MSRV leg's 1.85 cargo does not have it.
-      - name: Packaging dry-run (all crates)
-        if: matrix.required
-        run: cargo publish --dry-run --workspace --locked
+      # stable-only: 1.85's cargo resolves each crate against the registry alone,
+      # so it fails on tokfold-mcp with "no matching package named tokfold-core"
+      # -- a real limitation of that cargo, not of these manifests.
+      #
+      # `cargo package`, not `cargo publish --dry-run`. The two run the same
+      # checks -- build the tarballs, then compile each one against the packaged
+      # copies of its workspace dependencies -- but `cargo package` has no upload
+      # path at all, while `publish --dry-run` is a real release command one
+      # dropped flag away from being a release. Publication on any registry is
+      # deliberately held for this project, so the gate that runs on every push
+      # is the one that cannot publish even if it is edited wrongly.
+      - name: Packaging check (all crates)
+        run: cargo package --workspace --locked
+
+  # ---------------------------------------------------------------------------
+  # Test matrix. Runs the suite; gates nothing.
+  # ---------------------------------------------------------------------------
+
+  test:
+    # Push/PR/manual; the scheduled trigger drives the weekly jobs instead.
+    if: github.event_name != 'schedule'
+    name: test (${{ matrix.leg }})
+    runs-on: ${{ matrix.os }}
+    # Non-required legs report for signal but must not block a merge. This is the
+    # *only* thing `matrix.required` controls now.
+    continue-on-error: ${{ !matrix.required }}
+    strategy:
+      # Report every leg's result; do not abort siblings on the first failure.
+      fail-fast: false
+      matrix:
+        include:
+          # `--all-features` also exercises the opt-in `tiktoken` estimator
+          # tests, which default features leave uncompiled.
+          - leg: ubuntu-stable-all-features
+            os: ubuntu-latest
+            toolchain: stable
+            required: true
+            features: "--all-features"
+          # Signal-only: catches platform-specific breakage.
+          - leg: macos-stable-all-features
+            os: macos-latest
+            toolchain: stable
+            required: false
+            features: "--all-features"
+          # Signal-only: the `mcp` stdio transport strips CRLF and writes bare LF,
+          # and Windows is the only platform where getting that wrong shows up.
+          - leg: windows-stable-all-features
+            os: windows-latest
+            toolchain: stable
+            required: false
+            features: "--all-features"
+          # MSRV guard, default features: this leg's contract is that the DEFAULT
+          # consumer build works on the minimum supported Rust version, so it
+          # deliberately does not enable `tiktoken`. `--locked` also proves the
+          # committed Cargo.lock still resolves under 1.85.
+          #
+          # REQUIRED, and it did not use to be. Two reasons it has to block:
+          # (1) the 1.85 floor is a live constraint, not a theoretical one --
+          #     `tokfold-mcp/src/stdio.rs` documents a construct written the long
+          #     way purely because let-chains need 1.88. Code that quietly needs a
+          #     newer rustc is written all the time; a non-blocking leg means it
+          #     is merged and only discovered by a user on 1.85.
+          # (2) this is the only place the DEFAULT feature set is tested at all.
+          #     Everything else here runs `--all-features`, so before this leg
+          #     blocked, a break confined to the default build could reach main
+          #     with every required check green.
+          - leg: ubuntu-1.85-default-features
+            os: ubuntu-latest
+            toolchain: "1.85"
+            required: true
+            features: ""
+          # MSRV guard, all features. The `tiktoken` feature pulls in
+          # tiktoken-rs and its regex/fancy-regex tree, none of which had ever
+          # been compiled on 1.85: every `--all-features` leg ran on stable and
+          # the only MSRV leg ran on default features, so the opt-in estimator's
+          # MSRV claim was never tested by anything.
+          - leg: ubuntu-1.85-all-features
+            os: ubuntu-latest
+            toolchain: "1.85"
+            required: true
+            features: "--all-features"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust ${{ matrix.toolchain }}
+        # Uses the runner's preinstalled rustup. `override set` makes cargo use
+        # this toolchain in the repo dir, overriding rust-toolchain.toml (needed
+        # so the MSRV legs actually run on 1.85 rather than stable).
+        run: |
+          rustup toolchain install ${{ matrix.toolchain }} --profile minimal
+          rustup override set ${{ matrix.toolchain }}
+          rustc --version
+
+      - name: Cache cargo build artifacts
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      # PROPTEST_CASES is read by proptest itself, so it raises every property
+      # suite in the workspace: `tokfold-core/tests/roundtrip.rs`, whose `config()`
+      # defaults to 32 so a local `cargo test` stays fast, and
+      # `tokfold-mcp/tests/properties.rs`, which takes proptest's own default.
+      # Without this variable CI ran the same handful of cases a developer machine
+      # does -- far fewer than the roundtrip suite's own module docs claim -- so the
+      # property tests were weakest in the one place they are meant to be strongest.
+      # Raising it here rather than in the code keeps the local loop quick while CI
+      # actually searches.
+      - name: Test
+        env:
+          PROPTEST_CASES: "1024"
+        run: cargo test --workspace ${{ matrix.features }} --locked
+
+      # A proptest failure writes the failing seed to a `.proptest-regressions`
+      # file next to the test, and that file is the whole value of the run: with
+      # it the failure replays deterministically on any machine, without it a
+      # 1024-case CI search that found a one-in-a-thousand input is gone the
+      # moment the runner is torn down. The log only shows the shrunk value, not
+      # the seed. Uploading on failure keeps the reproducer.
+      - name: Upload proptest regression seeds
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          # One artifact per leg: v4 artifact names must be unique within a run.
+          name: proptest-regressions-${{ matrix.leg }}
+          path: "**/*.proptest-regressions"
+          # Checked-in seed files mean this normally matches something; `ignore`
+          # keeps a genuine no-match from adding a second, misleading annotation
+          # on top of the test failure that is the actual news.
+          if-no-files-found: ignore
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # Weekly jobs (schedule + manual). These answer questions no PR run can.
+  # ---------------------------------------------------------------------------
 
   audit:
     # Scheduled (and manual) companion to CI: re-audits already-shipped code.
@@ -193,11 +473,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Install Rust stable
         # Deliberately unpinned: an advisory re-scan should run on the current
         # stable toolchain, and no compiled artifact of this job is shipped.
         run: |
+          set -euo pipefail
           rustup toolchain install stable --profile minimal
           rustup override set stable
 
@@ -213,3 +496,92 @@ jobs:
         # cargo-audit reads the committed Cargo.lock directly; it has no
         # `--locked` flag of its own (that is a cargo-resolver option).
         run: cargo audit
+
+  release-test:
+    # The whole suite under the release profile. Every other test run in this
+    # file is a debug build, and debug and release are not the same program:
+    # debug builds panic on integer overflow while release wraps silently
+    # (`debug-assertions`/`overflow-checks` default on in dev, off in release),
+    # `debug_assert!` disappears, and optimisation can change how far a
+    # size/offset computation is reordered or folded. A compression engine is
+    # exactly the kind of code where a length arithmetic bug shows up as a panic
+    # in dev and as a wrong byte in release. Weekly rather than per-PR because a
+    # full optimised rebuild is slow and this class of bug is rare, not urgent.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    name: release-test (weekly)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust stable
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal
+          rustup override set stable
+          rustc --version
+
+      - name: Cache cargo build artifacts
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Test (release profile)
+        env:
+          PROPTEST_CASES: "1024"
+        run: cargo test --workspace --release --all-features --locked
+
+      - name: Upload proptest regression seeds
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: proptest-regressions-release
+          path: "**/*.proptest-regressions"
+          if-no-files-found: ignore
+          retention-days: 30
+
+  nightly:
+    # Weekly early-warning run on the nightly toolchain.
+    #
+    # This slot was considered for fuzzing and deliberately is not fuzzing: there
+    # is no `fuzz/` directory in this workspace, and `cargo fuzz` cannot run
+    # without one. A fuzz target is source code -- it has to be written, reviewed
+    # and maintained, and it belongs in a commit that adds `fuzz/`, not in a CI
+    # file that would otherwise be scheduling a command guaranteed to fail. If
+    # `fuzz/` is ever added, this is the job to extend.
+    #
+    # What nightly *can* check without new source is future breakage: nightly is
+    # the stable of a few months' time, so a compile error or a new lint here is
+    # advance notice. Both steps are `continue-on-error` and this job is not a
+    # required check -- nightly adds, renames and un-deprecates lints on its own
+    # schedule, and a red mark caused by upstream churn on a Monday morning is
+    # noise, not a defect in this repo.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    name: nightly (weekly, signal-only)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust nightly
+        run: |
+          set -euo pipefail
+          rustup toolchain install nightly --profile minimal -c clippy
+          rustup override set nightly
+          rustc --version
+
+      - name: Cache cargo build artifacts
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Test on nightly (release profile)
+        continue-on-error: true
+        env:
+          PROPTEST_CASES: "1024"
+        run: cargo test --workspace --release --all-features --locked
+
+      - name: Clippy on nightly
+        continue-on-error: true
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
