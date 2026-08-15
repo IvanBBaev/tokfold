@@ -3,8 +3,8 @@
 //! Re-emits the parsed tape with every insignificant byte removed: inter-token
 //! whitespace is stripped and indentation is normalized away, so a pretty-printed
 //! document collapses to a single compact line. The transformation is purely
-//! structural — it never folds, dedups or reorders — so the reversible contract
-//! (§4) holds trivially: object key order and duplicate keys are re-emitted in
+//! structural — it never folds, dedups or reorders — so the semantic-equality
+//! contract holds trivially: object key order and duplicate keys are re-emitted in
 //! source order, and number lexemes are copied byte-for-byte (`1.0` stays `1.0`,
 //! `1e3` stays `1e3`). String escapes are canonicalized (fidelity is
 //! *semantic*, not byte-identical), with two carve-outs below.
@@ -22,15 +22,23 @@
 //!
 //! # Carve-outs
 //!
-//! * **Protected lines survive verbatim.** A string whose lexeme matches
-//!   [`never_compress::is_protected`] (a compiler error, HTTP 4xx/5xx, `EACCES`, a
-//!   panic trace, a denial/security line) is copied byte-for-byte, escapes and all,
-//!   with its source position preserved. The only byte-changing step E1 applies to
-//!   a string is escape canonicalization, so skipping it is what keeps such content
-//!   exact (§5.2.1).
-//! * **Lone surrogates pass through raw.** A `\uXXXX` escape that is an unpaired
-//!   surrogate has no scalar value and cannot be emitted literally, so it is copied
-//!   verbatim rather than canonicalized.
+//! * **Protected strings survive verbatim.** The unit E1 protects is a JSON *string
+//!   lexeme*, not a line: [`never_compress::is_protected`] is applied to the whole
+//!   lexeme, quotes and escapes included, and on a hit that lexeme is copied
+//!   byte-for-byte, at its position in document order — E1 never folds, dedups or
+//!   reorders, so nothing else can move it. The table covers compiler errors, HTTP
+//!   4xx/5xx status lines, the `EACCES`/`EPERM`/`EROFS` errno symbols, panic and
+//!   stack-trace markers, `denied`/`unauthorized`/`forbidden` lines,
+//!   certificate-verification failures and `warning:`. The only byte-changing step E1
+//!   applies to a string is escape canonicalization, so skipping it is what keeps such
+//!   content exact. See [`emit_string`] for a known limitation: the match runs on the
+//!   *escaped* spelling.
+//! * **A string holding a lone surrogate passes through raw.** A `\uXXXX` escape that
+//!   is an unpaired surrogate has no scalar value and cannot be emitted literally.
+//!   The exemption is per *string*, not per escape: because semantic equality compares
+//!   such a string by its raw body bytes, the whole lexeme is copied verbatim as soon
+//!   as it contains one lone surrogate, so a foldable pair or a redundant `\/`
+//!   elsewhere in the same string is left alone too (see [`canonicalize`]).
 
 use crate::never_compress;
 use crate::tape::{NodeKind, Span, Tape};
@@ -139,6 +147,25 @@ fn span_str(input: &str, span: Span) -> Option<&str> {
 }
 
 /// Emit a string lexeme (quotes included): verbatim if protected, else canonicalized.
+///
+/// # Known limitation: the *escaped* spelling is what gets matched
+///
+/// [`never_compress::is_protected`] is a line-oriented literal-substring test, and what
+/// it receives here is the **raw JSON lexeme** — quotes, backslashes and all — not the
+/// unescaped text. A protected phrase written with `\u` escapes therefore evades the
+/// carve-out: `"error:"` matches, while `"\u0065rror:"` does not, though both decode to
+/// the same string. The escaped spelling is canonicalized like any other string instead
+/// of being copied byte-for-byte.
+///
+/// This is a *fidelity* gap and only that. Canonicalization preserves the string's
+/// meaning, so the escaped spelling still decodes to the same text, and the recovery
+/// archive stores the original bytes either way. [`never_compress`] is a fidelity
+/// safeguard — not a security control, not an injection filter — so what is missed here
+/// is the byte-for-byte carve-out, never a safety property.
+///
+/// It is left as-is deliberately: unescaping before matching would change which lexemes
+/// are copied verbatim, i.e. which bytes E1 emits, which makes it a format change rather
+/// than a local fix.
 fn emit_string(lexeme: &str, out: &mut String) {
     if never_compress::is_protected(lexeme).is_some() {
         // Protected content is reproduced byte-for-byte with position preserved.
@@ -153,7 +180,7 @@ fn emit_string(lexeme: &str, out: &mut String) {
 /// Redundant escapes are unwound (`\/` -> `/`, `\u0041` -> `A`), surrogate pairs are
 /// folded into their scalar, and control characters use the shortest legal escape.
 ///
-/// A string that contains **any** lone surrogate escape is exempt: equality spec §4
+/// A string that contains **any** lone surrogate escape is exempt: semantic equality
 /// compares such a string by its raw body bytes, so no part of it may be rewritten.
 /// The whole lexeme is then copied verbatim, as it is on any unexpected shape.
 fn canonicalize(lexeme: &str, out: &mut String) {
@@ -171,11 +198,11 @@ fn canonicalize(lexeme: &str, out: &mut String) {
     };
 
     if has_lone_surrogate(inner) {
-        // Equality spec §4 compares any string containing a lone surrogate by its
+        // Semantic equality compares any string containing a lone surrogate by its
         // *raw body bytes*, because such a string cannot be unescaped to UTF-8.
         // Canonicalizing anything inside it -- folding a valid pair that appears
         // elsewhere in the same string, or unwinding `\/` -- can therefore make two
-        // section-4-distinct documents render identically. Copy the lexeme verbatim.
+        // semantically distinct documents render identically. Copy the lexeme verbatim.
         out.push_str(lexeme);
         return;
     }
@@ -287,7 +314,13 @@ fn canonical_unicode(inner: &str, ib: &[u8], i: usize, out: &mut String) -> usiz
     }
 
     if is_surrogate(cp) {
-        // Any unpaired surrogate has no scalar value: copy the six raw bytes verbatim.
+        // Unreachable by construction: `canonicalize` returns early, copying the whole
+        // lexeme, whenever `has_lone_surrogate` holds, so no *unpaired* surrogate ever
+        // reaches this function -- and a *paired* one was already consumed by the branch
+        // above. Kept as a fail-safe rather than deleted: an unpaired surrogate has no
+        // scalar value, so the six raw bytes are the only lossless thing to emit, and
+        // dropping this arm would send it to `emit_scalar`, where `char::from_u32`
+        // returns `None` and the escape would be silently discarded.
         push_raw(inner, i, out);
     } else {
         emit_scalar(cp, out);
@@ -399,7 +432,7 @@ const fn utf8_len(lead: u8) -> usize {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use super::render;
+    use super::{canonical_escape, canonical_unicode, canonicalize, render};
     use crate::tape;
 
     fn mini(input: &str) -> String {
@@ -496,5 +529,136 @@ mod tests {
     fn top_level_scalar_and_string() {
         assert_eq!(mini("  42  "), "42");
         assert_eq!(mini("\"plain\""), "\"plain\"");
+    }
+
+    #[test]
+    fn literal_multi_byte_scalars_survive() {
+        // The lead byte alone decides how many bytes the scalar occupies, so a
+        // two-, three- and four-byte scalar must each be copied whole. Truncating
+        // one would emit mojibake or drop it entirely.
+        assert_eq!(mini("\"\u{e9}\""), "\"\u{e9}\""); // 2 bytes
+        assert_eq!(mini("\"\u{65e5}\""), "\"\u{65e5}\""); // 3 bytes
+        assert_eq!(mini("\"\u{1f600}\""), "\"\u{1f600}\""); // 4 bytes
+        assert_eq!(
+            mini("{\"k\u{e9}y\":\"a\u{65e5}b\u{1f600}c\"}"),
+            "{\"k\u{e9}y\":\"a\u{65e5}b\u{1f600}c\"}"
+        );
+    }
+
+    #[test]
+    fn control_escapes_stop_at_the_space_boundary() {
+        // 0x1F is the last control that needs an escape; 0x20 is a plain space.
+        assert_eq!(mini("\"\\u001f\""), "\"\\u001f\"");
+        assert_eq!(mini("\"\\u0020\""), "\" \"");
+        assert_eq!(mini("\"\\u0021\""), "\"!\"");
+    }
+
+    #[test]
+    fn escaped_backslash_shields_the_following_text() {
+        // The body is a literal `u0041`, not the letter `A`: consuming both bytes of
+        // the `\\` escape is what stops the rest from being re-read as an escape.
+        assert_eq!(mini("\"\\\\u0041\""), "\"\\\\u0041\"");
+        assert_eq!(mini("\"\\\\/\""), "\"\\\\/\"");
+    }
+
+    #[test]
+    fn lone_surrogate_exempts_the_rest_of_the_string() {
+        // The exemption is per string, not per escape: a redundant `\/` and a
+        // foldable `\u0041` in the same lexeme are left alone as well.
+        assert_eq!(mini("\"a\\/b\\udead\""), "\"a\\/b\\udead\"");
+        assert_eq!(mini("\"\\u0041\\udead\""), "\"\\u0041\\udead\"");
+    }
+
+    #[test]
+    fn surrogate_pair_folds_at_a_nonzero_offset() {
+        // The pair does not start at the first body byte, so folding must be located
+        // relative to the escape, not to the start of the string.
+        assert_eq!(mini("\"a\\uD83D\\uDE00b\""), "\"a\u{1f600}b\"");
+    }
+
+    #[test]
+    fn high_surrogate_followed_by_another_escape_is_not_a_pair() {
+        // A high surrogate is only half a pair unless a `\u` escape follows it. Here
+        // the next escape is `\n`, so the string holds a lone surrogate and is copied
+        // verbatim -- it must not be folded with the hex digits that come later.
+        assert_eq!(mini("\"\\uD83D\\ndc00\""), "\"\\uD83D\\ndc00\"");
+        assert_eq!(mini("\"\\uD83Ddc00\""), "\"\\uD83Ddc00\"");
+    }
+
+    #[test]
+    fn canonicalize_copies_an_unexpected_lexeme_verbatim() {
+        // `canonicalize` renders a *quoted* lexeme. Anything else -- a bare word, a
+        // half-quoted fragment, a single quote -- is copied byte for byte instead of
+        // being re-quoted around a body that was never there.
+        for lexeme in ["abc", "\"ab", "ab\"", "\"", "", "ab"] {
+            let mut out = String::new();
+            canonicalize(lexeme, &mut out);
+            assert_eq!(out, lexeme, "lexeme {lexeme:?} must be copied verbatim");
+        }
+    }
+
+    #[test]
+    fn each_short_escape_renders_its_own_canonical_form() {
+        // Every two-byte escape has its own canonical spelling and consumes both of
+        // its bytes. Asserted here rather than through `mini` because the fallback
+        // (copy the backslash, resume at the next byte) re-emits the very same bytes
+        // for most of these, so an end-to-end round trip cannot tell them apart.
+        const CASES: [(&str, &str); 8] = [
+            ("\\\"", "\\\""),
+            ("\\\\", "\\\\"),
+            ("\\/", "/"), // canonical: the solidus need not be escaped
+            ("\\b", "\\b"),
+            ("\\f", "\\f"),
+            ("\\n", "\\n"),
+            ("\\r", "\\r"),
+            ("\\t", "\\t"),
+        ];
+        for (input, expected) in CASES {
+            let mut out = String::new();
+            let next = canonical_escape(input, input.as_bytes(), 0, &mut out);
+            assert_eq!(out, expected, "escape {input:?} renders wrong");
+            assert_eq!(next, 2, "escape {input:?} must consume both bytes");
+        }
+    }
+
+    #[test]
+    fn unknown_escape_keeps_the_backslash_and_resumes_at_the_next_byte() {
+        // Defensive arm: a parser-validated lexeme never gets here. Nothing may be
+        // dropped, and the escaped byte must still be scanned.
+        let body = "x\\z";
+        let mut out = String::new();
+        let next = canonical_escape(body, body.as_bytes(), 1, &mut out);
+        assert_eq!(out, "\\");
+        assert_eq!(next, 2);
+
+        // A trailing backslash with nothing after it behaves the same.
+        let tail = "x\\";
+        let mut out = String::new();
+        let next = canonical_escape(tail, tail.as_bytes(), 1, &mut out);
+        assert_eq!(out, "\\");
+        assert_eq!(next, 2);
+    }
+
+    #[test]
+    fn truncated_unicode_escape_copies_the_prefix() {
+        // Defensive arm: fewer than four hex digits. The `\u` is kept and scanning
+        // resumes at the first byte after it, never inside the two copied bytes.
+        let body = "abc\\uZ";
+        let mut out = String::new();
+        let next = canonical_unicode(body, body.as_bytes(), 3, &mut out);
+        assert_eq!(out, "\\u");
+        assert_eq!(next, 5);
+    }
+
+    #[test]
+    fn unpaired_surrogate_escape_is_emitted_raw() {
+        // Fail-safe arm: `canonicalize` copies the whole lexeme before an unpaired
+        // surrogate can reach here, but if one did, its six bytes must be emitted as
+        // written (hex case included) instead of being silently discarded.
+        let body = "ab\\uDEAD";
+        let mut out = String::new();
+        let next = canonical_unicode(body, body.as_bytes(), 2, &mut out);
+        assert_eq!(out, "\\uDEAD");
+        assert_eq!(next, 8);
     }
 }

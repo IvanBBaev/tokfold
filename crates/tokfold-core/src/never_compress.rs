@@ -355,6 +355,14 @@ mod tests {
     use super::{
         LIST_VERSION, NeverCompressRule, contains_ascii_case_insensitive, is_protected, rules,
     };
+    use crate::encoder::{self, Encoder};
+    use crate::tape;
+
+    /// The E1 rendering of `input`, sentinel line included.
+    fn minified(input: &str) -> String {
+        let parsed = tape::parse(input, 512).unwrap();
+        encoder::render(Encoder::E1Minify, &parsed, input).unwrap()
+    }
 
     /// One realistic line per semantic class must be protected, and it must land
     /// in the expected class (guards both membership and table ordering).
@@ -396,6 +404,26 @@ mod tests {
         assert!(!contains_ascii_case_insensitive("", "x"));
         // A UTF-8 continuation byte must not fold into an ASCII letter.
         assert!(!contains_ascii_case_insensitive("é", "e"));
+    }
+
+    /// Window boundaries of the substring scan: the needle must be found in the
+    /// first window, in the last window, and when it spans the whole haystack; a
+    /// needle longer than the haystack is rejected before the scan starts.
+    ///
+    /// The *width* of the scan range is deliberately not asserted. Windows are taken
+    /// with `.get(..)`, which yields `None` past the end of the haystack, so
+    /// scanning beyond the last legal start costs time and changes no answer. That
+    /// makes widening the bound an equivalent mutation, and no honest test can kill
+    /// it.
+    #[test]
+    fn substring_scan_covers_both_window_boundaries() {
+        assert!(contains_ascii_case_insensitive("abcdef", "ABC")); // first window
+        assert!(contains_ascii_case_insensitive("abcdef", "DEF")); // last window
+        assert!(contains_ascii_case_insensitive("abc", "ABC")); // whole haystack
+        assert!(!contains_ascii_case_insensitive("abc", "abcd")); // needle too long
+        assert!(!contains_ascii_case_insensitive("abcdef", "efg")); // runs off the end
+        assert!(contains_ascii_case_insensitive("", "")); // empty needle
+        assert!(contains_ascii_case_insensitive("abc", ""));
     }
 
     /// Case-sensitive rules do not fold: `EACCES` is protected, `eacces` is not
@@ -452,5 +480,142 @@ mod tests {
             assert!(!literal.is_empty(), "empty literal in class {class:?}");
             assert!(!class.is_empty(), "empty class for literal {literal:?}");
         }
+    }
+
+    /// `rules()` must hand out the populated table, not an empty or detached slice.
+    ///
+    /// Every other test here reaches the table through `is_protected`, which reads
+    /// the static directly; the accessor is the only view auditors and downstream
+    /// tooling get, so its contents are pinned on their own. An empty table would
+    /// leave matching intact and silently hollow out every audit built on it.
+    #[test]
+    fn rules_exposes_the_populated_table() {
+        let table = rules();
+        assert!(!table.is_empty(), "the rule table must not be empty");
+
+        // Size per class. A bump here is a table edit and must be deliberate.
+        let expected_counts: &[(&str, usize)] = &[
+            ("compiler", 3),
+            ("http-status", 15),
+            ("errno", 3),
+            ("panic", 2),
+            ("stack-trace", 3),
+            ("denial", 1),
+            ("authz", 2),
+            ("certificate", 10),
+            ("warning", 1),
+        ];
+        for (class, count) in expected_counts {
+            assert_eq!(
+                table.iter().filter(|rule| rule.class == *class).count(),
+                *count,
+                "rule count changed for class {class:?}"
+            );
+        }
+        assert_eq!(
+            table.len(),
+            expected_counts.iter().map(|&(_, n)| n).sum::<usize>(),
+            "the table holds rules in a class this test does not know about"
+        );
+
+        // Each class occupies one contiguous run, in this order: the order is the
+        // documented tie-break when a line matches more than one rule.
+        let mut class_runs: Vec<&str> = table.iter().map(|rule| rule.class).collect();
+        class_runs.dedup();
+        assert_eq!(
+            class_runs,
+            [
+                "compiler",
+                "http-status",
+                "errno",
+                "panic",
+                "stack-trace",
+                "denial",
+                "authz",
+                "certificate",
+                "warning",
+            ]
+        );
+
+        // A representative literal from every class must actually be present.
+        for literal in [
+            "error[",
+            "404 Not Found",
+            "EACCES",
+            "panicked at",
+            "stack backtrace:",
+            "denied",
+            "unauthorized",
+            "x509: certificate",
+            "warning:",
+        ] {
+            assert!(
+                table.iter().any(|rule| rule.literal == literal),
+                "literal {literal:?} is missing from the table"
+            );
+        }
+
+        // Only the errno symbols are matched case-sensitively.
+        for rule in table {
+            assert_eq!(
+                rule.case_sensitive,
+                rule.class == "errno",
+                "case policy changed for literal {:?}",
+                rule.literal
+            );
+        }
+    }
+
+    /// Every literal in the table is reachable through `is_protected`, and every
+    /// rule `is_protected` returns is an element of the table `rules()` exposes.
+    ///
+    /// This is the tie between the accessor and the matcher: they must be the same
+    /// data, so an audit over `rules()` describes what actually gets protected.
+    #[test]
+    fn every_exposed_literal_is_matched_by_the_same_table() {
+        let table = rules();
+        assert!(!table.is_empty(), "the rule table must not be empty");
+        for rule in table {
+            let hit = is_protected(rule.literal);
+            assert!(
+                hit.is_some(),
+                "literal {:?} is in the table but matches nothing",
+                rule.literal
+            );
+            let found = hit.unwrap();
+            assert!(
+                table.iter().any(|candidate| std::ptr::eq(candidate, found)),
+                "matching {:?} returned a rule outside the exposed table",
+                rule.literal
+            );
+        }
+    }
+
+    /// End-to-end: the safeguard decides which bytes E1 emits.
+    ///
+    /// A protected string lexeme is copied byte-for-byte, so a redundant `\/`
+    /// escape survives it; the same lexeme without a protected literal is
+    /// canonicalized and the escape is unwound. Drop the carve-out and the two
+    /// renderings are spelled the same way.
+    #[test]
+    fn protected_lexeme_is_copied_verbatim_by_e1() {
+        let protected = "{\"m\":\"error[E0308] a\\/b\"}";
+        let plain = "{\"m\":\"ok a\\/b\"}";
+
+        // Precondition: matching is applied to the raw lexeme, quotes included.
+        assert!(is_protected("\"error[E0308] a\\/b\"").is_some());
+        assert!(is_protected("\"ok a\\/b\"").is_none());
+
+        let protected_out = minified(protected);
+        assert!(
+            protected_out.ends_with("{\"m\":\"error[E0308] a\\/b\"}"),
+            "protected value was rewritten: {protected_out}"
+        );
+
+        let plain_out = minified(plain);
+        assert!(
+            plain_out.ends_with("{\"m\":\"ok a/b\"}"),
+            "unprotected value was not canonicalized: {plain_out}"
+        );
     }
 }

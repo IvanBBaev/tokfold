@@ -32,7 +32,7 @@
 //!
 //! The same logical input yields byte-identical `rendering` and `archive` on every
 //! call and every build. Nothing here reads a clock, hashes with a per-process seed,
-//! or iterates a `std` `HashMap`, so the provider's prompt cache stays warm (§10).
+//! or iterates a `std` `HashMap`, so the provider's prompt cache stays warm.
 
 use std::sync::Arc;
 
@@ -76,7 +76,7 @@ const ORIGINAL_LEN_OFFSET: usize = FLAGS_OFFSET + 2;
 /// How aggressively [`compress`](Compressor::compress) is allowed to re-encode.
 ///
 /// A profile only selects which encoders may *compete* for the rendering; the
-/// candidate rule and the do-no-harm guarantee (§7) are unconditional, and archive
+/// candidate rule and the do-no-harm guarantee are unconditional, and archive
 /// reversibility never depends on the profile.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -167,7 +167,7 @@ impl ConfigBuilder {
     }
 
     /// Overrides the token cost model used by the candidate rule. Default:
-    /// [`HeuristicEstimator`]. Must be pure and deterministic (§10).
+    /// [`HeuristicEstimator`]. Must be pure and deterministic.
     #[must_use]
     pub fn estimator(mut self, estimator: Arc<dyn TokenEstimator>) -> Self {
         self.estimator = estimator;
@@ -1042,6 +1042,66 @@ mod tests {
         assert_eq!(aggressive.stats.encoder, EncoderId::E2_TABULAR);
         assert_eq!(aggressive.rendering, balanced.rendering);
         assert_eq!(aggressive.archive, balanced.archive);
+    }
+
+    /// `Config::builder()` is documented as "seeded with the defaults", so a
+    /// freshly built config must behave exactly like `Config::default()` — and the
+    /// seed must be the *documented* values, not merely self-consistent ones.
+    ///
+    /// The suite builds configs both ways all over the place but never states that
+    /// the two paths agree, and it never observes the shipped ceilings at all: only
+    /// deliberately shrunk ones (`max_input_bytes(4)`, `max_depth(3)`) are probed,
+    /// so the real 16 MiB / 512 defaults were unpinned.
+    #[test]
+    fn builder_seed_is_the_documented_default_config() {
+        let built = Compressor::new(Config::builder().build());
+        let defaulted = Compressor::new(Config::default());
+        for input in corpus() {
+            let a = built.compress(input.as_bytes()).unwrap();
+            let b = defaulted.compress(input.as_bytes()).unwrap();
+            assert_eq!(a.stats.encoder, b.stats.encoder, "encoder on {input:?}");
+            assert_eq!(a.rendering, b.rendering, "rendering on {input:?}");
+            assert_eq!(a.archive, b.archive, "archive on {input:?}");
+        }
+
+        // Seeded profile is Balanced, so E2 competes; Conservative would pick E1.
+        let table = homogeneous_array(12);
+        assert_eq!(
+            built.compress(table.as_bytes()).unwrap().stats.encoder,
+            EncoderId::E2_TABULAR,
+            "the default profile must offer the tabular encoder"
+        );
+
+        // Seeded byte ceiling is 16 MiB; the error reports the limit it applied.
+        let over = vec![b' '; (16 * 1024 * 1024) + 1];
+        let err = built.compress(&over).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                CompressError::InputTooLarge {
+                    size: 16_777_217,
+                    limit: 16_777_216
+                }
+            ),
+            "got {err:?}"
+        );
+
+        // Seeded depth ceiling is 512: 512 levels parse, 513 do not.
+        assert!(
+            built.compress(nested_arrays(512).as_bytes()).is_ok(),
+            "512 nested levels must be within the default ceiling"
+        );
+        let deep = built.compress(nested_arrays(513).as_bytes()).unwrap_err();
+        assert!(
+            matches!(
+                deep,
+                CompressError::DepthExceeded {
+                    depth: 513,
+                    limit: 512
+                }
+            ),
+            "got {deep:?}"
+        );
     }
 
     /// The associated constants are the only way a downstream crate can name an

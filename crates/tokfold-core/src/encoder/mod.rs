@@ -4,18 +4,17 @@
 //!
 //! `Encoder` is a `pub(crate)` enum, never a public trait. A third-party encoder
 //! could emit a rendering it cannot reversibly reconstruct, silently breaking the
-//! archive contract (§2.3), and its trait would freeze this module's internal
-//! interfaces into public API. The **only** public extension point in the crate is
-//! [`TokenEstimator`]: a caller may supply a cost
-//! model, not a codec. An encoder reaches callers solely as an id inside `Stats`
-//! (§7).
+//! archive contract that every artifact recovers the original bytes exactly, and its
+//! trait would freeze this module's internal interfaces into public API. The **only**
+//! public extension point in the crate is [`TokenEstimator`]: a caller may supply a
+//! cost model, not a codec. An encoder reaches callers solely as an id inside `Stats`.
 //!
-//! # The candidate rule (§7, §8.2)
+//! # The candidate rule
 //!
 //! Selection is a comparison, not a guess. For every enabled encoder `select`
 //! renders a candidate and keeps it only when the estimator rates it *strictly*
 //! below the original; the lowest estimate wins, ties broken by the lower encoder
-//! id for determinism (§10). If nothing wins the result is `Encoder::Passthrough`
+//! id for determinism. If nothing wins the result is `Encoder::Passthrough`
 //! at ratio 1.0 — "couldn't compress" is a statistic, never an error.
 //!
 //! This byte-blind rule is mandatory, not cosmetic: minification is **not**
@@ -34,24 +33,25 @@ mod e1_minify;
 mod e2_tabular;
 
 /// The sealed set of encoders. See the module docs for why this is an enum and not
-/// a public trait. Ids are frozen (§3) and must never be renumbered; they identify the
-/// winning encoder out-of-band via `Stats.encoder` and the rendering's sentinel tag,
-/// not on the wire — v0.0.1 always records `encoder_id = 0` (passthrough) in the
-/// archive header.
+/// a public trait. Ids are frozen once released and must never be renumbered; they
+/// identify the winning encoder out-of-band via `Stats.encoder` and the rendering's
+/// sentinel tag, not on the wire — v0.0.1 always records `encoder_id = 0`
+/// (passthrough) in the archive header.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Encoder {
     /// No transformation; the input is emitted verbatim behind a `raw` sentinel. id 0.
     Passthrough,
-    /// Token-aware JSON minification (§7). id 1.
+    /// Token-aware JSON minification. id 1.
     E1Minify,
-    /// Shape-deduplicated tabular re-encoding (§7). id 2.
+    /// Shape-deduplicated tabular re-encoding. id 2.
     E2Tabular,
 }
 
 impl Encoder {
-    /// The frozen id (§3) for this encoder. In v0.0.1 the compressor writes only
-    /// `encoder_id = 0` (passthrough) to the archive header; ids 1 and 2 identify the
-    /// rendering out-of-band via `Stats.encoder` and the sentinel tag, never on the wire.
+    /// The frozen id for this encoder; a released id never changes. In v0.0.1 the
+    /// compressor writes only `encoder_id = 0` (passthrough) to the archive header;
+    /// ids 1 and 2 identify the rendering out-of-band via `Stats.encoder` and the
+    /// sentinel tag, never on the wire.
     pub(crate) const fn id(self) -> u8 {
         match self {
             Self::Passthrough => 0,
@@ -60,7 +60,7 @@ impl Encoder {
         }
     }
 
-    /// The sentinel tag opening this encoder's rendering: `raw`, `min` or `tbl` (§7).
+    /// The sentinel tag opening this encoder's rendering: `raw`, `min` or `tbl`.
     const fn tag(self) -> &'static str {
         match self {
             Self::Passthrough => "raw",
@@ -130,10 +130,10 @@ pub(crate) struct Selection {
     pub est_tokens_after: usize,
 }
 
-/// Apply the candidate rule (§7, §8.2) and return the winning [`Selection`].
+/// Apply the candidate rule (see the module docs) and return the winning [`Selection`].
 ///
 /// `enabled` lists the encoders to try; [`Encoder::Passthrough`] is always the
-/// fallback and is skipped if present. Determinism is load-bearing (§10): the same
+/// fallback and is skipped if present. Determinism is load-bearing: the same
 /// inputs always yield the same selection, so the tie-break to the lower encoder id
 /// is part of the contract, not an implementation detail.
 ///
@@ -198,7 +198,7 @@ pub(crate) fn select(
 ///
 /// The comparison is cross-multiplied rather than divided so it stays exact integer
 /// arithmetic — a float ratio would reintroduce rounding into a decision that must be
-/// bit-deterministic (§10). `u64` keeps the product safe for the 16 MiB input ceiling
+/// bit-deterministic. `u64` keeps the product safe for the 16 MiB input ceiling
 /// on a 32-bit target: the largest factor is `est_before * 10_000`, and `est_before`
 /// cannot exceed the input's character count.
 const fn clears_margin(est_after: usize, est_before: usize, bps: u32) -> bool {
@@ -214,7 +214,7 @@ const BPS_SCALE: u64 = 10_000;
 
 /// Whether a candidate should replace the current best: strictly fewer estimated
 /// tokens, or an equal estimate broken by the lower encoder id. The id tie-break
-/// keeps selection deterministic across runs (§10), which is what preserves the
+/// keeps selection deterministic across runs, which is what preserves the
 /// provider's prompt cache.
 const fn prefers(new_est: usize, new_id: u8, best_est: usize, best_id: u8) -> bool {
     new_est < best_est || (new_est == best_est && new_id < best_id)

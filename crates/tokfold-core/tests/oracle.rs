@@ -20,7 +20,7 @@
 //! Independent JSON semantic-equality oracle for the `tokfold-core` test suite.
 //!
 //! `json_semantically_eq(a, b)` decides whether two JSON documents are equal under
-//! the reversibility contract frozen in `docs/ai/impl-spec-v0.1.md` §4:
+//! the crate's frozen reversibility contract, which this file states in full:
 //!
 //! * EQUAL requires the same tree shape; identical key order; duplicate keys
 //!   preserved identically in order; identical array order; **byte-identical number
@@ -41,8 +41,8 @@
 //! hand-built tricky pairs) and `tests/roundtrip.rs` use `json_semantically_eq`;
 //! `roundtrip.rs` pulls it in with `#[path = "oracle.rs"] mod oracle;`.
 
-/// A parsed JSON value, normalized so that `==` means exactly the equality spec §4
-/// mandates: order-preserving, duplicate-preserving, number lexemes compared
+/// A parsed JSON value, normalized so that `==` means exactly the equality the module
+/// docs state: order-preserving, duplicate-preserving, number lexemes compared
 /// byte-for-byte, strings compared post-unescape (or raw when lone surrogates make
 /// unescaping impossible).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,7 +61,7 @@ pub enum Value {
     Object(Vec<(Str, Value)>),
 }
 
-/// A parsed JSON string, normalized for the comparison spec §4 requires.
+/// A parsed JSON string, normalized for the comparison the module docs describe.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Str {
     /// Fully unescaped scalar text. Escape style and `\u` hex case are canonicalized
@@ -73,7 +73,8 @@ pub enum Str {
     Raw(String),
 }
 
-/// Decide whether two JSON documents are semantically equal per spec §4.
+/// Decide whether two JSON documents are semantically equal under the contract the
+/// module docs state.
 ///
 /// Returns `false` if either side is not a single well-formed JSON document (an
 /// invalid document is equal to nothing, not even itself). On valid input the
@@ -394,7 +395,7 @@ fn hex_val(c: char) -> u32 {
 }
 
 // ---------------------------------------------------------------------------
-// The oracle's own tests: hand-built tricky pairs. These pin the §4 rules the
+// The oracle's own tests: hand-built tricky pairs. These pin the equality rules the
 // oracle exists to enforce, independently of the compression engine.
 // ---------------------------------------------------------------------------
 

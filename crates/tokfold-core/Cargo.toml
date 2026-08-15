@@ -16,6 +16,21 @@ homepage.workspace = true
 # texts (cargo dereferences them into the .crate tarball), which keeps one copy
 # of each licence in the tree.
 readme = "README.md"
+documentation = "https://docs.rs/tokfold-core"
+# Ship an explicit allow list rather than letting `cargo package` sweep up
+# whatever happens to be sitting in the crate directory. Everything the crate
+# needs to build and to be tested from the tarball is named here; anything else
+# (editor droppings, scratch files, local benchmark corpora) is excluded by
+# omission. `tests/**/*` is deliberate: the proptest regression seeds only stop
+# regressions if they travel with the sources.
+include = [
+    "src/**/*",
+    "tests/**/*",
+    "README.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
+    "Cargo.toml",
+]
 
 [lints]
 workspace = true

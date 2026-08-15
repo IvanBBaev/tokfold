@@ -598,7 +598,7 @@ mod tests {
         clippy::too_many_lines
     )]
 
-    use super::{NodeKind, Span, Tape, parse};
+    use super::{NodeKind, Span, Tape, parse, u32_max_as_usize};
     use crate::error::CompressError;
 
     fn kinds(t: &Tape) -> Vec<NodeKind> {
@@ -683,6 +683,41 @@ mod tests {
                 NodeKind::ArrayEnd,
             ]
         );
+    }
+
+    // ---- container spans ----
+
+    #[test]
+    fn container_node_spans_cover_exactly_their_bracket_byte() {
+        let input = "[{}]";
+        let t = parse(input, 512).unwrap();
+        let spans: Vec<Span> = t.nodes().iter().map(|n| n.span).collect();
+        assert_eq!(
+            spans,
+            vec![
+                Span { start: 0, end: 1 }, // ArrayStart  "["
+                Span { start: 1, end: 2 }, // ObjectStart "{"
+                Span { start: 2, end: 3 }, // ObjectEnd   "}"
+                Span { start: 3, end: 4 }, // ArrayEnd    "]"
+            ]
+        );
+        let lexemes: Vec<&str> = t.nodes().iter().map(|n| lexeme(input, n.span)).collect();
+        assert_eq!(lexemes, vec!["[", "{", "}", "]"]);
+    }
+
+    #[test]
+    fn container_spans_track_whitespace_offsets() {
+        // Whitespace before each bracket moves both the start and the end offset,
+        // so the span is genuinely derived from the bracket's own position.
+        let input = "  [  ]  ";
+        let t = parse(input, 512).unwrap();
+        let spans: Vec<Span> = t.nodes().iter().map(|n| n.span).collect();
+        assert_eq!(
+            spans,
+            vec![Span { start: 2, end: 3 }, Span { start: 5, end: 6 }]
+        );
+        assert_eq!(lexeme(input, spans[0]), "[");
+        assert_eq!(lexeme(input, spans[1]), "]");
     }
 
     // ---- counts and ordering ----
@@ -1027,5 +1062,68 @@ mod tests {
         assert_invalid("{\"a\" 1}");
         assert_invalid("{\"a\":}");
         assert_invalid("{\"a\":,}");
+    }
+
+    #[test]
+    fn rejects_same_length_wrong_literals() {
+        // Every byte of a literal is compared, not just its length: these inputs
+        // are exactly as long as `null` / `true` / `false` but differ in one byte.
+        assert_invalid_at("nulx", 0);
+        assert_invalid_at("trux", 0);
+        assert_invalid_at("falsx", 0);
+        assert_invalid_at("nxll", 0);
+        assert_invalid_at("[nuxl]", 1);
+        assert_invalid_at("{\"a\":truX}", 5);
+    }
+
+    // ---- exact error offsets inside string escapes ----
+
+    #[test]
+    fn escape_error_offsets_are_exact() {
+        // Backslash at index 1 with nothing after it: the offset names the byte
+        // that is missing (2), not the backslash (1) and not the quote (0).
+        assert_invalid_at("\"\\", 2);
+        // Unknown escape letter: the offset names the letter at index 2.
+        assert_invalid_at("\"\\x\"", 2);
+        // Same shape one byte further in, so the offset cannot be a constant.
+        assert_invalid_at("\"a\\x\"", 3);
+    }
+
+    #[test]
+    fn unicode_escape_error_offsets_are_exact() {
+        // Backslash at 1, `u` at 2, one accepted hex digit at 3, then EOF: the
+        // offset names the first missing byte, index 4.
+        assert_invalid_at("\"\\uA", 4);
+        // Same, but the byte at index 4 is present and is not a hex digit.
+        assert_invalid_at("\"\\uAz\"", 4);
+        // Three accepted hex digits: the reported offset moves with the digit
+        // count, so it is `backslash + 2 + digits_seen`.
+        assert_invalid_at("\"\\uABCz\"", 6);
+        assert_invalid_at("\"\\uABC", 6);
+    }
+
+    // ---- tape emptiness ----
+
+    #[test]
+    fn default_tape_is_empty_and_parsed_tapes_are_not() {
+        // `parse` never returns an empty tape (every valid document emits at least
+        // one node), so the empty state is only observable via `Tape::default`.
+        let empty = Tape::default();
+        assert!(empty.is_empty());
+        assert_eq!(empty.len(), 0);
+        assert!(empty.nodes().is_empty());
+
+        assert!(!parse("null", 512).unwrap().is_empty());
+        assert!(!parse("{}", 512).unwrap().is_empty());
+    }
+
+    // ---- input-size limit constant ----
+
+    #[test]
+    fn u32_max_as_usize_reports_the_input_size_limit() {
+        // The `InputTooLarge` path needs an input larger than 4 GiB, which a test
+        // cannot allocate, so the reported limit is checked directly. It must be
+        // the largest offset a `u32` span can address.
+        assert_eq!(u32_max_as_usize(), 4_294_967_295_usize);
     }
 }
