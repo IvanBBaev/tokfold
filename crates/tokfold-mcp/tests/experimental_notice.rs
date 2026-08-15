@@ -1,12 +1,14 @@
-//! Contract tests for the whole public surface of `tokfold-mcp` in v0.0.1.
+//! Contract tests for [`tokfold_mcp::EXPERIMENTAL_NOTICE`], the crate's one warning.
 //!
-//! No proxy is implemented in this crate (see its README), so there is no protocol
-//! framing, no JSON-RPC, and no tool registry to exercise. What does exist is one
-//! exported item — [`tokfold_mcp::EXPERIMENTAL_NOTICE`] — and it is not decoration.
-//! It is the warning `tokfold mcp` prints to stderr before exiting non-zero, and it
-//! is the only thing standing between a user and pointing an unhardened, unaudited
-//! component that sits in the secrets path at a production transcript. Its wording
-//! and its shape are therefore a contract.
+//! The protocol surface — the JSON-RPC framing, the dual-era dispatcher, the tool
+//! registry — is real and is exercised in `session.rs` and `contract.rs`. This file
+//! covers the one exported item that is not protocol: the notice `tokfold mcp` prints
+//! to stderr before it starts serving. It is not decoration. The server it introduces
+//! is unhardened and unaudited, it sits in the secrets path — a transcript passed
+//! through it is fully visible to it — and the audit that would make that acceptable
+//! is a separate milestone gating any public launch. The notice is the only thing
+//! standing between a user and pointing that component at a production transcript, so
+//! its wording and its shape are a contract.
 //!
 //! These are integration tests deliberately: they see the crate exactly as the
 //! downstream consumer (`tokfold-cli`) does, so demoting the constant out of the
@@ -58,12 +60,14 @@ fn notice_carries_no_stray_whitespace() {
     );
 }
 
-/// The notice is written to a raw stderr stream that a future stdio proxy will share
-/// with its JSON-RPC framing, and that is frequently a terminal.
+/// The notice is written to a raw stderr stream that is frequently a terminal, while
+/// the server's framed JSON-RPC messages go to stdout.
 ///
 /// An embedded control character is therefore two problems at once: a terminal escape
-/// sequence in a security warning is an injection vector, and a stray control byte in
-/// a stream that is also carrying framed protocol data is a corruption risk. This is
+/// sequence in a security warning is an injection vector, and a stray control byte is
+/// exactly what corrupts a line-framed stream if a diagnostic ever reaches the wrong
+/// one — the transport's one absolute rule is that nothing but MCP messages go to
+/// stdout, and the notice is the first thing the binary writes. This is
 /// not a hypothetical failure mode for this repository — source files here have
 /// previously carried raw control bytes, undetected, because the tooling that would
 /// have surfaced them treated the file as binary and stayed silent.
@@ -97,10 +101,11 @@ fn notice_shouts_the_experimental_keyword_in_caps() {
 
 /// The single highest-stakes claim in the string.
 ///
-/// The crate docs, the crate README and `main.rs` all justify shipping an unimplemented
-/// subcommand on the grounds that it loudly refuses secrets. If the sentence that
-/// actually does the refusing is ever edited away, that justification evaporates while
-/// every other test in the workspace stays green.
+/// The crate docs, the crate README and `main.rs` all justify shipping an unaudited
+/// server that sits in the secrets path on the grounds that it announces itself and
+/// loudly refuses secrets before it serves a single byte. If the sentence that actually
+/// does the refusing is ever edited away, that justification evaporates while every
+/// other test in the workspace stays green.
 #[test]
 fn notice_warns_against_production_secrets() {
     assert!(
@@ -149,8 +154,8 @@ fn notice_names_the_subcommand_it_guards() {
 
 /// The manifest description is the notice's twin for anyone who never runs the binary.
 ///
-/// Publication of this crate is held deliberately, because the proxy would sit in the
-/// secrets path. Whenever that hold is lifted, the description is the first and often
+/// Publication of this crate is held deliberately, because the server sits in the
+/// secrets path unaudited. Whenever that hold is lifted, the description is the first and often
 /// only thing a registry visitor reads, so it has to carry the same refusal the runtime
 /// notice does. Pinning it here means a manifest reword cannot quietly drop the warning
 /// between now and publication.

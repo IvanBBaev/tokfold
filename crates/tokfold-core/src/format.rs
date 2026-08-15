@@ -370,6 +370,21 @@ mod tests {
 
     use super::*;
 
+    /// Compile-time proof that a `LEB128` byte's two bit fields never overlap.
+    ///
+    /// `write_uleb128` frames a group as `low | CONTINUATION_BIT`, where `low` is
+    /// `value & LOW_SEVEN_BITS` and therefore never sets bit 7. Over that whole
+    /// domain `|` and `^` produce the identical byte, so no test — this suite's or
+    /// anyone's — can distinguish the two operators there.
+    const _: () = {
+        let mut low = 0u8;
+        while low <= LOW_SEVEN_BITS {
+            assert!(low & CONTINUATION_BIT == 0);
+            assert!(low | CONTINUATION_BIT == low ^ CONTINUATION_BIT);
+            low += 1;
+        }
+    };
+
     fn checksum_ramp() -> [u8; CHECKSUM_LEN] {
         let mut c = [0u8; CHECKSUM_LEN];
         for (i, b) in c.iter_mut().enumerate() {
@@ -514,6 +529,70 @@ mod tests {
             header.encode_into(&mut buf);
             let (decoded, _) = Header::decode(&buf).unwrap();
             assert_eq!(decoded.original_len, len, "len {len} did not round-trip");
+        }
+    }
+
+    /// The framing a `LEB128` byte carries, inspected byte by byte.
+    ///
+    /// `roundtrip_varint_boundaries` only proves the encoder and the decoder agree,
+    /// which any pair of mutually consistent framings would satisfy. Pin the wire
+    /// shape itself: every byte but the last sets the continuation bit, the last
+    /// clears it, the seven payload bits of each group survive the framing
+    /// untouched, and the encoding is the minimal one.
+    #[test]
+    fn uleb128_byte_framing_is_canonical() {
+        for &value in &[
+            0u64,
+            1,
+            0x7F,
+            0x80,
+            0xFF,
+            300,
+            16_383,
+            16_384,
+            0x1234_5678,
+            u64::from(u32::MAX),
+            u64::MAX - 1,
+            u64::MAX,
+        ] {
+            let mut buf = Vec::new();
+            write_uleb128(value, &mut buf);
+            assert!(!buf.is_empty(), "{value} encoded to nothing");
+            assert!(
+                buf.len() <= ULEB128_MAX_BYTES,
+                "{value} took {} bytes",
+                buf.len()
+            );
+
+            let (last, lead) = buf.split_last().unwrap();
+            for (i, byte) in lead.iter().enumerate() {
+                assert_eq!(
+                    byte & CONTINUATION_BIT,
+                    CONTINUATION_BIT,
+                    "byte {i} of {value} does not continue"
+                );
+            }
+            assert_eq!(
+                last & CONTINUATION_BIT,
+                0,
+                "the final byte of {value} still continues"
+            );
+
+            // The payload bits pass through the framing unchanged.
+            let mut rebuilt: u64 = 0;
+            for (i, byte) in buf.iter().enumerate() {
+                rebuilt |= u64::from(byte & LOW_SEVEN_BITS) << (7 * i);
+            }
+            assert_eq!(rebuilt, value, "payload bits altered for {value}");
+
+            // Minimal encoding: no trailing all-zero group.
+            assert!(
+                buf.len() == 1 || *last != 0,
+                "overlong encoding for {value}: {buf:?}"
+            );
+
+            // And the module's own reader accepts exactly these bytes.
+            assert_eq!(read_uleb128(&buf, 0).unwrap(), (value, buf.len()));
         }
     }
 

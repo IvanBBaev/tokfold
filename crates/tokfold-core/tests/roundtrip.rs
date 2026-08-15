@@ -19,8 +19,8 @@
 )]
 
 //! Property-based conformance suite for `tokfold-core`, covering the eight
-//! properties frozen in `docs/ai/impl-spec-v0.1.md` §12, plus the hostile and
-//! "dirty reality" generators that section demands.
+//! properties frozen in the implementation spec, plus the hostile and "dirty reality"
+//! generators it demands.
 //!
 //! # Case count
 //!
@@ -36,7 +36,8 @@
 //!
 //! # A note on Property 8 (anti-collision)
 //!
-//! Spec §12 states it as "for `a != b`, `compress(a).rendering != compress(b).rendering`".
+//! The frozen spec states it as "for `a != b`, `compress(a).rendering !=
+//! compress(b).rendering`".
 //! Taken literally over *raw bytes* that invariant is **false by construction** for
 //! this engine, and deliberately so: the crate's contract (`lib.rs`) is that
 //! insignificant whitespace and escape style are canonicalized away, so two
@@ -233,8 +234,8 @@ fn render_pretty(n: &Node, depth: usize, out: &mut String) {
 }
 
 /// Number lexemes: boundary integers, a 100-digit literal, floats and exponents.
-/// Spec §12 hostile generator: "numbers at i64/u64/f64 boundaries and 100-digit
-/// literals".
+/// Hostile generator from the frozen spec: "numbers at i64/u64/f64 boundaries and
+/// 100-digit literals".
 fn arb_num() -> impl Strategy<Value = String> {
     prop_oneof![
         any::<i64>().prop_map(|n| n.to_string()),
@@ -254,7 +255,7 @@ fn arb_num() -> impl Strategy<Value = String> {
     ]
 }
 
-/// String content including the specials spec §12 calls out: NUL, BOM, NFC/NFD
+/// String content including the specials the frozen spec calls out: NUL, BOM, NFC/NFD
 /// pairs, plus arbitrary Unicode (astral, control). `push_json_string` escapes
 /// whatever needs escaping, so rendering is always valid JSON.
 fn arb_str_content() -> impl Strategy<Value = String> {
@@ -281,10 +282,10 @@ fn arb_str_content() -> impl Strategy<Value = String> {
 /// Hangul range of the escape decoder went untested. That was not a theoretical
 /// gap — corrupting every escape in `0x0100..=0xD7FF` left the entire suite green.
 ///
-/// The hex case is randomized on purpose: spec §4 makes it *significant* for a
-/// string that also carries a lone surrogate (such a string is compared by its raw
-/// body bytes) and *insignificant* for every other string, and the engine has to
-/// get both halves of that right.
+/// The hex case is randomized on purpose: the equality contract makes it
+/// *significant* for a string that also carries a lone surrogate (such a string is
+/// compared by its raw body bytes) and *insignificant* for every other string, and
+/// the engine has to get both halves of that right.
 fn arb_bmp_escape() -> impl Strategy<Value = String> {
     (
         prop_oneof![0x0000u32..=0xD7FF, 0xE000u32..=0xFFFF],
@@ -300,8 +301,8 @@ fn arb_bmp_escape() -> impl Strategy<Value = String> {
 }
 
 /// Raw JSON string bodies (emitted verbatim between quotes). Includes unpaired
-/// surrogates via raw escapes and a valid surrogate pair. Spec §12 hostile
-/// generator: "unpaired surrogates via raw escapes".
+/// surrogates via raw escapes and a valid surrogate pair. Hostile generator from the
+/// frozen spec: "unpaired surrogates via raw escapes".
 ///
 /// Two thirds of the weight stays on the curated pool — those are the cases with a
 /// known history — and one third goes to freely generated escape soup, so the
@@ -315,9 +316,9 @@ fn arb_raw_body() -> impl Strategy<Value = String> {
             "\\uD834".to_string(),        // same lone surrogate, different hex case
             "\\ud83d\\ude00".to_string(), // valid surrogate pair (emoji)
             // A lone surrogate followed by canonicalizable content in the SAME string.
-            // Spec §4 compares such a string by its raw body, so none of the trailing
-            // content may be rewritten; these three catch a canonicalizer that decides
-            // escape-by-escape instead of per-string.
+            // Semantic equality compares such a string by its raw body, so none of
+            // the trailing content may be rewritten; these three catch a canonicalizer
+            // that decides escape-by-escape instead of per-string.
             "\\ud834\\ud834\\udd1e".to_string(), // lone surrogate, then a foldable pair
             "\\ud834\\/".to_string(),            // lone surrogate, then a redundant solidus
             "\\ud834\\u0041".to_string(),        // lone surrogate, then an escaped 'A'
@@ -352,8 +353,8 @@ fn arb_raw_body() -> impl Strategy<Value = String> {
 }
 
 /// Object keys. A small shared pool makes duplicate keys occur naturally; arbitrary
-/// and raw-surrogate keys widen coverage. Spec §12 hostile generator: "duplicate
-/// keys at every level".
+/// and raw-surrogate keys widen coverage. Hostile generator from the frozen spec:
+/// "duplicate keys at every level".
 fn arb_key() -> impl Strategy<Value = Key> {
     prop_oneof![
         3 => prop::sample::select(vec!["a", "b", "c", "id", "name", "type", "x"])
@@ -373,7 +374,7 @@ fn arb_leaf() -> impl Strategy<Value = Node> {
     ]
 }
 
-/// Recursive JSON AST, depth <= 8 as spec §12 requires.
+/// Recursive JSON AST, depth <= 8 as the frozen spec requires.
 fn arb_node() -> impl Strategy<Value = Node> {
     arb_leaf().prop_recursive(8, 48, 5, |inner| {
         prop_oneof![
@@ -383,7 +384,8 @@ fn arb_node() -> impl Strategy<Value = Node> {
     })
 }
 
-/// Structured JSON text (compact or pretty), capped at 4 KB as spec §12 requires.
+/// Structured JSON text (compact or pretty), capped at 4 KB as the frozen spec
+/// requires.
 fn arb_structured_json() -> impl Strategy<Value = String> {
     (arb_node(), any::<bool>())
         .prop_map(|(node, pretty)| {
@@ -398,9 +400,10 @@ fn arb_structured_json() -> impl Strategy<Value = String> {
         .prop_filter("document <= 4 KB", |s| s.len() <= 4096)
 }
 
-/// Valid but deeply nested arrays: 129..=160 levels. Spec §12 hostile generator:
-/// "nesting > 128". Kept under the engine's default `max_depth` (512) so the input is
-/// *accepted* and must round-trip; the rejection path is covered by [`prop07_depth`].
+/// Valid but deeply nested arrays: 129..=160 levels. Hostile generator from the frozen
+/// spec: "nesting > 128". Kept under the engine's default `max_depth` (512) so the
+/// input is *accepted* and must round-trip; the rejection path is covered by
+/// [`prop07_depth`].
 fn arb_deep_valid() -> impl Strategy<Value = String> {
     (129usize..=160).prop_map(|d| format!("{}1{}", "[".repeat(d), "]".repeat(d)))
 }
@@ -433,7 +436,7 @@ fn arb_lone_surrogate_doc() -> impl Strategy<Value = String> {
 }
 
 /// The full valid-JSON strategy fed to the round-trip properties: structured
-/// documents plus every hostile-but-valid generator spec §12 lists.
+/// documents plus every hostile-but-valid generator the frozen spec lists.
 fn arb_valid_json() -> impl Strategy<Value = String> {
     prop_oneof![
         6 => arb_structured_json(),
@@ -500,10 +503,10 @@ fn inject_whitespace(doc: &str, filler: &str) -> String {
 
 /// Upper-cases the hex digits of every `\uXXXX` escape inside a string literal.
 ///
-/// Spec §4 makes this rewrite semantics-*preserving* for an ordinary string and
-/// semantics-*changing* for a string that carries a lone surrogate (compared by raw
-/// body bytes, hex case significant). Feeding both sides of the same distinction to
-/// property 8 forces the engine to canonicalize in the first case and refuse to in
+/// The equality contract makes this rewrite semantics-*preserving* for an ordinary
+/// string and semantics-*changing* for a string that carries a lone surrogate (compared
+/// by raw body bytes, hex case significant). Feeding both sides of the same distinction
+/// to property 8 forces the engine to canonicalize in the first case and refuse to in
 /// the second — the precise line it once got wrong.
 fn uppercase_unicode_escapes(doc: &str) -> String {
     let src: Vec<char> = doc.chars().collect();
@@ -643,7 +646,7 @@ proptest! {
     /// — must still stand for the input.
     ///
     /// The claim is per encoder: passthrough must reproduce the input byte for byte,
-    /// and E1 minify must stay section-4-equal to it. E2's body is a header + row
+    /// and E1 minify must stay semantically equal to it. E2's body is a header + row
     /// projection rather than a JSON document, so its fidelity is left to
     /// [`prop08_anti_collision`] and the E2 unit tests. Dispatching on the wire id
     /// with a plain `match` rather than `prop_assume!` matters: only a few percent of
@@ -874,11 +877,11 @@ proptest! {
 }
 
 // ===========================================================================
-// Dirty-reality inputs and other concrete cases (spec §12)
+// Dirty-reality inputs and other concrete cases (required by the frozen spec)
 // ===========================================================================
 
-/// Spec §12: `NaN`, `Infinity`, truncated JSON, ANSI escape codes and JSONL must all
-/// yield `CompressError::InvalidJson`, never a panic.
+/// Required by the frozen spec: `NaN`, `Infinity`, truncated JSON, ANSI escape codes
+/// and JSONL must all yield `CompressError::InvalidJson`, never a panic.
 #[test]
 fn dirty_reality_inputs_are_invalid_json() {
     let c = compressor();

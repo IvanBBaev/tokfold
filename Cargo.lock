@@ -682,6 +682,8 @@ dependencies = [
 name = "tokfold-mcp"
 version = "0.0.1"
 dependencies = [
+ "proptest",
+ "thiserror",
  "tokfold-core",
 ]
 

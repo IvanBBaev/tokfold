@@ -1,4 +1,4 @@
-//! E2 — shape-deduplicated tabular re-encoding (§7): the core compression bet.
+//! E2 — shape-deduplicated tabular re-encoding: the core compression bet.
 //!
 //! # What it does
 //!
@@ -67,7 +67,7 @@
 //! pair keys with cells (plain) or read the listed pairs (deviating). Object key
 //! order, duplicate keys and number lexemes are preserved; strings are byte-verbatim.
 //!
-//! # Determinism (§10)
+//! # Determinism
 //!
 //! Shapes are interned in an `FxHashMap<u64, ShapeId>` keyed by a hash of the
 //! ordered key list; the header is the most frequent shape, ties broken by first
@@ -110,7 +110,10 @@ pub(crate) fn render(tape: &Tape, input: &str) -> Option<String> {
     let plans = analyze(nodes, input);
     if plans.is_empty() {
         // No array shares a key set: nothing to tabularize. Degrade to passthrough
-        // (via the caller) rather than emit a body identical to plain minification.
+        // (via the caller) rather than pay for a `tbl` sentinel on a body that does no
+        // tabular work at all — such a body is a plain structural minification, which
+        // is E1's job. (It is not even E1's output: E1 also canonicalizes escapes,
+        // whereas the walk below copies every lexeme verbatim.)
         return None;
     }
 
@@ -163,9 +166,13 @@ pub(crate) fn render(tape: &Tape, input: &str) -> Option<String> {
         i = i.checked_add(1)?;
     }
 
-    // `plans` is non-empty and the topmost qualifier on every path is reached in
-    // normal mode, so a table was emitted; the guard only protects against a span
-    // resolution failure that aborted the walk early.
+    // Unreachable-by-construction guard: `emitted_table` is always true here. `plans`
+    // is non-empty, and the lowest-index plan can never sit inside a subtree this walk
+    // skips, because a containing array always has the smaller `ArrayStart` index — so
+    // at least one plan is always reached. Nor can a resolution failure fall through to
+    // this line: every `?` in the loop returns `None` from `render` on the spot. The
+    // `else` is kept only as a fail-safe — if the walk ever did stop short, degrading
+    // to passthrough beats emitting a `tbl` body with no table in it.
     if emitted_table { Some(out) } else { None }
 }
 
@@ -606,7 +613,11 @@ fn span_str(input: &str, span: Span) -> Option<&str> {
     input.get(span.start as usize..span.end as usize)
 }
 
-/// Append `n` in decimal without allocating a panic path.
+/// Append `n` in decimal.
+///
+/// This *does* allocate — `to_string` builds a `String` — but it has no panic path,
+/// unlike `write!`, whose `fmt::Result` would have to be unwrapped or discarded. The
+/// crate's no-panic contract is what picks that trade.
 fn push_usize(out: &mut String, n: usize) {
     out.push_str(&n.to_string());
 }
@@ -626,8 +637,8 @@ mod tests {
     use proptest::prelude::{Strategy, proptest};
     use proptest::sample::select;
 
-    use super::{emit_compact, render};
-    use crate::tape::{self, Tape};
+    use super::{emit_compact, render, value_end};
+    use crate::tape::{self, Node, NodeKind, Span, Tape};
 
     fn tape_of(input: &str) -> Tape {
         tape::parse(input, 512).unwrap()
@@ -911,6 +922,87 @@ mod tests {
         // Values that are objects/arrays render compactly as cells and round-trip.
         let input = r#"[{"a":{"p":1},"b":[1,2]},{"a":{"p":2},"b":[3,4]}]"#;
         assert_roundtrip(input);
+    }
+
+    #[test]
+    fn a_mixed_array_declines_without_disabling_a_sibling_table() {
+        // The `mixed` array carries two objects of one shape *and* a non-object
+        // element. "All elements are objects" is a hard qualifying condition, not a
+        // preference: a table row can only be built from an object, so planning such
+        // an array would make emission fail at its non-object element and drag the
+        // whole document down to passthrough — losing the table the qualifying
+        // sibling array had already earned. Both flavours of non-object element are
+        // covered: a scalar and a nested array.
+        for mixed in [r#"[{"b":1},{"b":2},3]"#, r#"[{"b":1},{"b":2},[7]]"#] {
+            let input = format!(r#"{{"good":[{{"a":1}},{{"a":2}}],"mixed":{mixed}}}"#);
+            let body = assert_roundtrip(&input);
+            assert_eq!(
+                body.matches('#').count(),
+                1,
+                "exactly the `good` array is tabularized: {body:?}"
+            );
+            // The declined array survives as ordinary minified JSON, in place.
+            assert!(
+                body.contains(&format!(r#""mixed":{mixed}"#)),
+                "body: {body:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn tied_shape_counts_keep_the_first_seen_header() {
+        // Two shapes with two elements each: the winner is the one seen first, so the
+        // header is `["a"]` and the `b` elements pay the deviating-row markup. Both
+        // choices reconstruct identically, so only the exact body pins which shape was
+        // hoisted — and with it the determinism guarantee that ties never depend on
+        // map iteration order.
+        let input = r#"[{"a":1},{"a":2},{"b":3},{"b":4}]"#;
+        let body = assert_roundtrip(input);
+        assert_eq!(body, "\n#4[\"a\"]\n+[1]\n+[2]\n*{\"b\":3}\n*{\"b\":4}\n");
+    }
+
+    #[test]
+    fn the_most_frequent_shape_wins_even_when_it_appears_later() {
+        // First appearance only breaks *ties*: a strictly more frequent shape takes the
+        // header even though a rarer shape opened the array. Here `{a}` is seen first
+        // but occurs once, so hoisting it would leave one plain row and three deviating
+        // ones — and would in fact decline the array outright, since a header shape must
+        // occur at least twice.
+        let input = r#"[{"a":1},{"b":1},{"b":2},{"b":3}]"#;
+        let body = assert_roundtrip(input);
+        assert_eq!(body, "\n#4[\"b\"]\n*{\"a\":1}\n+[1]\n+[2]\n+[3]\n");
+    }
+
+    /// A tape node at `[start, end)`, for the synthetic sequences below.
+    fn node(kind: NodeKind, start: u32, end: u32) -> Node {
+        Node {
+            kind,
+            span: Span { start, end },
+            depth: 0,
+        }
+    }
+
+    #[test]
+    fn value_end_fails_closed_on_a_key_in_value_position() {
+        // `value_end` is asked where the value starting at `v` ends, so a `Key` node
+        // there means the node sequence is not the shape the caller assumed. It must
+        // fail closed — `None`, which aborts the render and degrades the document to
+        // passthrough — rather than answer "the key is a one-node value": that would
+        // emit the key lexeme as its own cell and shift every following member by one,
+        // silently corrupting the row instead of declining.
+        let nodes = [
+            node(NodeKind::Key, 1, 4),
+            node(NodeKind::Number, 5, 6),
+            node(NodeKind::ObjectStart { members: 0 }, 7, 8),
+            node(NodeKind::ObjectEnd, 8, 9),
+        ];
+        assert_eq!(value_end(&nodes, 0), None, "a key never starts a value");
+        // Every other kind still answers: a scalar ends at itself, a container at its
+        // matching end.
+        assert_eq!(value_end(&nodes, 1), Some(1));
+        assert_eq!(value_end(&nodes, 2), Some(3));
+        // Out of bounds is also `None`, and never a panic.
+        assert_eq!(value_end(&nodes, 4), None);
     }
 
     // -----------------------------------------------------------------------

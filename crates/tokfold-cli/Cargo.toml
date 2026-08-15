@@ -7,12 +7,26 @@ license.workspace = true
 authors.workspace = true
 description = "Command-line interface for tokfold, the reversible LLM context compression engine"
 keywords.workspace = true
-categories.workspace = true
+# Not `categories.workspace = true`: this crate is a binary, so it belongs in
+# `command-line-utilities` as well as the two workspace categories it shares with
+# the engine. Keep this list in sync with `[workspace.package].categories` when
+# that changes.
+categories = ["command-line-utilities", "compression", "text-processing"]
 repository.workspace = true
 homepage.workspace = true
 # See tokfold-core/Cargo.toml: README plus symlinked licence texts, because
 # `cargo package` ships only what lives inside the package root.
 readme = "README.md"
+documentation = "https://docs.rs/tokfold-cli"
+# Explicit allow list — see the note in tokfold-core/Cargo.toml.
+include = [
+    "src/**/*",
+    "tests/**/*",
+    "README.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
+    "Cargo.toml",
+]
 
 [lints]
 workspace = true

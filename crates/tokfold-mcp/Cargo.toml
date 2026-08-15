@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "EXPERIMENTAL MCP stdio proxy library for tokfold. Not hardened; not for production."
+description = "EXPERIMENTAL MCP stdio server library for tokfold. Not hardened; not for production."
 keywords.workspace = true
 categories.workspace = true
 repository.workspace = true
@@ -13,12 +13,41 @@ homepage.workspace = true
 # See tokfold-core/Cargo.toml: README plus symlinked licence texts, because
 # `cargo package` ships only what lives inside the package root.
 readme = "README.md"
+documentation = "https://docs.rs/tokfold-mcp"
+# The same explicit allow list the other two crates carry — see the note in
+# tokfold-core/Cargo.toml for why packaging names its contents rather than
+# sweeping the directory.
+include = [
+    "src/**/*",
+    "tests/**/*",
+    "README.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
+    "Cargo.toml",
+]
 
 [lints]
 workspace = true
 
 [dependencies]
-# v0.0.1 is a placeholder with no proxy code, so nothing here calls into core yet.
-# The edge is declared deliberately rather than dropped: the proxy is core's consumer
-# by design, and the milestone that implements it starts from the real crate shape.
+# The server is core's consumer: it exposes compress/decompress/estimate as tools.
 tokfold-core.workspace = true
+thiserror.workspace = true
+
+# Note the dependencies that are deliberately absent. The JSON codec, the base64
+# codec, and the JSON-RPC envelope are all hand-written here rather than pulled in:
+# `rmcp` requires Rust 1.88 against this workspace's 1.85 floor and drags in an HTTP
+# stack that `deny.toml` bans outright, and `serde_json` would add seven crates plus a
+# duplicate `syn` for a `Value` type the implementation spec forbids in the parse path.
+# What is written here adds nothing to the tree at all.
+
+[dev-dependencies]
+# This crate hand-writes a JSON codec, a base64 codec and a JSON-RPC envelope
+# parser, and every one of those is a parser fed by an untrusted peer over stdio.
+# Example-based tests only cover the inputs someone thought of; the failure modes
+# that matter here (a truncated escape, a lone surrogate, a base64 tail of the
+# wrong length, a nesting depth that eats the stack) are found by generating input,
+# not by listing it. `proptest` is already in the tree as a dev-dependency of
+# tokfold-core, so this adds no crate to the graph and nothing to a consumer build:
+# dev-dependencies are not compiled for downstream users.
+proptest = { workspace = true }

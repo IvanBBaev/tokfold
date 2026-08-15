@@ -1,14 +1,14 @@
 //! Token estimation for encoder selection.
 //!
 //! Encoder selection is a comparison, not a measurement: the candidate rule keeps a
-//! rendering only when [`TokenEstimator::estimate`] rates it below the original
-//! (§7 candidate rule). Two properties of this layer are therefore load-bearing.
+//! rendering only when [`TokenEstimator::estimate`] rates it below the original.
+//! Two properties of this layer are therefore load-bearing.
 //!
 //! * **Purity.** `estimate` is a pure function of its argument — no clock, no global
 //!   state, no hashing with a per-process seed. A nondeterministic estimator selects
 //!   a different encoder from run to run, which produces different output bytes for
-//!   the same logical input and silently invalidates the provider's prompt cache
-//!   (§10). Determinism here is what keeps that cache warm.
+//!   the same logical input and silently invalidates the provider's prompt cache.
+//!   Determinism here is what keeps that cache warm.
 //! * **Objective.** The estimator must count *tokens*, not bytes. Selecting an
 //!   encoder to minimize bytes optimizes the wrong quantity — see
 //!   [`ByteLenEstimator`], which exists only as a reference point and is never the
@@ -34,7 +34,7 @@
 ///
 /// Implementations MUST be pure and deterministic: the candidate rule calls
 /// `estimate` on every encoder's output, so a nondeterministic estimator yields
-/// nondeterministic selection and defeats prompt caching (§10). The trait is the
+/// nondeterministic selection and defeats prompt caching. The trait is the
 /// only public extension point in the crate; a caller may supply its own exact
 /// tokenizer, but a stateful or seeded one violates the contract.
 pub trait TokenEstimator: Send + Sync {
@@ -73,7 +73,7 @@ pub trait TokenEstimator: Send + Sync {
     }
 }
 
-/// Frozen ids naming the cost model that drove selection (§3), reported in
+/// Frozen ids naming the cost model that drove selection, reported in
 /// [`Stats::tokenizer_id`](crate::Stats::tokenizer_id).
 ///
 /// They are the reserved value space of the header's `tokenizer_id` field: once
@@ -109,8 +109,8 @@ pub mod ids {
 // These constants are part of the encoding contract, not tuning knobs. Encoder
 // selection consults the heuristic, so changing any of them can change which
 // encoder wins and therefore the produced bytes for a given input. Recalibrating
-// them is a format change (§2.4 / §5): it must travel with an `encoder_id`
-// semantics bump, never as a silent in-place edit.
+// them is a format change: it must travel with an `encoder_id` semantics bump, never
+// as a silent in-place edit.
 
 /// Alphanumeric density in tenths of a character per token: 37 tenths = 3.7
 /// ASCII alphanumeric characters per token, the approximate mean `cl100k` packs
@@ -193,7 +193,7 @@ const fn non_ascii_run_tokens(bytes: usize) -> usize {
 ///
 /// **Purity.** `estimate` reads only its argument and uses only integer arithmetic,
 /// so it is deterministic across processes — a precondition for prompt-cache-safe
-/// output (§10).
+/// output.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct HeuristicEstimator;
 
@@ -302,11 +302,10 @@ impl TokenEstimator for ByteLenEstimator {
 ///
 /// These count tokens with a real BPE model instead of approximating one, so the
 /// do-no-harm gate they drive cannot greenlight a real-token loser for the model
-/// family they cover — the gap [`HeuristicEstimator`](super::HeuristicEstimator) can
-/// leave (§7). They are
-/// opt-in: each constructor loads megabytes of embedded BPE data, which is why the
-/// heuristic, not these, is the default (see the crate feature note). Adding one
-/// changes only which rendering is selected and the reported
+/// family they cover — the gap the [heuristic estimator](super::HeuristicEstimator)
+/// can leave. They are opt-in: each constructor loads megabytes of embedded BPE data,
+/// which is why the heuristic, not these, is the default (see the crate feature note).
+/// Adding one changes only which rendering is selected and the reported
 /// [`TokenEstimator::tokenizer_id`]; the recovery archive is unaffected, since it
 /// always records the passthrough tokenizer id `0` regardless of the selector.
 #[cfg(feature = "tiktoken")]
@@ -605,6 +604,12 @@ mod tests {
                 2,
                 "a whitespace character flushes the pending non-ASCII run",
             ),
+            (
+                "a  \u{e9}",
+                3,
+                "a non-ASCII character flushes the pending whitespace run, and a run \
+                 of two is charged: 1 (a) + 1 (run) + ceil(2/2)",
+            ),
         ];
         for (input, expected, why) in cases {
             assert_eq!(e.estimate(input), *expected, "estimate({input:?}): {why}");
@@ -699,6 +704,19 @@ mod tiktoken_tests {
             "o200k and cl100k produced identical counts across the whole battery — \
              they appear to be the same tokenizer"
         );
+    }
+
+    #[test]
+    fn exact_estimators_debug_as_a_named_opaque_struct() {
+        // `CoreBPE` implements no `Debug`, so these are the crate's only hand-written
+        // `Debug` impls — every other type derives one. Both halves of what they print
+        // are load-bearing and pinned here: the type name, without which the estimator
+        // is unidentifiable in a `{:?}` dump of a config or an error, and the `{ .. }`
+        // elision that stands in for the megabyte-scale merge table.
+        let cl100k = Cl100kEstimator::new().unwrap();
+        let o200k = O200kEstimator::new().unwrap();
+        assert_eq!(format!("{cl100k:?}"), "Cl100kEstimator { .. }");
+        assert_eq!(format!("{o200k:?}"), "O200kEstimator { .. }");
     }
 
     #[test]

@@ -39,8 +39,10 @@
 //!
 //! This crate is not a prompt-injection filter and must not be described as reducing
 //! injection risk. It also performs no token counting against proprietary
-//! tokenizers: Anthropic's is not public, so exact counts can only be obtained by
-//! the CLI or proxy layer via an API call, never from here.
+//! tokenizers: Anthropic's is not public, so an exact count for such a model can
+//! only come from that vendor's own API, never from here. What this crate offers
+//! instead is [`TokenEstimator`], which an embedder implements to plug in whatever
+//! counter it does have.
 
 #![forbid(unsafe_code)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
