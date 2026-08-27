@@ -516,20 +516,37 @@ jobs:
             echo "PUBLISHING $VERSION for real."
           fi
 
+          # A version already on the registry is treated as done, not as an
+          # error. Publishing six packages is six uploads that can fail
+          # independently -- a network blip or a registry rejection on the
+          # fourth leaves the first three published and unpublishable again,
+          # because npm never lets a version be reused. Without this check the
+          # only way out of a partial release would be to burn a version
+          # number. With it, re-running the workflow converges on the intended
+          # state instead of deadlocking on the work it already did.
+          publish_one() {
+            local dir="$1" name
+            name="$(node -p "require('./$dir/package.json').name")"
+            echo "=== $name ==="
+            if [ "$DRY_RUN" != "true" ] \
+              && npm view "$name@$VERSION" version >/dev/null 2>&1; then
+              echo "already published -- skipping"
+              return 0
+            fi
+            # shellcheck disable=SC2086
+            ( cd "$dir" && npm publish $flags )
+          }
+
           # Order matters. The launcher's optionalDependencies name versions that
           # must already exist: publish it first and there is a window in which
           # `npm i -g tokfold` installs a launcher whose binary package cannot be
           # resolved. Platform packages first, launcher last, means the only
           # visible states are "not yet released" and "released and working".
           for dir in npm/platforms/*/; do
-            echo "=== $(basename "$dir") ==="
-            # shellcheck disable=SC2086
-            ( cd "$dir" && npm publish $flags )
+            publish_one "${dir%/}"
           done
 
-          echo "=== tokfold (launcher) ==="
-          # shellcheck disable=SC2086
-          ( cd npm/tokfold && npm publish $flags )
+          publish_one npm/tokfold
 
       - name: Summary
         env:
