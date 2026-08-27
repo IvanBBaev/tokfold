@@ -17,6 +17,21 @@
 //! * A [`DecompressError`] is an integrity failure and is always surfaced. No
 //!   partial output is ever emitted.
 //!
+//! # The archive lives in `structuredContent` only
+//!
+//! `tokfold_compress` puts the base64 archive in `structuredContent.archive` and
+//! nowhere else; `content` carries the rendering alone. Reading only `content` is
+//! spec-conformant and is what older clients do, so such a client ends up holding a
+//! compressed rendering it can never recover the original from. The tool description
+//! says so, because a client author reading the catalogue is the only one who can act
+//! on it.
+//!
+//! Copying the archive into `content` as well is the obvious fix and is deliberately
+//! not taken: it is a third echo of the payload, which lifts the compress path's reply
+//! multiplier to roughly 4.7x of the request and trips the 400% ratchet in
+//! `tests/session.rs`. That is a wire-shape change and an owner decision, not a
+//! documentation one.
+//!
 //! A surfaced decompression failure is reported as a tool result with
 //! `isError: true` rather than as a JSON-RPC error. In MCP a JSON-RPC error means the
 //! *call itself* was malformed, and clients surface it as a transport fault the model
@@ -31,7 +46,7 @@ use tokfold_core::{
 
 use crate::base64;
 use crate::json::{Object, Value};
-use crate::jsonrpc::ErrorObject;
+use crate::jsonrpc::{ErrorObject, echo};
 use crate::protocol::error_code::INVALID_PARAMS;
 
 /// Tool name for the compression call.
@@ -70,8 +85,11 @@ fn compress_tool() -> Value {
         "Compress text",
         "Reversibly compress JSON-shaped text so it costs fewer tokens in a prompt. \
          Returns a rendering to embed and an archive that recovers the input exactly. \
-         Input that is not valid JSON is returned unchanged with `compressed` false — \
-         the call never fails for that reason and never loses data.",
+         The archive is returned only in `structuredContent.archive`; the `content` \
+         block carries the rendering alone, so a client that reads only `content` keeps \
+         text it can never decompress. Input that is not valid JSON is returned \
+         unchanged with `compressed` false — the call never fails for that reason and \
+         never loses data.",
         Object::new()
             .set("type", Value::string("object"))
             .set(
@@ -108,7 +126,8 @@ fn decompress_tool() -> Value {
                             .set(
                                 "description",
                                 Value::string(
-                                    "Base64 archive exactly as returned by `tokfold_compress`.",
+                                    "Base64 archive exactly as returned by `tokfold_compress` \
+                                     in `structuredContent.archive`.",
                                 ),
                             )
                             .build(),
@@ -194,9 +213,11 @@ pub fn call(name: &str, arguments: Option<&Value>) -> Result<Outcome, ErrorObjec
         COMPRESS => run_compress(arguments, true),
         ESTIMATE => run_compress(arguments, false),
         DECOMPRESS => run_decompress(arguments),
+        // `name` is peer-supplied and unbounded up to the frame limit; `echo` caps how
+        // much of it is quoted back. See [`crate::jsonrpc::echo`].
         _ => Err(ErrorObject::new(
             INVALID_PARAMS,
-            format!("unknown tool: {name}"),
+            format!("unknown tool: {}", echo(name)),
         )),
     }
 }
@@ -257,11 +278,15 @@ fn compressed_outcome(artifact: &Artifact, with_payload: bool) -> Outcome {
 /// copy would mean a client that reads only its own half sees the input silently
 /// vanish on exactly the path whose contract is that nothing is dropped.
 ///
-/// The cost is bounded, not open-ended: core refuses input above 16 MiB and the
-/// transport refuses a line above [`MAX_LINE_BYTES`], so the worst case is a known
-/// multiple of a known ceiling.
+/// The cost is bounded at both ends, not open-ended: core refuses input above 16 MiB,
+/// the transport refuses a line above [`MAX_LINE_BYTES`], and the doubling here cannot
+/// carry the answer past that same limit, because a reply too large to frame is replaced
+/// by an error addressed to the call — see [`render_bounded`]. So the worst case is a
+/// known multiple of a known ceiling, and past the ceiling it is a refusal rather than a
+/// frame nothing can read.
 ///
 /// [`MAX_LINE_BYTES`]: crate::stdio::MAX_LINE_BYTES
+/// [`render_bounded`]: crate::jsonrpc::render_bounded
 fn passthrough_outcome(text: &str, error: &CompressError, with_payload: bool) -> Outcome {
     let reason = compress_error_reason(error);
     let structured = Object::new()

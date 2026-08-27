@@ -17,7 +17,13 @@
 //!   invalidate a provider's prompt cache.
 //! * **The checksum is `SHA-256` of the *original* input**, not of the payload. It
 //!   is verified against the reconstructed original after decoding, so a decoder
-//!   never returns partially-recovered bytes.
+//!   never returns partially-recovered bytes. It detects **corruption, not
+//!   tampering**: the digest is unkeyed and travels inside the archive it covers, so
+//!   anyone able to modify the archive can recompute it to match. An integrity
+//!   guarantee against a *modifying adversary* would require a keyed construction (a
+//!   MAC); this format has none and claims none. What the checksum does guarantee is
+//!   unchanged: an accidental bit flip, a truncated write or a mismatched payload is
+//!   caught and fails closed.
 //! * **Fail closed.** Bad magic, an unknown version, a set reserved bit, a
 //!   malformed varint or a checksum mismatch each return an error rather than a
 //!   best-effort guess.
@@ -69,13 +75,39 @@ pub struct Flags {
     ///
     /// Reserved in v0.0.1: nothing sets it. No encoder emits a sidecar, and the
     /// `tokfold` binary has no flag that asks for one — the bit exists so the
-    /// opt-in byte-exact mode can arrive without a format version bump. It is
-    /// still decoded and round-tripped, so an archive written by a future build
-    /// reads back with the bit intact.
+    /// opt-in byte-exact mode can claim wire space now instead of at a later
+    /// version bump.
+    ///
+    /// [`Header::decode`] parses and preserves it, so it survives a header round
+    /// trip — but that is not forward compatibility. The crate's only recovery API,
+    /// [`Compressor::decompress`](crate::Compressor::decompress), rejects any
+    /// non-default flags with [`DecompressError::Corrupt`] and returns no bytes, so
+    /// an archive from a future build that sets this bit is hard-rejected by every
+    /// released v0.0.1 reader. The reserved bit buys wire space, not compatibility:
+    /// shipping the sidecar mode still requires a coordinated format change.
     pub has_sidecar: bool,
-    /// Bit 1: the payload may be safely truncated by a size-limited consumer.
+    /// Bit 1: reserved for a future segmented layout in which a size-limited
+    /// consumer could drop trailing payload segments.
+    ///
+    /// Reserved in v0.0.1: nothing sets it, and it licenses nothing. Truncating an
+    /// archive this version writes is never safe — the checksum covers the whole
+    /// original, so a short payload fails the length cross-check before
+    /// [`verify_checksum`] is even reached, and the module invariant above (a decoder
+    /// never returns partially-recovered bytes) still holds unconditionally. Like
+    /// [`has_sidecar`](Self::has_sidecar), the bit decodes but
+    /// [`Compressor::decompress`](crate::Compressor::decompress) rejects any archive
+    /// carrying it as [`DecompressError::Corrupt`].
     pub truncation_tolerated: bool,
-    /// Bit 2: at least one segment was encoded by a lossy codec.
+    /// Bit 2: reserved for a future lossy codec, to mark an archive at least one of
+    /// whose segments cannot be reconstructed byte-exactly.
+    ///
+    /// Reserved in v0.0.1: nothing sets it. No shipped encoder is lossy — every
+    /// archive reconstructs its original exactly and every pass reports
+    /// [`Fidelity::Lossless`](crate::Fidelity::Lossless), so the
+    /// `Fidelity::Lossy` this bit would announce is unreachable. Like
+    /// [`has_sidecar`](Self::has_sidecar), the bit decodes but
+    /// [`Compressor::decompress`](crate::Compressor::decompress) rejects any archive
+    /// carrying it as [`DecompressError::Corrupt`].
     pub segment_lossy: bool,
 }
 
@@ -281,6 +313,10 @@ pub fn sha256(input: &[u8]) -> [u8; CHECKSUM_LEN] {
 /// The decoder calls this against the *reconstructed* original, after decoding the
 /// payload, before returning any bytes. A mismatch is
 /// [`DecompressError::ChecksumMismatch`].
+///
+/// This is a corruption check, not an authenticity check: the digest is unkeyed and
+/// stored in the archive it covers, so a modifying adversary can recompute it. See the
+/// module docs.
 pub fn verify_checksum(
     expected: &[u8; CHECKSUM_LEN],
     original: &[u8],

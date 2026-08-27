@@ -4,6 +4,10 @@
 //! holds no protocol knowledge at all. Everything it enforces is a transport rule:
 //!
 //! * Exactly one JSON-RPC message per line, and a message never contains a newline.
+//! * One size limit in both directions: [`MAX_LINE_BYTES`] is what a line may be to be
+//!   read *and* what an answer may be to be written, so this server never emits a frame
+//!   it would refuse as input. Enforcing the write side is [`Server::handle_line`]'s
+//!   job, not this module's — see [`MAX_LINE_BYTES`].
 //! * **Nothing reaches stdout that is not an MCP message.** A stray `println!` in a
 //!   stdio server corrupts the stream and the client sees a protocol fault rather
 //!   than the log line someone meant to leave. Diagnostics go to stderr.
@@ -17,37 +21,46 @@
 use std::io::{self, BufRead, ErrorKind, Read, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use crate::jsonrpc::{ErrorObject, Id, Response, read_id};
+use crate::jsonrpc::{ErrorObject, Id, Response, read_id, render_bounded};
 use crate::protocol::error_code;
 use crate::server::Server;
 
 /// Largest line accepted, in bytes.
 ///
-/// Sized off the real ceiling rather than guessed: core accepts 16 MiB of input, and
-/// base64 inflates an archive by a third, so a legitimate `tokfold_decompress` call
-/// can approach 22 MiB. 32 MiB leaves room above that while keeping a malfunctioning
-/// or hostile client from making the server allocate without bound.
+/// This is [`crate::MAX_MESSAGE_BYTES`] under the name the transport uses, not a second
+/// number that happens to agree with it. The read limit and the emit limit have to be
+/// the same value — a server whose output can exceed its own input limit cannot talk to
+/// a peer of its own kind — and the surest way to keep two numbers equal is to have one.
+/// [`crate::MAX_MESSAGE_BYTES`] carries the reasoning for the size.
 ///
-/// The margin is deliberately narrow. Anything core would refuse as too large is
-/// echoed back through the passthrough path, so a line the engine can do nothing with
-/// still costs several copies of itself in memory before the refusal reaches the
-/// client. Sizing this well above what core accepts buys no capability and multiplies
-/// that cost.
+/// # Both directions, enforced elsewhere
 ///
-/// # This bounds input only
+/// A reply is always bigger than the call it answers, so the write side needs enforcing
+/// and not merely documenting. That happens in [`Server::handle_line`] rather than here:
+/// the crate is sans-io, and a bound that lived in this module would protect only the
+/// embedders that happen to use this module. What is left for the transport is to refuse
+/// an oversized *line*, below.
 ///
-/// Nothing bounds a reply, and a reply is always bigger than the call it answers: the
-/// payload goes back twice, as `content` and as `structuredContent`, plus a base64
-/// archive on the compress path. Measured, that is roughly 2x on the passthrough path
-/// and up to about 3.3x when the archive barely shrinks — so a request of around 10 MB,
-/// a third of what this cap admits, already produces a line this same reader would
-/// refuse. The asymmetry is real and deliberate rather than overlooked: capping output
-/// would mean truncating an answer the client asked for, which is a decision about the
-/// tool contract and not a default to slip in here. `tests/session.rs` pins the
-/// multiplier so a change that inflates it is caught.
-pub const MAX_LINE_BYTES: usize = 32 * 1024 * 1024;
+/// # Bytes are only half the bound
+///
+/// This limit is about the size of the frame and nothing else. What a line *expands
+/// into* once parsed is bounded separately, by [`crate::json::MAX_NODES`] — a line
+/// comfortably inside this cap can still describe millions of values, and a `Value` is
+/// an order of magnitude larger than the text that produced it. That matters here in
+/// particular: an allocation failure aborts rather than unwinds, so it would walk
+/// straight past the `catch_unwind` bulkhead this module puts around every line.
+pub const MAX_LINE_BYTES: usize = crate::MAX_MESSAGE_BYTES;
 
 /// Serves one client to EOF over the given streams.
+///
+/// # Frames are bounded in both directions
+///
+/// A line longer than [`MAX_LINE_BYTES`] is refused and skipped, and an answer that
+/// would be longer is refused by [`Server::handle_line`] before it reaches this loop, so
+/// nothing written here is a frame this same loop would reject on the way in. The one
+/// way to break that is to hand in a server built with
+/// [`Server::with_max_message_bytes`] set above [`MAX_LINE_BYTES`], which is a deliberate
+/// act by the embedder and documented there.
 ///
 /// # The client must read while it writes
 ///
@@ -131,16 +144,19 @@ pub fn serve_stdio(server: &mut Server) -> io::Result<()> {
 /// state is a handshake flag and the negotiated revision, with no interior mutability,
 /// and both are written after every fallible step — a panic cannot leave the pair
 /// half-applied.
+///
+/// The rescue frame goes through [`render_bounded`] like every other answer. Its message
+/// is a fixed string, but the id it echoes came off the client's line and can be nearly
+/// as large as the line itself, so "an error is obviously small" is not true here.
 fn handle(server: &mut Server, line: &str) -> Option<String> {
     catch_unwind(AssertUnwindSafe(|| server.handle_line(line))).unwrap_or_else(|_| {
-        Some(
+        Some(render_bounded(
             Response::error(
                 recover_id(line),
                 ErrorObject::new(error_code::INTERNAL_ERROR, "internal server error"),
-            )
-            .into_value()
-            .to_string(),
-        )
+            ),
+            server.max_message_bytes(),
+        ))
     })
 }
 

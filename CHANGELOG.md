@@ -93,13 +93,17 @@ describes what exists in the tree, not what has shipped.
   2024, minimum supported Rust version 1.85, dual-licensed MIT OR Apache-2.0.
 - Workspace lints: `unsafe_code` forbidden, clippy `pedantic` and `nursery`
   warned, `unwrap_used` / `expect_used` / `panic` denied.
-- CI workflow (`.github/workflows/ci.yml`): each gate is its own unconditional
-  job — workflow lint, format, clippy, rustdoc, a docs-versus-code drift test, a
-  `cargo-deny` supply-chain policy gate and a `cargo package` check — alongside a
-  test matrix over Linux/macOS/Windows and two MSRV legs. Weekly jobs re-run the
-  suite under the release profile and on nightly, and re-scan a fresh advisory
-  database with `cargo-audit`. Every cargo invocation is `--locked`; every action
-  and installed tool is pinned by commit SHA or version.
+- CI workflow (`.github/workflows/ci.yml`): each gate is its own top-level job —
+  workflow lint, format, clippy, rustdoc, a test pinning the wording of the
+  EXPERIMENTAL notice, a `cargo-deny` supply-chain policy gate (vulnerabilities
+  and unmaintained crates fail the build; a yanked crate only warns) and a
+  `cargo package` check — alongside a test matrix over Linux/macOS/Windows and
+  two MSRV legs. No gate hangs off a matrix value, so none can be switched off by
+  a renamed key; the only condition any of them carries is one that skips the
+  gate on the weekly cron. Weekly jobs re-run the suite under the release profile
+  and on nightly, and re-scan a fresh advisory database with `cargo-audit`. Every
+  invocation that resolves a dependency graph is `--locked`; every action and
+  installed tool is pinned by commit SHA or version.
 - Crate manifests carry `repository`, `homepage`, `documentation`, `readme`,
   `keywords`, `categories` and an explicit `include` allow list; each publishable
   crate carries its own README and licence texts. The `documentation` URLs point

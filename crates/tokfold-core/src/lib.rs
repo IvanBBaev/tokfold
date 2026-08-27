@@ -35,6 +35,22 @@
 //! * **Fail closed.** Any integrity mismatch on decode returns an error rather than
 //!   partially recovered bytes.
 //!
+//! # What an archive actually contains (v0.0.1)
+//!
+//! Every archive this version writes is a **passthrough recovery blob**: a header of
+//! about 43 bytes (magic, version, encoder id, tokenizer id, flags, the original
+//! length as a varint, and a `SHA-256` digest) followed by **the original input bytes,
+//! verbatim**. Only the model-facing [`Artifact::rendering`] is ever re-encoded; the
+//! archive payload is not. It is **not encrypted, not encoded and not obfuscated** —
+//! plain bytes behind a short header any reader can skip.
+//!
+//! An archive is therefore exactly as sensitive as the plaintext it wraps. Anything
+//! that stores, logs, caches or forwards archives must handle them with the same care
+//! as the original input; treating an archive as opaque because it is binary would be
+//! a mistake. The header's `SHA-256` detects corruption, not tampering — it is unkeyed
+//! and travels with the payload, so a MAC would be required for integrity against a
+//! modifying adversary (see [`format`](mod@crate::format)).
+//!
 //! # Non-goals
 //!
 //! This crate is not a prompt-injection filter and must not be described as reducing

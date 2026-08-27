@@ -21,11 +21,32 @@
 //!
 //! # The verbatim-with-position contract
 //!
-//! A line the table protects must be reproduced **byte-for-byte at its original
-//! position** relative to the surrounding lines: an encoder may not fold it into a
-//! legend, dedup it against a merely-similar line, or move it. This module only
-//! decides *membership*; the encoders enforce the contract. The rule is stated
-//! here because this is where the intent lives.
+//! The intent: content this table protects should be reproduced **byte-for-byte at
+//! its original position** relative to the surrounding content — not folded into a
+//! legend, not deduped against a merely-similar line, not moved. This module decides
+//! only *membership*. It does not enforce anything, and the enforcement is not
+//! uniform across encoders, so the rule is stated here as intent and the implemented
+//! behaviour is spelled out immediately below.
+//!
+//! ## What v0.0.1 actually implements
+//!
+//! * **E1 (minify) is the only encoder that consults this table.** It calls
+//!   [`is_protected`] on each JSON *string lexeme* — quotes and escapes included, so
+//!   the unit is a lexeme, not a line — and on a hit copies that lexeme byte-for-byte
+//!   rather than canonicalizing its escapes. E1 never folds, dedups or reorders, so
+//!   position is preserved for everything it emits. One known gap: the match runs on
+//!   the *escaped* spelling, so a protected phrase written with `\u` escapes misses
+//!   the carve-out (documented on E1's `emit_string`).
+//! * **E2 (tabular) never reads this table at all.** Its faithfulness is structural:
+//!   every value lexeme is copied verbatim from its source span and rows keep source
+//!   order. But E2 hoists an array's dominant key set once into the table header, so a
+//!   protected string occurring among those hoisted *keys* is written once, at the
+//!   header, instead of once per element. (Rows whose shape deviates from the header
+//!   are self-describing and still spell out their own keys.)
+//! * **Passthrough** re-emits the input verbatim, and the recovery archive stores the
+//!   original bytes whichever encoder shaped the rendering — so reconstruction is
+//!   exact regardless, and what this contract governs is only the *rendering* the
+//!   model reads.
 //!
 //! # Related integrity rules (kept alongside membership)
 //!
@@ -36,6 +57,32 @@
 //! * **No content-adaptive windows.** Whether a line is kept must never depend on
 //!   the *content* of its neighbours. Membership is decided per line in isolation;
 //!   content must not open or close a "keep window" over adjacent lines.
+//!
+//! # Open question: may byte-identical protected content be collapsed?
+//!
+//! The two rules stated above disagree, and this version does not decide between
+//! them. Read strictly, *verbatim-with-position* forbids collapsing a protected line
+//! at all; *dedup only on byte-identical lines* permits collapsing it precisely when
+//! the copies are byte-for-byte identical. Both are recorded here on purpose; neither
+//! is dropped.
+//!
+//! Nothing in v0.0.1 forces the question at the level it is written — no encoder
+//! collapses repeated *lines*. But E2's key hoisting is the same shape of transform
+//! applied to a repeated protected *key*, and it ships, so the ambiguity is not
+//! academic.
+//!
+//! Resolving it is a normative, format-affecting decision reserved for the repo
+//! owner, because either answer changes emitted bytes:
+//!
+//! * **Position wins** — collapsing protected content is forbidden even when the
+//!   copies are identical, so E2 must repeat a protected key on every row and give up
+//!   the saving on that key.
+//! * **Byte-identity wins** — collapsing byte-identical protected content is allowed,
+//!   E2's current behaviour is already correct, and the position rule narrows to "not
+//!   moved or merged relative to content that is not byte-identical to it".
+//!
+//! Until it is decided, treat the position rule as the stated *intent* and the
+//! "What v0.0.1 actually implements" section as the description of behaviour.
 //!
 //! # Non-claim
 //!

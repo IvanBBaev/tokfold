@@ -23,8 +23,13 @@
 //! upstream connection, a content-addressed archive store, and a `retrieve` tool —
 //! which needs its own threat model before any of it is written. What this crate
 //! implements is the server: tools in, tools out, no persistence, no network.
-//! `deny.toml` bans every HTTP, socket, and DNS crate in the workspace, so that
-//! boundary is enforced by the build rather than by intent.
+//!
+//! A `cargo-deny` policy holds one half of that boundary: no HTTP, socket, or DNS
+//! *dependency* may enter the workspace graph, so the capability cannot arrive with a
+//! crate. It reaches no further. `std::net` is standard library and no lint can ban it,
+//! so first-party code opening a socket is caught by review, not by the build — and
+//! `std::fs` and `std::time` are outside that policy's view entirely. The boundary is
+//! real; only part of it is mechanised.
 //!
 //! # Shape
 //!
@@ -32,6 +37,12 @@
 //! to a line of text and performs no I/O. [`stdio`] is the loop that adds the streams.
 //! The split is what makes the awkward cases — a duplicate handshake, a truncated
 //! line, an unsupported protocol revision — testable without spawning a process.
+//!
+//! Because the split is where the protocol rules live, the frame size limit lives there
+//! too: [`Server::handle_line`] never returns a line longer than
+//! [`MAX_MESSAGE_BYTES`], so an embedder that writes its own transport gets the same
+//! bound the stdio loop does. See [`MAX_MESSAGE_BYTES`] for what a client is handed when
+//! an answer does not fit.
 //!
 //! The server answers both protocol eras: `initialize` for clients on `2025-11-25`
 //! and earlier, and stateless per-request metadata plus `server/discover` for
@@ -68,6 +79,45 @@ pub mod stdio;
 pub mod tools;
 
 pub use server::Server;
+
+/// Largest message this crate will read or emit, in bytes.
+///
+/// Sized off the real ceiling rather than guessed: core accepts 16 MiB of input, and
+/// base64 inflates an archive by a third, so a legitimate `tokfold_decompress` call can
+/// approach 22 MiB. 32 MiB leaves room above that.
+///
+/// The margin is deliberately narrow. Anything core would refuse as too large is echoed
+/// back through the passthrough path, so a line the engine can do nothing with still
+/// costs several copies of itself in memory before the refusal reaches the client.
+/// Sizing this well above what core accepts buys no capability and multiplies that cost.
+///
+/// # This bounds bytes, not memory
+///
+/// Worth stating plainly, because the opposite was once written here: capping the line
+/// length is *not* on its own what keeps a hostile client from making the server
+/// allocate without bound. A parsed value costs far more than the text it came from —
+/// 32 bytes per `Value`, 56 per object member, against two input bytes for an array
+/// element — so a line well inside this limit can still expand into hundreds of
+/// megabytes of tree. The second half of the bound is [`json::MAX_NODES`], which caps
+/// how many values one message may materialise; that constant carries the arithmetic.
+/// Both limits are needed, and neither substitutes for the other.
+///
+/// # One number in both directions
+///
+/// This is the cap on what is *read* and the cap on what is *emitted*, and it is one
+/// constant rather than two so the two can never drift. The asymmetry it removes was
+/// real and measured: a reply is always bigger than the call it answers — the payload
+/// goes back twice, as `content` and as `structuredContent`, plus a base64 archive on
+/// the compress path — at about 2x on the passthrough path and up to about 3.3x when an
+/// archive barely shrinks. With only the read side capped, a request of around 10 MB,
+/// well inside what this admits, produced a line this same reader would have refused.
+///
+/// [`Server::handle_line`] therefore never returns a longer string, and
+/// [`stdio::MAX_LINE_BYTES`] is this same constant. A request whose answer would not fit
+/// is refused with a JSON-RPC error addressed to that request's own id, so the call
+/// fails rather than hanging; `tests/session.rs` pins both the multiplier and the
+/// refusal.
+pub const MAX_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
 
 /// Warning shown when the experimental server is started.
 pub const EXPERIMENTAL_NOTICE: &str = "the `mcp` subcommand is EXPERIMENTAL: unhardened, unaudited, and not covered \

@@ -37,9 +37,15 @@ thiserror.workspace = true
 # Note the dependencies that are deliberately absent. The JSON codec, the base64
 # codec, and the JSON-RPC envelope are all hand-written here rather than pulled in:
 # `rmcp` requires Rust 1.88 against this workspace's 1.85 floor and drags in an HTTP
-# stack that `deny.toml` bans outright, and `serde_json` would add seven crates plus a
-# duplicate `syn` for a `Value` type the implementation spec forbids in the parse path.
-# What is written here adds nothing to the tree at all.
+# stack that `deny.toml` bans outright, and `serde_json` would add five crates to a
+# consumer build -- `serde_json`, `serde_core`, `itoa`, `memchr`, `zmij` (measured
+# against serde_json 1.0.151 with default features, normal dependencies only) -- for a
+# `Value` type the implementation spec forbids in the parse path. What is written here
+# adds nothing to the tree at all.
+#
+# This note used to claim a duplicate `syn` as well. It was wrong and should not come
+# back: `serde_derive` is already in this lockfile and there is exactly one `syn` in it,
+# so cargo unifies rather than duplicates. The count above is the whole cost.
 
 [dev-dependencies]
 # This crate hand-writes a JSON codec, a base64 codec and a JSON-RPC envelope

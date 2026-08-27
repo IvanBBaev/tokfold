@@ -21,6 +21,11 @@
 //! [`parse`] rejects nesting deeper than [`MAX_DEPTH`]. The parser recurses, so
 //! without that bound a hostile message would abort the process on a stack
 //! overflow — which a `catch_unwind` bulkhead cannot catch.
+//!
+//! [`parse`] also rejects a message holding more than [`MAX_NODES`] values. The
+//! transport's byte cap does not bound the tree: a parsed value is much larger than
+//! the text it came from, so bytes and nodes are two different quantities and only
+//! one of them was bounded before. [`MAX_NODES`] carries the arithmetic.
 
 use core::fmt;
 
@@ -29,6 +34,54 @@ use core::fmt;
 /// MCP messages are shallow; the limit exists to bound recursion, not to express a
 /// protocol rule. It is far below the depth at which the default stack overflows.
 pub const MAX_DEPTH: usize = 128;
+
+/// Maximum number of JSON values [`parse`] will materialise from one message.
+///
+/// # Why a second limit is needed at all
+///
+/// [`crate::MAX_MESSAGE_BYTES`] bounds the *text*. It does not bound the tree, because
+/// a value costs far more in memory than on the wire: `Value` is 32 bytes and an object
+/// member — a `(String, Value)` pair — is 56, while the cheapest array element, `0,`,
+/// is two bytes of input. That is 16x in the steady state, and a `Vec` that doubles on
+/// its last push holds the old buffer and the new one at once, so the transient cost is
+/// three times the steady one.
+///
+/// Run that out for a line at the byte cap: 33,554,432 bytes of `[0,0,0,…]` is
+/// 16,777,216 values — 512 MiB of `Value` at rest and about 1.5 GiB across the final
+/// reallocation. That is worse than an ordinary flood, because a failed allocation in
+/// Rust **aborts** the process; it does not unwind, so the `catch_unwind` bulkhead in
+/// [`crate::stdio`] never sees it and the session dies with whatever it was holding.
+///
+/// # The number
+///
+/// `MAX_MESSAGE_BYTES / 8` = 4,194,304 values, i.e. the parser insists on an average of
+/// at least eight input bytes per value. Two facts make that the right threshold:
+///
+/// * **No real request comes close.** The largest legitimate call this server takes is
+///   `tokfold_decompress` carrying a ~22 MiB base64 archive, and that archive is a
+///   single string — *one* value. The whole envelope is about eight. `tools/list` is
+///   four, an `initialize` handshake about a dozen. The margin over real traffic is
+///   five orders of magnitude, and it does not shrink as payloads grow, because payload
+///   size and node count are independent here.
+/// * **Not even the densest *legal* line reaches it.** The one shape that scales with
+///   node count rather than payload size is a batch. A minimal well-formed member,
+///   `{"jsonrpc":"2.0","method":"a"}`, is 30 bytes and 3 values, so 31 bytes with its
+///   separator; a batch filling the byte cap holds about 1,082,000 of them, or about
+///   3,247,000 values. That is 23% below the budget. Every well-formed message
+///   therefore still parses, and the shapes that trip the limit — an array of bare
+///   digits at 2 bytes per value, an array of tiny objects at about 6 — are ones no
+///   request grammar produces.
+///
+/// At the budget the tree is capped at 128 MiB of `Value` (192 MiB across the last
+/// doubling: the budget is 2^22, so the reallocation that reaches it happens at element
+/// 2^21), or 224 MiB where every counted value is an object member. Bounded, and
+/// bounded by arithmetic rather than by hope.
+///
+/// A message over the budget is refused as a [`ParseError`], which the server answers
+/// with `-32700` and no id — the same treatment as any other unparseable line. There is
+/// no tree to read an id out of, so inventing a second rule for this case would only
+/// mean a client could not tell the two apart.
+pub const MAX_NODES: usize = crate::MAX_MESSAGE_BYTES / 8;
 
 /// A JSON value.
 ///
@@ -277,17 +330,30 @@ pub struct ParseError {
 /// # Errors
 ///
 /// Returns [`ParseError`] on malformed syntax, nesting deeper than [`MAX_DEPTH`],
-/// an invalid `\u` escape, a duplicate key in an object, or any non-whitespace byte
-/// after the value.
+/// more than [`MAX_NODES`] values, an invalid `\u` escape, a duplicate key in an
+/// object, or any non-whitespace byte after the value.
 ///
 /// The number grammar is RFC 8259 exactly: no leading zeros, no bare `1.`, no bare
 /// `.5`, and a literal that overflows to infinity is an error rather than a value
 /// this crate could not write back out.
 pub fn parse(input: &str) -> Result<Value, ParseError> {
+    parse_bounded(input, MAX_NODES)
+}
+
+/// [`parse`], with the node budget supplied rather than taken from [`MAX_NODES`].
+///
+/// This exists so the budget's boundary can be pinned exactly — accepted at the limit,
+/// refused one past it — without building the ~8 MB of input the production constant
+/// would need. It is private and `parse` is its only non-test caller, which passes
+/// [`MAX_NODES`] unconditionally; there is no path by which a test can relax the limit
+/// a real message is held to.
+fn parse_bounded(input: &str, max_nodes: usize) -> Result<Value, ParseError> {
     let mut parser = Parser {
         bytes: input.as_bytes(),
         pos: 0,
         depth: 0,
+        nodes: 0,
+        max_nodes,
     };
     let value = parser.parse_value()?;
     parser.skip_ws();
@@ -318,6 +384,10 @@ struct Parser<'a> {
     bytes: &'a [u8],
     pos: usize,
     depth: usize,
+    /// Values materialised so far. See [`MAX_NODES`].
+    nodes: usize,
+    /// Ceiling for `nodes`. Always [`MAX_NODES`] outside this module's own tests.
+    max_nodes: usize,
 }
 
 impl Parser<'_> {
@@ -361,6 +431,13 @@ impl Parser<'_> {
     }
 
     fn parse_value(&mut self) -> Result<Value, ParseError> {
+        // Every value in the tree passes through here exactly once — arrays and objects
+        // reach their children by calling back into this function — so one integer
+        // increment on this path bounds the whole tree. No allocation, no second walk.
+        self.nodes = self.nodes.saturating_add(1);
+        if self.nodes > self.max_nodes {
+            return Err(self.error("too many values in one message"));
+        }
         self.skip_ws();
         match self.peek() {
             Some(b'n') => {
@@ -620,7 +697,7 @@ impl Parser<'_> {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use super::{MAX_DEPTH, Object, Value, parse};
+    use super::{MAX_DEPTH, MAX_NODES, Object, Value, parse, parse_bounded};
 
     fn roundtrip(text: &str) -> String {
         parse(text).unwrap().to_string()
@@ -957,5 +1034,96 @@ mod tests {
         assert!(value.as_object().is_none());
         assert!(value.get("a").is_none());
         assert!(!value.is_null());
+    }
+
+    /// An array of `count` zeroes: the densest node shape JSON admits, two bytes each.
+    fn dense_array(count: usize) -> String {
+        let mut text = String::with_capacity(count.saturating_mul(2).saturating_add(2));
+        text.push('[');
+        for index in 0..count {
+            if index > 0 {
+                text.push(',');
+            }
+            text.push('0');
+        }
+        text.push(']');
+        text
+    }
+
+    #[test]
+    fn the_node_budget_boundary_is_pinned_exactly() {
+        // Exactly at the budget is accepted and one past it is not. The array itself is
+        // a value, so `dense_array(n)` holds n + 1 of them.
+        assert!(parse_bounded(&dense_array(7), 8).is_ok());
+        assert!(parse_bounded(&dense_array(8), 8).is_err());
+        // Off-by-one in the other direction: a budget of one admits a scalar and
+        // nothing that contains anything.
+        assert!(parse_bounded("0", 1).is_ok());
+        assert!(parse_bounded("[]", 1).is_ok());
+        assert!(parse_bounded("[0]", 1).is_err());
+    }
+
+    #[test]
+    fn the_node_budget_counts_members_of_every_container() {
+        // Nesting does not launder a value past the counter: five values here, whatever
+        // shape they are arranged in.
+        assert!(parse_bounded(r#"{"a":{"b":[0,1]}}"#, 5).is_ok());
+        assert!(parse_bounded(r#"{"a":{"b":[0,1]}}"#, 4).is_err());
+        assert!(parse_bounded("[[[[0]]]]", 5).is_ok());
+        assert!(parse_bounded("[[[[0]]]]", 4).is_err());
+    }
+
+    #[test]
+    fn an_over_budget_message_reports_the_node_limit() {
+        let error = parse_bounded(&dense_array(8), 8).unwrap_err();
+        assert_eq!(error.msg, "too many values in one message");
+        // The message a caller logs names the limit rather than the syntax, so an
+        // operator can tell a refused-because-huge line from a malformed one.
+        assert!(error.to_string().contains("too many values"));
+    }
+
+    #[test]
+    fn a_large_payload_is_not_a_large_node_count() {
+        // The shape this bound must never punish: `tokfold_decompress` carrying a base64
+        // archive. However many megabytes the archive is, it is one string and so one
+        // value, and the envelope around it is a handful more. Parsed here under a
+        // budget of ten to make the independence of the two quantities explicit.
+        let archive = "QUJD".repeat(256 * 1024); // 1 MiB of base64
+        let request = format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"tokfold_decompress","arguments":{{"archive":"{archive}"}}}}}}"#
+        );
+        assert!(request.len() > 1024 * 1024);
+        let value = parse_bounded(&request, 10).expect("a large payload is few values");
+        assert_eq!(
+            value
+                .get("params")
+                .and_then(|params| params.get("arguments"))
+                .and_then(|arguments| arguments.get("archive"))
+                .and_then(Value::as_str)
+                .map(str::len),
+            Some(archive.len())
+        );
+    }
+
+    #[test]
+    fn the_node_budget_arithmetic_matches_its_documentation() {
+        // `MAX_NODES` is justified by numbers written into its doc comment; if the
+        // layout of `Value` changes underneath them, the justification is wrong and this
+        // fails rather than the doc quietly becoming fiction.
+        assert_eq!(size_of::<Value>(), 32);
+        assert_eq!(size_of::<(String, Value)>(), 56);
+        assert_eq!(MAX_NODES, crate::MAX_MESSAGE_BYTES / 8);
+        assert_eq!(MAX_NODES, 4_194_304);
+
+        // The claim that no legal message reaches the budget rests on the densest one
+        // being a batch of minimal members. Derive that count rather than quoting it.
+        let member = r#"{"jsonrpc":"2.0","method":"a"}"#;
+        assert_eq!(member.len(), 30);
+        let members = crate::MAX_MESSAGE_BYTES / (member.len() + 1);
+        let values = members * 3 + 1;
+        assert!(
+            values < MAX_NODES,
+            "densest legal line is {values} values, budget is {MAX_NODES}"
+        );
     }
 }

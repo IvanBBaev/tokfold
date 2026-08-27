@@ -1,5 +1,6 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "NOT ACTIVE: the Renovate GitHub App is not installed on this repository, so nothing here runs and no dependency is updated automatically. This is the configuration that takes effect if and when the app is installed.",
   "extends": [
     "config:recommended",
     ":dependencyDashboard"

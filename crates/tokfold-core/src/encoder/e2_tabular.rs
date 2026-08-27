@@ -15,10 +15,26 @@
 //! contains a nested table. Everything that is not a tabularized array is emitted
 //! as structural-minified JSON (insignificant whitespace removed) with every
 //! string, number and literal copied **verbatim** from its source span. Verbatim
-//! copying is what makes the transform trivially reversible and preserves
-//! [`never_compress`](crate::never_compress) content (compiler errors, HTTP
-//! statuses, panic traces, …) byte-for-byte with its position: E2 performs no line
-//! dedup, folding or reordering, so a protected line can never be merged or moved.
+//! copying is what makes the transform trivially reversible.
+//!
+//! # Relation to `never_compress`
+//!
+//! E2 does **not** consult [`never_compress`](crate::never_compress); E1 is the only
+//! encoder that reads that table. What keeps protected content faithful here is
+//! structural rather than table-driven: every value lexeme is copied byte-for-byte
+//! from its source span, and rows are emitted in source order with no line dedup, no
+//! near-duplicate clustering and no reordering — so a protected *value* (a compiler
+//! error, an HTTP status, a panic trace) is neither rewritten nor moved relative to
+//! the other values.
+//!
+//! The one repetition E2 does remove is the dominant key set: it is hoisted once into
+//! the table header instead of being repeated on every plain row. A protected string
+//! occurring among those hoisted *keys* is therefore written once, at the header,
+//! rather than at each element's position; deviating rows are self-describing and
+//! still spell out their own keys. Whether the verbatim-with-position rule ought to
+//! forbid
+//! that is an open, format-affecting question recorded in
+//! [`never_compress`](crate::never_compress) and deliberately not settled here.
 //!
 //! # Body grammar (what [`render`] returns; the caller adds the `tbl` sentinel)
 //!
@@ -79,11 +95,19 @@
 //!
 //! # When it declines (returns `None`)
 //!
-//! No array qualifies: an array needs ≥ 2 elements, all objects, with a shared
-//! shape — the dominant key set must occur ≥ 2 times and be non-empty. Scalar
-//! arrays and single-element arrays never qualify. Whether the tabular form is
-//! actually shorter than the input is decided afterwards by
-//! [`select`](super::select) under the token estimator, exactly as for E1.
+//! The expected case is that no array qualifies: an array needs ≥ 2 elements, all
+//! objects, with a shared shape — the dominant key set must occur ≥ 2 times and be
+//! non-empty. Scalar arrays and single-element arrays never qualify.
+//!
+//! `None` is not limited to that case, though. The render walk also returns it from
+//! its defensive guards: a span that does not resolve to source text, an index step
+//! that would overflow, an element that is not the object the qualifying condition
+//! promised, and the final fail-safe for a walk that emitted no table. Every one of
+//! them is unreachable by construction; they exist so a violated invariant degrades to
+//! passthrough rather than emitting a malformed `tbl` body.
+//!
+//! Whether the tabular form is actually shorter than the input is decided afterwards
+//! by [`select`](super::select) under the token estimator, exactly as for E1.
 
 use core::hash::Hasher;
 
@@ -833,11 +857,30 @@ mod tests {
         assert_eq!(e2("[true,false,null]"), None);
     }
 
+    /// Equivalence proof for a constructor mutation this suite provably cannot kill:
+    /// seeding `AnalyzeFrame::array` with `elem_count: 1` instead of `0` changes no
+    /// output. `finish_array`'s `elem_count < 2` test is a fast path, not a decision —
+    /// when `all_objects` still holds, every element was an object, so the per-shape
+    /// counters sum to `elem_count`, and the only array the off-by-one would newly let
+    /// through is a one-element one, whose single shape has `count == 1` and is
+    /// rejected by `best.count < 2` a few lines later. This test pins the decline that
+    /// both gates agree on; no input can separate the two seeds.
     #[test]
     fn single_element_array_is_declined() {
         assert_eq!(e2(r#"[{"a":1}]"#), None);
     }
 
+    /// Also the equivalence proof for four constructor mutations that survive the
+    /// suite by construction: `AnalyzeFrame::object` seeds `is_array`, `all_objects`,
+    /// `elem_count` and `start_index`, and an object frame's copies of those four are
+    /// never read. The tape is balanced by construction, so an object frame is only
+    /// ever popped in the `ObjectEnd` arm, which consults `done.keys` alone;
+    /// `finish_array` (the sole reader of `all_objects` and `elem_count`) and the
+    /// `plans.insert` keyed on `start_index` are reached only from `ArrayEnd`, whose
+    /// popped frame always came from `AnalyzeFrame::array`. Flipping the object seed's
+    /// `is_array` merely redirects bookkeeping into those same unread fields. So these
+    /// are equivalent mutants, not an untested path — this test covers the observable
+    /// half, that a document whose containers are objects yields no plan at all.
     #[test]
     fn no_array_is_declined() {
         assert_eq!(e2(r#"{"a":1,"b":2}"#), None);

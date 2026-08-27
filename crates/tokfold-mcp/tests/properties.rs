@@ -141,6 +141,39 @@ proptest! {
         }
     }
 
+    /// Whatever comes back fits the frame, whatever went in.
+    ///
+    /// The size limit is stated in one place and relied on everywhere, so the way it
+    /// fails is a path that forgot it — a new branch that builds a response and renders
+    /// it directly, or a batch shape nobody sized. Example tests cover the two paths
+    /// someone had in mind. This drives the limit down to a few dozen bytes, where
+    /// *almost every* answer overruns it and therefore almost every generated line
+    /// exercises the refusal machinery rather than the happy path, and asserts the one
+    /// thing that has to hold for all of them: it fits, and it is still a message.
+    ///
+    /// The floor is the one documented exception — below the size of a bare error frame
+    /// there is nothing valid left to emit, and a frame that overruns an absurd limit is
+    /// better than silence, which hangs the caller. That frame is 96 bytes here (a fixed
+    /// message and the limit's own digits), so generating from 128 upward keeps the
+    /// property above the exception while staying far under any real answer.
+    #[test]
+    fn no_answer_ever_exceeds_the_frame_limit(
+        max in 128_usize..512,
+        body in r#"[\{\}\[\]",:0-9a-z_/\\ .-]{0,120}"#,
+        wrap_in_a_batch in any::<bool>(),
+    ) {
+        let line = if wrap_in_a_batch { format!("[{body},{body}]") } else { body };
+        let mut server = Server::new().with_max_message_bytes(max);
+        if let Some(reply) = server.handle_line(&line) {
+            prop_assert!(
+                reply.len() <= max,
+                "a {} byte answer to a {max} byte limit: {reply:?}",
+                reply.len()
+            );
+            prop_assert!(json::parse(&reply).is_ok(), "a reply must be JSON: {reply:?}");
+        }
+    }
+
     /// The three rules that hold for every answered message, whatever the message was.
     ///
     /// A reply carries the `jsonrpc` marker, exactly one of `result` or `error`, and the

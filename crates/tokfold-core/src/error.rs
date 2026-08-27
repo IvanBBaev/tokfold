@@ -29,12 +29,21 @@ pub enum CompressError {
         msg: String,
     },
 
-    /// The input exceeded the configured size limit.
+    /// The input exceeded a size limit — the configured one, or the format's
+    /// structural ceiling.
     #[error("input {size} bytes exceeds limit {limit}")]
     InputTooLarge {
         /// Actual input length in bytes.
         size: usize,
-        /// Configured limit in bytes.
+        /// The limit that tripped, in bytes.
+        ///
+        /// Usually the configured
+        /// [`ConfigBuilder::max_input_bytes`](crate::ConfigBuilder::max_input_bytes).
+        /// The parser reports `u32::MAX` instead when the input cannot be addressed
+        /// by the `u32` offsets a [`Span`](crate::tape::Span) holds — a structural
+        /// ceiling no setter can raise, reachable by configuring `max_input_bytes`
+        /// above 4 GiB or by calling [`tape::parse`](crate::tape::parse) directly. So
+        /// this value is not always one the caller configured.
         limit: usize,
     },
 

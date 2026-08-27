@@ -17,12 +17,13 @@
 //!
 //! Exit codes are normative: `0` success, `2` bad input (usage, I/O, or an input the
 //! compressor rejects on `stats`), `3` a corrupt or unrecoverable archive on `expand`.
-//! `anyhow` is confined to this binary; the library crates never depend on it.
+//! A downstream that closes the pipe early (`… | head`) is a clean exit, never an
+//! error. `anyhow` is confined to this binary; the library crates never depend on it.
 //!
 //! `mcp` exits `0` when the client closes the stream — on clean end-of-input and on a
 //! broken pipe alike, since a client that hangs up has ended the session rather than
-//! failed it. Until v0.0.1 it instead exited `69` unconditionally as an unimplemented
-//! stub; that code is gone now that the subcommand does something.
+//! failed it. Earlier in development this subcommand was an unimplemented stub that
+//! always exited `69`; that code is gone now that it does something.
 
 #![forbid(unsafe_code)]
 

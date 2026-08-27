@@ -99,9 +99,14 @@ fn framed(enc: Encoder, body: &str) -> String {
 ///
 /// The returned string is the full rendering the model reads: the sentinel line
 /// followed by the encoder body. [`Encoder::Passthrough`] always applies and
-/// returns the input verbatim behind a `raw` sentinel; the other encoders return
-/// `None` only when the input does not fit their shape — E1 when a span cannot be
-/// resolved, E2 when no array qualifies.
+/// returns the input verbatim behind a `raw` sentinel; the other encoders decline with
+/// `None` when the input does not fit their shape — E1 when a span cannot be resolved,
+/// E2 when no array qualifies. E2 additionally propagates `None` from several
+/// defensive guards inside its render walk (span resolution, index arithmetic, an
+/// element that is not the object the qualifying condition promised); each is
+/// unreachable by construction and exists so a violated invariant degrades to
+/// passthrough instead of emitting a malformed body. Either way the contract for the
+/// caller is the same: `None` means "use another encoder".
 ///
 /// Rendering is not deciding: no encoder here measures its candidate against the
 /// input, so a body returned by this function may well cost more than it saves.

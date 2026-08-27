@@ -18,8 +18,12 @@
 //!   escapes uninterpreted, so lone-surrogate `\uXXXX` escapes survive verbatim.
 //! * **Order-preserving.** Object key order, duplicate keys, and array order are
 //!   emitted in source order and never collapsed.
-//! * **No slicing.** The input is walked as `&[u8]` via `.get(..)`; the crate
-//!   forbids `&s[a..b]` indexing.
+//! * **No slicing.** The input is walked as `&[u8]` via `.get(..)`, so no production
+//!   path here takes an `&s[a..b]` that could panic. The workspace sets
+//!   `clippy::indexing_slicing` to `warn` — not `deny` or `forbid`, the level
+//!   `unsafe_code` gets — so it is CI's `-D warnings` that makes a violation fatal,
+//!   and a local `#[allow]` still overrides it. Four test modules (this one included)
+//!   take that `#[allow]`, where a panicking index is an acceptable assertion.
 //!
 //! Because [`Node::depth`] is a `u16`, depths beyond `u16::MAX` saturate. That is
 //! only reachable when `max_depth` is configured above `u16::MAX`, an atypical

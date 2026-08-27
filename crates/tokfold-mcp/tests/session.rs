@@ -28,6 +28,25 @@ fn session(input: &str) -> Vec<json::Value> {
         .collect()
 }
 
+/// Runs a session against a server whose frame limit has been lowered to `max`.
+///
+/// The limit is a real setting an embedder can choose, not a test hook: nothing else in
+/// the server reads it, so lowering it changes which answers are too large and nothing
+/// about how any answer is computed. That is what makes it sound to reach the oversized
+/// branch here with a few kilobytes instead of the 32 MiB the default would need — the
+/// code under test is the same code, and the suite stays fast.
+fn bounded_session(max: usize, input: &str) -> Vec<String> {
+    let mut server = Server::new().with_max_message_bytes(max);
+    let mut output = Vec::new();
+    stdio::serve(input.as_bytes(), &mut output, &mut server)
+        .expect("an in-memory session cannot fail on I/O");
+    String::from_utf8(output)
+        .expect("the transport emits UTF-8")
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
 /// The one field every client reads first.
 fn id_of(message: &json::Value) -> Option<i64> {
     message.get("id").and_then(json::Value::as_i64)
@@ -249,12 +268,14 @@ fn a_reply_outgrows_its_request_by_a_bounded_multiple_on_both_tool_paths() {
     // when this was written — and a multi-megabyte case would only make the suite slow
     // to say the same thing.
     //
-    // The second assertion is the one that matters beyond regression. `MAX_LINE_BYTES`
-    // caps what the transport will *read* and nothing caps what it writes, so at the
-    // ratio measured here a request this server happily accepts already yields a reply
-    // the same server would refuse to read back. That asymmetry is documented in
-    // `stdio.rs` and left as an owner decision; this pins that it is real and not a
-    // claim about hypothetical inputs.
+    // The second assertion is the one that matters beyond regression, and it is the
+    // reason the frame limit applies to what is written as well as what is read. At the
+    // ratio measured here, a request well inside `MAX_LINE_BYTES` already has an answer
+    // that is not: the largest request whose reply still fits is a fraction of what the
+    // reader itself admits. This pins that the multiplier is real rather than a claim
+    // about hypothetical inputs — which is what makes the refusal pinned in
+    // `a_reply_that_would_not_fit_the_frame_is_refused_by_id_rather_than_truncated`
+    // reachable through a legal request instead of dead code.
     let rows: Vec<String> = (0..120)
         .map(|index| {
             format!(
@@ -308,15 +329,90 @@ fn a_reply_outgrows_its_request_by_a_bounded_multiple_on_both_tool_paths() {
             "the {path} path is expected to answer larger than it was asked; \
              {observed}% means the reply shape changed"
         );
-        // At this multiplier, the largest request whose reply still fits under the read
-        // cap is a fraction of what the read cap itself admits.
-        let largest_safe_request = stdio::MAX_LINE_BYTES * 100 / observed;
+        // At this multiplier, the largest request whose reply still fits the frame is a
+        // fraction of what the frame itself admits as input.
+        let largest_answerable_request = stdio::MAX_LINE_BYTES * 100 / observed;
         assert!(
-            largest_safe_request < stdio::MAX_LINE_BYTES,
-            "the {path} reply no longer outgrows its request, so the read cap is \
-             symmetric after all and this test is obsolete"
+            largest_answerable_request < stdio::MAX_LINE_BYTES,
+            "the {path} reply no longer outgrows its request, so a readable request can \
+             no longer produce an unwritable answer and this test is obsolete"
         );
     }
+}
+
+#[test]
+fn a_reply_that_would_not_fit_the_frame_is_refused_by_id_rather_than_truncated() {
+    // The other half of the measurement above. Because a reply outgrows its request,
+    // there are requests this transport will read whose answers it could not write, and
+    // what happens then is a contract: the client gets a well-formed error carrying its
+    // own id, on one line, small enough to pass back through the same reader. Anything
+    // else is worse than a failure — a truncated frame desynchronises the stream, and
+    // silence leaves the call to time out.
+    //
+    // Driven through `stdio::serve` rather than `handle_line` on purpose: the unit tests
+    // pin the ladder, this pins that the frame the client actually reads off the wire is
+    // the bounded one.
+    let payload = "x".repeat(8192);
+    let session = bounded_session(
+        4096,
+        &format!("{}\n", call_line("tokfold_compress", &payload)),
+    );
+
+    assert_eq!(session.len(), 1, "exactly one line comes back");
+    let line = &session[0];
+    assert!(
+        line.len() <= 4096,
+        "the refusal must itself fit the frame: {} bytes",
+        line.len()
+    );
+    assert!(
+        !line.contains(&payload),
+        "an error that echoed the payload would be the same bug again"
+    );
+
+    let reply = json::parse(line).expect("the refusal is a JSON message");
+    assert_eq!(
+        id_of(&reply),
+        Some(1),
+        "the client's own id, or the call hangs"
+    );
+    assert!(reply.get("result").is_none(), "no partial result: {reply}");
+    assert_eq!(
+        reply
+            .get("error")
+            .and_then(|error| error.get("code"))
+            .and_then(json::Value::as_i64),
+        Some(-32602),
+        "the arguments are what the client can make smaller"
+    );
+}
+
+#[test]
+fn a_reply_that_fits_is_delivered_untouched_by_the_frame_limit() {
+    // The guard on the test above: a bound that quietly rewrote ordinary replies would
+    // pass every assertion there and still be a serious defect. A limit set exactly at
+    // the length of the real answer must deliver that answer byte for byte — the same
+    // bytes an unbounded server would have written.
+    let line = call_line("tokfold_compress", r#"{"rows":[{"a":1},{"a":2},{"a":3}]}"#);
+    let unrestricted = session(&format!("{line}\n"));
+    assert_eq!(unrestricted.len(), 1);
+    let expected = unrestricted[0].to_string();
+
+    let exact = bounded_session(expected.len(), &format!("{line}\n"));
+    assert_eq!(exact.len(), 1, "the answer still comes back");
+    assert_eq!(
+        exact[0], expected,
+        "a reply at exactly the limit is the unmodified reply"
+    );
+
+    // One byte less is the first size that cannot be delivered, which is what makes the
+    // comparison above a boundary rather than a coincidence.
+    let short = bounded_session(expected.len() - 1, &format!("{line}\n"));
+    assert!(
+        json::parse(&short[0]).unwrap().get("error").is_some(),
+        "one byte under the exact fit must refuse: {}",
+        short[0]
+    );
 }
 
 #[test]
@@ -350,5 +446,57 @@ fn an_unsupported_revision_is_refused_with_the_versions_that_exist() {
             .and_then(json::Value::as_array)
             .is_some_and(|supported| !supported.is_empty()),
         "the refusal names what the server does speak"
+    );
+}
+
+#[test]
+fn a_node_dense_line_is_refused_although_it_fits_the_frame() {
+    // The byte cap and the node budget are two different bounds, and this line proves
+    // it: about 8.4 MB, a quarter of `MAX_MESSAGE_BYTES`, and still refused — because
+    // `[0,0,0,…]` spends two input bytes per value and would have expanded into
+    // 134 MiB of tree. Uncapped, the same shape at the frame limit reaches half a
+    // gigabyte at rest and about 1.5 GiB across the last `Vec` doubling, and an
+    // allocation failure aborts the process rather than unwinding into the bulkhead.
+    let count = json::MAX_NODES; // the array itself is the value that tips it over
+    let mut dense = String::with_capacity(count * 2 + 2);
+    dense.push('[');
+    for index in 0..count {
+        if index > 0 {
+            dense.push(',');
+        }
+        dense.push('0');
+    }
+    dense.push(']');
+    assert!(
+        dense.len() < tokfold_mcp::MAX_MESSAGE_BYTES,
+        "fits the frame"
+    );
+
+    let mut input = dense;
+    input.push('\n');
+    // A well-formed call after it: a refusal must not cost the client its session.
+    input.push_str(r#"{"jsonrpc":"2.0","id":7,"method":"ping"}"#);
+    input.push('\n');
+
+    let replies = session(&input);
+    assert_eq!(replies.len(), 2);
+
+    let error = replies[0].get("error").expect("the dense line is refused");
+    assert_eq!(
+        error.get("code").and_then(json::Value::as_i64),
+        Some(-32700),
+        "a line the parser refuses is a parse error, whatever made it refuse"
+    );
+    // The id member is absent, exactly as for any other unparseable line: the parse
+    // failed, so there is no tree to read one out of, and guessing would address an
+    // answer to a call the client may not have made. One rule for every parse failure,
+    // not a second one invented for this bound.
+    assert_eq!(replies[0].get("id"), None);
+    assert_eq!(id_of(&replies[0]), None);
+
+    assert_eq!(
+        id_of(&replies[1]),
+        Some(7),
+        "the session survives the refusal"
     );
 }

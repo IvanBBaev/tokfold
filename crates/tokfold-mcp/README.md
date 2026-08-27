@@ -30,6 +30,17 @@ All protocol logic sits behind `Server::handle_line`, a pure text-to-text functi
 the stdio loop only adds the streams. JSON, base64, and the JSON-RPC envelope are
 written here rather than pulled in, so the crate adds nothing to the dependency tree.
 
+### Reading a compress result
+
+`tokfold_compress` returns the recovery archive in `structuredContent.archive` and
+nowhere else. The `content` block carries the rendering alone, so **a client that
+reads only `content` keeps a compressed rendering it can never decompress** — reading
+`structuredContent` is required if the original is ever to be recovered. Reading only
+`content` is spec-conformant and is the common shape for older clients, so the tool
+description says this too; it is a limitation of the current wire shape, not a bug in
+such a client. `tokfold_decompress` is unaffected: it puts the restored text in both
+blocks.
+
 ## What the transport expects of a client
 
 The server handles one request at a time and writes each reply before it reads the
@@ -46,11 +57,21 @@ is enough. Making the loop read and write concurrently would mean a second threa
 an async runtime in a crate that is deliberately sans-io and dependency-free, so the
 requirement is documented rather than designed away.
 
-Relatedly, the transport caps a line it *reads* at 32 MiB and caps nothing it writes.
-A reply is always larger than the call it answers — the payload comes back both as
-`content` and as `structuredContent`, plus a base64 archive when compression succeeds —
-so a request of around 10 MB already produces a reply larger than this server would
-accept as input.
+One frame limit applies in both directions: 32 MiB is the largest line the transport
+will read *and* the largest it will write. Both matter, because a reply is always larger
+than the call it answers — the payload comes back both as `content` and as
+`structuredContent`, plus a base64 archive when compression succeeds, which is roughly
+2x on the passthrough path and up to 3.3x when an archive barely shrinks. A request of
+around 10 MB is therefore already enough to produce an answer that does not fit, and
+what the client gets then is a JSON-RPC error (`-32602`) addressed to its own request id,
+not a truncated frame and not silence.
+
+The limit belongs to `Server::handle_line`, not to the stdio loop, so an embedder that
+writes its own transport gets it too; `Server::with_max_message_bytes` sets a different
+one when the receiving side has a smaller budget. In a batch, a member whose answer does
+not fit is replaced by that error alone and the other members keep their real answers;
+only a batch whose per-member errors cannot themselves be made to fit collapses to a
+single id-less error.
 
 ## Status
 

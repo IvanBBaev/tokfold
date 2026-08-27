@@ -24,8 +24,11 @@
 //! break clients over a formality. Strictness is spent where it changes an outcome —
 //! an unsupported protocol revision, a second `initialize`, a malformed envelope.
 
+use crate::MAX_MESSAGE_BYTES;
 use crate::json::{Object, Value, parse};
-use crate::jsonrpc::{ErrorObject, Request, Response, decode_request};
+use crate::jsonrpc::{
+    ErrorObject, Request, Response, decode_request, echo, oversize_error, render_bounded,
+};
 use crate::protocol::{
     CACHE_SCOPE_PUBLIC, CACHE_TTL_MS, LATEST_LEGACY_VERSION, LATEST_PROTOCOL_VERSION,
     RESULT_TYPE_COMPLETE, SERVER_NAME, SERVER_VERSION, SUPPORTED_PROTOCOL_VERSIONS, error_code,
@@ -49,12 +52,26 @@ Input that does not compress is returned unchanged, never dropped.";
 ///
 /// One instance serves one client connection. It is `Send` and holds no I/O handles,
 /// so a caller is free to own it wherever it likes.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Server {
     /// Set once a legacy client completes `initialize`; a second one is a violation.
     handshaked: bool,
     /// The revision agreed during a legacy handshake, if there was one.
     negotiated_version: Option<String>,
+    /// Largest frame [`Server::handle_line`] will return. See [`MAX_MESSAGE_BYTES`].
+    max_message_bytes: usize,
+}
+
+impl Default for Server {
+    /// Written out rather than derived: a derived `Default` would set the frame limit
+    /// to `0`, which is a working server that refuses every call it can answer.
+    fn default() -> Self {
+        Self {
+            handshaked: false,
+            negotiated_version: None,
+            max_message_bytes: MAX_MESSAGE_BYTES,
+        }
+    }
 }
 
 impl Server {
@@ -62,6 +79,31 @@ impl Server {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Sets the largest frame [`Server::handle_line`] may return.
+    ///
+    /// The default is [`MAX_MESSAGE_BYTES`], which is also what [`crate::stdio`] will
+    /// read, so the two sides of that transport match. An embedder whose transport
+    /// frames differently — a smaller message budget upstream, or a channel with no
+    /// line limit at all — sets its own here. Raising it above what the peer's reader
+    /// accepts recreates the asymmetry this bound exists to remove, so the number
+    /// should be the receiver's limit, not this process's spare memory.
+    ///
+    /// Nothing else in the server reads this: it changes which answers are refused for
+    /// being too large and nothing about how any answer is computed. That is what makes
+    /// it usable in a test as the cheap way to cross the bound — a 64-byte limit
+    /// exercises exactly the code a 32 MiB one does, without allocating 32 MiB.
+    #[must_use]
+    pub fn with_max_message_bytes(mut self, max: usize) -> Self {
+        self.max_message_bytes = max;
+        self
+    }
+
+    /// The largest frame this server will return, in bytes.
+    #[must_use]
+    pub fn max_message_bytes(&self) -> usize {
+        self.max_message_bytes
     }
 
     /// The revision agreed during a legacy `initialize`, or the newest supported
@@ -88,7 +130,11 @@ impl Server {
     /// the answers come back as one array.
     ///
     /// The returned string never contains a newline, so the caller can frame it by
-    /// appending one.
+    /// appending one, and never exceeds [`Server::max_message_bytes`], so a caller that
+    /// writes it to a transport with the same limit cannot emit a frame its own peer
+    /// would refuse. A request whose answer does not fit is refused with an error
+    /// addressed to that request's id; [`crate::jsonrpc::render_bounded`] states the
+    /// rule and the reasoning.
     pub fn handle_line(&mut self, line: &str) -> Option<String> {
         // Blank lines are tolerated rather than answered. They are not valid JSON, but
         // a stray newline from a client's writer is not worth an error frame.
@@ -99,7 +145,7 @@ impl Server {
         let value = match parse(line) {
             Ok(value) => value,
             Err(error) => {
-                return Some(Self::render(Response::error(
+                return Some(self.render(Response::error(
                     None,
                     ErrorObject::new(error_code::PARSE_ERROR, error.to_string()),
                 )));
@@ -109,7 +155,8 @@ impl Server {
         if let Value::Array(items) = value {
             return self.handle_batch(items);
         }
-        self.handle_message(&value).map(Self::render)
+        let response = self.handle_message(&value)?;
+        Some(self.render(response))
     }
 
     /// Handles a batch: an array of messages answered with an array of responses.
@@ -122,22 +169,81 @@ impl Server {
     /// specification are explicit here rather than incidental: an empty array is
     /// itself an invalid request, and a batch made entirely of notifications is
     /// answered with silence, not with an empty array.
+    ///
+    /// # When the batch as a whole does not fit
+    ///
+    /// A batch reply is one frame, so the limit applies to the array and not to its
+    /// members — a thousand members that are each unremarkable can still add up past it.
+    /// The array is therefore filled against a running budget, and the answer degrades
+    /// in two steps, each losing exactly one more thing than the last:
+    ///
+    /// 1. A member whose real answer no longer fits the remaining space is replaced by
+    ///    the oversize error **addressed to that member's own id**. Every other member
+    ///    keeps its real answer. This is what makes the common case survivable: one
+    ///    outsized call in a batch of otherwise small ones fails alone, and the client
+    ///    does not have to reissue the calls that succeeded.
+    /// 2. If not even that small refusal fits — the batch is long enough that the
+    ///    per-member errors alone overflow — the whole array is dropped for a single
+    ///    id-less error. Correlation is lost, which is the cost of a frame that cannot
+    ///    hold one answer per call, and it is still an answer rather than a truncated
+    ///    frame or silence.
+    ///
+    /// Members are handled before it is known whether the frame will fit, so a batch
+    /// refused at step 2 may have had effects — a handshake in an earlier member stands.
+    /// That is a property of batching itself, not of the limit: JSON-RPC gives a batch
+    /// no atomicity, and the same is true of a batch whose reply is lost in transit.
     fn handle_batch(&mut self, items: Vec<Value>) -> Option<String> {
+        let max = self.max_message_bytes;
         if items.is_empty() {
-            return Some(Self::render(Response::error(
+            return Some(self.render(Response::error(
                 None,
                 ErrorObject::new(error_code::INVALID_REQUEST, "a batch must not be empty"),
             )));
         }
-        let replies: Vec<Value> = items
-            .into_iter()
-            .filter_map(|item| self.handle_message(&item))
-            .map(Response::into_value)
-            .collect();
-        if replies.is_empty() {
+
+        let mut frame = String::from("[");
+        let mut answered = false;
+        for item in items {
+            let Some(response) = self.handle_message(&item) else {
+                continue;
+            };
+            // What must still fit after this member: the comma in front of it when it
+            // is not the first, and the closing bracket.
+            let overhead = usize::from(answered) + 1;
+            let budget = max.saturating_sub(frame.len() + overhead);
+            let Some(member) = Self::fit_member(response, budget) else {
+                return Some(Self::refuse_batch(max));
+            };
+            if answered {
+                frame.push(',');
+            }
+            frame.push_str(&member);
+            answered = true;
+        }
+        if !answered {
             return None;
         }
-        Some(Value::Array(replies).to_string())
+        frame.push(']');
+        Some(frame)
+    }
+
+    /// Renders one batch member into `budget` bytes, or `None` if nothing fits.
+    ///
+    /// The ladder inside [`render_bounded`] does the work — the real answer, else the
+    /// refusal addressed to this member's id, else an id-less one. `None` means even the
+    /// last of those is too big for what is left, which is the signal to abandon the
+    /// array rather than write a member that overruns the frame.
+    fn fit_member(response: Response, budget: usize) -> Option<String> {
+        let member = render_bounded(response, budget);
+        (member.len() <= budget).then_some(member)
+    }
+
+    /// The single error that replaces a batch whose answers cannot be made to fit.
+    ///
+    /// Carries no id because the frame it replaces answered many, and no `data` because
+    /// the payload is the thing that did not fit.
+    fn refuse_batch(max: usize) -> String {
+        render_bounded(Response::error(None, oversize_error(max)), max)
     }
 
     /// Handles one message: the only one on a line, or one member of a batch.
@@ -175,12 +281,14 @@ impl Server {
         })
     }
 
-    /// Serializes a response as a single line.
+    /// Serializes a response as a single line of at most [`Server::max_message_bytes`].
     ///
     /// Takes the response by value so a tool result — which can be the whole
-    /// compressed payload — is moved into the envelope rather than deep-cloned.
-    fn render(response: Response) -> String {
-        response.into_value().to_string()
+    /// compressed payload — is moved into the envelope rather than deep-cloned. Every
+    /// non-batch answer goes through here, so the limit cannot be missed by a new
+    /// branch that builds a `Response` and forgets to bound it.
+    fn render(&self, response: Response) -> String {
+        render_bounded(response, self.max_message_bytes)
     }
 
     /// Routes a validated request to its handler.
@@ -200,9 +308,12 @@ impl Server {
             method::PING => Ok(with_envelope(Object::new().build())),
             method::TOOLS_LIST => Self::tools_list(request),
             method::TOOLS_CALL => Self::tools_call(request),
+            // `echo` bounds the quoted name: `other` is whatever the peer wrote, and a
+            // refusal is not a reason to copy a megabyte of it back out. See
+            // [`crate::jsonrpc::echo`].
             other => Err(ErrorObject::new(
                 error_code::METHOD_NOT_FOUND,
-                format!("unknown method: {other}"),
+                format!("unknown method: {}", echo(other)),
             )),
         }
     }
@@ -373,14 +484,18 @@ fn check_request_metadata(request: &Request) -> Result<(), ErrorObject> {
             .iter()
             .map(|entry| Value::string(*entry))
             .collect();
+        // The unbounded string arrives twice here — once in the message, once in
+        // `data.requested` — so this refusal used to answer a request with roughly twice
+        // its own size. Both copies go through `echo`.
+        let requested = echo(version);
         return Err(ErrorObject::new(
             error_code::UNSUPPORTED_PROTOCOL_VERSION,
-            format!("unsupported protocol version: {version}"),
+            format!("unsupported protocol version: {requested}"),
         )
         .with_data(
             Object::new()
                 .set("supported", Value::Array(supported))
-                .set("requested", Value::string(version))
+                .set("requested", Value::string(requested))
                 .build(),
         ));
     }
@@ -411,22 +526,48 @@ fn check_request_metadata(request: &Request) -> Result<(), ErrorObject> {
     Ok(())
 }
 
+/// Result member naming the request/response pattern. Owned by [`with_envelope`].
+const KEY_RESULT_TYPE: &str = "resultType";
+
+/// Result member carrying per-response metadata. Owned by [`with_envelope`].
+const KEY_META: &str = "_meta";
+
 /// Adds the members every result of this server carries.
 ///
 /// `resultType` is required from `2026-07-28` onward and ignored by older clients, so
 /// it is set unconditionally rather than branched on — one code path is easier to keep
 /// correct than two, and the field costs a legacy client nothing.
+///
+/// # The two envelope keys are reserved
+///
+/// [`Object::set`] appends without deduplicating and [`Value::get`] is first-wins, so a
+/// result that already carried [`KEY_RESULT_TYPE`] or [`KEY_META`] would have its own
+/// copy read by a client and the server's copy silently ignored — a tool would be able
+/// to overwrite the protocol metadata of the response carrying it.
+///
+/// **This is currently unreachable, and the assertion below is not evidence of a past
+/// bug.** Every key a result can hold is compiled in and the whole set was enumerated:
+/// `compressed`, `stats`, `rendering`, `archive`, `reason`, `reasonCode`, `text`,
+/// `code`, and `message` from [`crate::tools`], plus `content`, `structuredContent`, and
+/// `isError` added on the `tools/call` path. None collides. What the assertion buys is
+/// that the day someone adds a tool field named `_meta`, a debug build says so instead
+/// of a release build shipping a response whose metadata came from the wrong layer.
 fn with_envelope(result: Value) -> Value {
     let mut object = Object::new();
     if let Value::Object(members) = result {
         for (key, value) in members {
+            debug_assert!(
+                key != KEY_RESULT_TYPE && key != KEY_META,
+                "tool result carries the reserved envelope key `{key}`; it would shadow \
+                 the envelope's own copy, because object members are first-wins"
+            );
             object = object.set(&key, value);
         }
     }
     object
-        .set("resultType", Value::string(RESULT_TYPE_COMPLETE))
+        .set(KEY_RESULT_TYPE, Value::string(RESULT_TYPE_COMPLETE))
         .set(
-            "_meta",
+            KEY_META,
             Object::new().set(meta::SERVER_INFO, server_info()).build(),
         )
         .build()
@@ -474,11 +615,13 @@ mod tests {
         clippy::indexing_slicing
     )]
 
-    use super::Server;
-    use crate::json::{Value, parse};
+    use super::{KEY_META, KEY_RESULT_TYPE, MAX_MESSAGE_BYTES, Server, with_envelope};
+    use crate::json::{Object, Value, parse};
+    use crate::jsonrpc::{ECHO_ELLIPSIS, MAX_ECHO_BYTES};
     use crate::protocol::{
         CACHE_SCOPE_PUBLIC, CACHE_TTL_MS, LATEST_LEGACY_VERSION, LATEST_PROTOCOL_VERSION,
-        SERVER_NAME, SERVER_VERSION, SUPPORTED_PROTOCOL_VERSIONS, error_code, meta,
+        RESULT_TYPE_COMPLETE, SERVER_NAME, SERVER_VERSION, SUPPORTED_PROTOCOL_VERSIONS, error_code,
+        meta,
     };
 
     /// Sends one line and parses whatever came back.
@@ -1082,6 +1225,336 @@ mod tests {
         assert_eq!(
             exchange(&mut server, r#"{"jsonrpc":"2.0","id":42,"method":"ping"}"#).get("id"),
             Some(&Value::Int(42))
+        );
+    }
+
+    /// A default server is bounded by the transport's own limit.
+    ///
+    /// The seam that makes the rest of these tests cheap is also a way to build a server
+    /// with no useful bound at all, so what the default is has to be pinned separately
+    /// from what the seam does.
+    #[test]
+    fn a_server_is_bounded_by_the_transport_limit_unless_told_otherwise() {
+        assert_eq!(Server::new().max_message_bytes(), MAX_MESSAGE_BYTES);
+        assert_eq!(Server::default().max_message_bytes(), MAX_MESSAGE_BYTES);
+        assert_eq!(
+            Server::new().with_max_message_bytes(64).max_message_bytes(),
+            64
+        );
+    }
+
+    /// A single reply that will not fit is refused by id, not truncated or dropped.
+    ///
+    /// The same ladder is exercised at 32 MiB by a real payload in `tests/session.rs`;
+    /// here the limit is lowered instead, because the branch taken is identical and a
+    /// unit test that allocates 32 MiB to reach it earns nothing.
+    #[test]
+    fn a_reply_larger_than_the_limit_is_refused_with_the_requests_own_id() {
+        let mut server = Server::new().with_max_message_bytes(120);
+        let reply = exchange(
+            &mut server,
+            r#"{"jsonrpc":"2.0","id":"abc","method":"tools/list"}"#,
+        );
+
+        assert_eq!(reply.get("id"), Some(&Value::string("abc")));
+        assert!(
+            reply.get("result").is_none(),
+            "the catalogue must not fit: {reply}"
+        );
+        assert_eq!(
+            reply
+                .get("error")
+                .and_then(|e| e.get("code"))
+                .and_then(Value::as_i64),
+            Some(i64::from(error_code::INVALID_PARAMS))
+        );
+        // The refusal is the thing that has to fit; a bound that only moves the overrun
+        // one frame later is not a bound.
+        assert!(
+            server
+                .handle_line(r#"{"jsonrpc":"2.0","id":"abc","method":"tools/list"}"#)
+                .is_some_and(|frame| frame.len() <= 120)
+        );
+    }
+
+    /// One outsized member of a batch fails alone; the rest keep their real answers.
+    ///
+    /// This is the whole reason the batch path fills against a running budget instead of
+    /// rendering the array and checking its length: collapsing the batch would make a
+    /// client reissue the calls that succeeded, and it would have no way to tell which
+    /// member was the expensive one.
+    #[test]
+    fn one_oversized_member_of_a_batch_is_refused_without_taking_the_others_down() {
+        // Enough for two `ping` results and a refusal, not enough for the tool catalogue.
+        let mut server = Server::new().with_max_message_bytes(400);
+        let batch = concat!(
+            r#"[{"jsonrpc":"2.0","id":1,"method":"ping"},"#,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"},"#,
+            r#"{"jsonrpc":"2.0","id":3,"method":"ping"}]"#
+        );
+        let frame = server
+            .handle_line(batch)
+            .expect("a batch of requests is answered");
+        assert!(
+            frame.len() <= 400,
+            "the aggregate must fit: {} bytes",
+            frame.len()
+        );
+
+        let replies = parse(&frame).unwrap();
+        let replies = replies
+            .as_array()
+            .expect("a batch is answered with an array");
+        assert_eq!(replies.len(), 3, "every member is still answered: {frame}");
+        assert!(
+            replies[0].get("result").is_some(),
+            "member 1 kept its answer"
+        );
+        assert!(
+            replies[2].get("result").is_some(),
+            "member 3 kept its answer"
+        );
+        assert_eq!(
+            replies[1]
+                .get("error")
+                .and_then(|e| e.get("code"))
+                .and_then(Value::as_i64),
+            Some(i64::from(error_code::INVALID_PARAMS)),
+            "only the member that did not fit fails: {frame}"
+        );
+        assert_eq!(
+            replies[1].get("id"),
+            Some(&Value::Int(2)),
+            "and it fails by id"
+        );
+    }
+
+    /// A batch whose per-member refusals cannot fit collapses to one id-less error.
+    ///
+    /// The last rung of the ladder, and the only place correlation is lost. It is
+    /// reachable in principle at any limit — a batch of hundreds of thousands of
+    /// notifications-with-ids is a legal 32 MiB line — so it is a real branch rather
+    /// than a defensive one, and it must still produce a well-formed answer.
+    #[test]
+    fn a_batch_that_cannot_fit_even_as_errors_collapses_to_a_single_refusal() {
+        let mut server = Server::new().with_max_message_bytes(100);
+        let batch = concat!(
+            r#"[{"jsonrpc":"2.0","id":1,"method":"tools/list"},"#,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}]"#
+        );
+        let frame = server
+            .handle_line(batch)
+            .expect("a batch of requests is answered");
+
+        let reply = parse(&frame).unwrap();
+        assert!(
+            reply.as_array().is_none(),
+            "the array is gone, not shortened: {frame}"
+        );
+        assert!(
+            reply.get("id").is_none(),
+            "no single id can stand for the batch"
+        );
+        assert_eq!(
+            reply
+                .get("error")
+                .and_then(|e| e.get("code"))
+                .and_then(Value::as_i64),
+            Some(i64::from(error_code::INVALID_PARAMS))
+        );
+    }
+
+    /// The limit does not disturb the answers that fit under it.
+    ///
+    /// A batch reply is assembled by hand now — brackets and commas written out rather
+    /// than rendered from a `Value::Array` — so the framing is code that can be wrong by
+    /// one character. This compares a bounded assembly against an unbounded one for the
+    /// same batch, which is the only assertion that would catch a missing separator.
+    #[test]
+    fn a_batch_within_the_limit_is_assembled_exactly_as_before() {
+        let batch = concat!(
+            r#"[{"jsonrpc":"2.0","id":1,"method":"ping"},"#,
+            r#"{"jsonrpc":"2.0","method":"notify"},"#,
+            r#"{"jsonrpc":"2.0","id":"two","method":"ping"}]"#
+        );
+        let generous = Server::new().handle_line(batch).expect("a reply");
+        let tight = Server::new()
+            .with_max_message_bytes(generous.len())
+            .handle_line(batch)
+            .expect("a reply");
+        assert_eq!(generous, tight, "a frame that exactly fits is unmodified");
+
+        let replies = parse(&generous).unwrap();
+        let replies = replies.as_array().expect("an array");
+        assert_eq!(
+            replies.len(),
+            2,
+            "the notification is still unanswered: {generous}"
+        );
+        assert_eq!(replies[0].get("id"), Some(&Value::Int(1)));
+        assert_eq!(replies[1].get("id"), Some(&Value::string("two")));
+    }
+
+    /// The longest a bounded echo can be: the cut plus its marker.
+    const MAX_ECHOED: usize = MAX_ECHO_BYTES + ECHO_ELLIPSIS.len();
+
+    /// Pulls the human-readable message out of an error reply.
+    fn error_message(server: &mut Server, line: &str) -> String {
+        exchange(server, line)
+            .get("error")
+            .and_then(|error| error.get("message"))
+            .and_then(Value::as_str)
+            .expect("no error message")
+            .to_owned()
+    }
+
+    #[test]
+    fn an_ordinary_name_is_still_quoted_in_full() {
+        // Bounding the echo must not cost the diagnostic. Every name a real client can
+        // get wrong is short, and it comes back whole.
+        let mut server = Server::new();
+        let message = error_message(
+            &mut server,
+            r#"{"jsonrpc":"2.0","id":1,"method":"resources/list"}"#,
+        );
+        assert_eq!(message, "unknown method: resources/list");
+
+        let call = format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"{}","arguments":{{}}}}}}"#,
+            "tokfold_compres"
+        );
+        assert_eq!(
+            error_message(&mut server, &call),
+            "unknown tool: tokfold_compres"
+        );
+    }
+
+    #[test]
+    fn a_hostile_method_name_is_not_quoted_back_in_full() {
+        // A method name is peer-supplied and bounded only by the frame limit, so before
+        // the echo was cut the whole of it came back inside `message`.
+        let mut server = Server::new();
+        let name = "z".repeat(200_000);
+        let line = format!(r#"{{"jsonrpc":"2.0","id":1,"method":"{name}"}}"#);
+        let reply = server.handle_line(&line).expect("a reply");
+
+        assert_eq!(
+            error_code_of(&mut Server::new(), &line),
+            i64::from(error_code::METHOD_NOT_FOUND),
+            "the refusal is unchanged; only its size is"
+        );
+        // The answer no longer scales with the question.
+        assert!(
+            reply.len() < line.len() / 100,
+            "reply {} bytes against a request of {}",
+            reply.len(),
+            line.len()
+        );
+        let message = parse(&reply)
+            .unwrap()
+            .get("error")
+            .and_then(|error| error.get("message"))
+            .and_then(Value::as_str)
+            .unwrap()
+            .to_owned();
+        assert!(message.ends_with(ECHO_ELLIPSIS), "the cut is visible");
+        assert!(message.starts_with("unknown method: zzz"));
+        assert_eq!(message.len(), "unknown method: ".len() + MAX_ECHOED);
+    }
+
+    #[test]
+    fn a_hostile_tool_name_is_not_quoted_back_in_full() {
+        let mut server = Server::new();
+        let name = "y".repeat(200_000);
+        let line = format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"{name}","arguments":{{}}}}}}"#
+        );
+        let reply = server.handle_line(&line).expect("a reply");
+        assert!(reply.len() < line.len() / 100);
+        let message = parse(&reply)
+            .unwrap()
+            .get("error")
+            .and_then(|error| error.get("message"))
+            .and_then(Value::as_str)
+            .unwrap()
+            .to_owned();
+        assert!(message.starts_with("unknown tool: yyy"));
+        assert_eq!(message.len(), "unknown tool: ".len() + MAX_ECHOED);
+    }
+
+    #[test]
+    fn a_hostile_protocol_version_is_bounded_in_both_places_it_appears() {
+        // This refusal quotes the offending string twice — once in `message`, once in
+        // `data.requested` — so it used to answer a request with about twice its own
+        // size. Both copies are bounded, and the answer stays the precise -32022 rather
+        // than collapsing into an oversize refusal.
+        let mut server = Server::new();
+        let version = "9".repeat(200_000);
+        let line = format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{{"_meta":{{"{}":"{version}"}}}}}}"#,
+            meta::PROTOCOL_VERSION
+        );
+        let reply = server.handle_line(&line).expect("a reply");
+        assert!(
+            reply.len() < line.len() / 100,
+            "reply {} bytes against a request of {}",
+            reply.len(),
+            line.len()
+        );
+
+        let parsed = parse(&reply).unwrap();
+        let error = parsed.get("error").unwrap();
+        assert_eq!(
+            error.get("code"),
+            Some(&Value::Int(i64::from(
+                error_code::UNSUPPORTED_PROTOCOL_VERSION
+            )))
+        );
+        let message = error.get("message").and_then(Value::as_str).unwrap();
+        assert_eq!(
+            message.len(),
+            "unsupported protocol version: ".len() + MAX_ECHOED
+        );
+        let requested = error
+            .get("data")
+            .and_then(|data| data.get("requested"))
+            .and_then(Value::as_str)
+            .unwrap();
+        assert_eq!(requested.len(), MAX_ECHOED);
+        assert!(requested.ends_with(ECHO_ELLIPSIS));
+    }
+
+    #[test]
+    fn every_result_carries_the_envelope_the_server_owns() {
+        let mut server = Server::new();
+        let result = result_of(&mut server, r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#);
+        assert_eq!(
+            result.get(KEY_RESULT_TYPE).and_then(Value::as_str),
+            Some(RESULT_TYPE_COMPLETE)
+        );
+        assert!(result.get(KEY_META).and_then(Value::as_object).is_some());
+    }
+
+    /// The reserved envelope keys are refused rather than silently shadowed.
+    ///
+    /// Currently unreachable through any real call — no tool emits either name — so this
+    /// drives `with_envelope` directly. See its documentation for why the invariant is
+    /// written down even though nothing can violate it today.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "reserved envelope key")]
+    fn a_result_may_not_carry_the_envelope_keys_itself() {
+        let _ = with_envelope(Object::new().set(KEY_META, Value::Bool(true)).build());
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "reserved envelope key")]
+    fn a_result_may_not_carry_its_own_result_type() {
+        let _ = with_envelope(
+            Object::new()
+                .set(KEY_RESULT_TYPE, Value::string("partial"))
+                .build(),
         );
     }
 }

@@ -41,7 +41,11 @@ confidence-threshold = 0.93
 
 [bans]
 # A second copy of a crate bloats the tree and the audit surface; warn, do not
-# fail, so a transient duplicate does not block CI.
+# fail. One duplicate here is permanent and known, not transient: `tiktoken-rs
+# 0.6` pins `rustc-hash 1.x` while this workspace uses `rustc-hash 2`, so the
+# `--all-features` graph carries both and the warning fires on every run until
+# tiktoken-rs bumps. Failing on duplicates would mean pinning the whole
+# workspace back to the older crate to satisfy an optional feature.
 multiple-versions = "warn"
 wildcards = "warn"
 

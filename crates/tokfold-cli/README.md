@@ -37,9 +37,11 @@ cargo build --release -p tokfold-cli   # binary at target/release/tokfold
 
 Exit codes are normative: `0` success, `2` bad input (usage, I/O, or an input the
 compressor rejects on `stats`), `3` a corrupt or unrecoverable archive on `expand`.
+A downstream that closes the pipe early (`… | head`) is treated as a clean exit.
 
-Before v0.0.1 `mcp` was an unimplemented stub that always exited `69`; now that it
-serves, it exits `0` when the client hangs up.
+`mcp` exits `0` when the client hangs up — on clean end-of-input and on a broken
+pipe alike. Earlier in development this subcommand was an unimplemented stub that
+always exited `69`.
 
 ## Licence
 

@@ -17,9 +17,12 @@
 //! The chosen estimator's [`TokenEstimator::tokenizer_id`] is reported out-of-band in
 //! [`Stats::tokenizer_id`](crate::Stats::tokenizer_id); it is **not** written to the
 //! archive. In v0.0.1 the recovery archive is a passthrough blob whose header
-//! `tokenizer_id` field (`format` field 4) is always `0`, and the decoder fails closed
-//! on any non-zero value — so ids `2..=4` name cost models that never appear in a valid
-//! archive.
+//! `tokenizer_id` field (`format` field 4) is a literal `0` written regardless of which
+//! estimator ran, and the decoder fails closed on any other value. This version
+//! therefore does not use that field to name a cost model at all: **no** id from
+//! [`ids`] can be inferred from an archive — [`ids::HEURISTIC`] included, even though
+//! it happens to be `0`. [`Stats::tokenizer_id`](crate::Stats::tokenizer_id) is the
+//! only record of which model selected the encoding.
 //!
 //! # Declared calibration error
 //!
@@ -77,9 +80,12 @@ pub trait TokenEstimator: Send + Sync {
 /// [`Stats::tokenizer_id`](crate::Stats::tokenizer_id).
 ///
 /// They are the reserved value space of the header's `tokenizer_id` field: once
-/// shipped, a value's meaning never changes. A valid v0.0.1 archive header always
-/// carries `0` (passthrough) regardless of the selector, so `1..=4` are meanings the
-/// field may name but this build never writes. Ids `0` and `1` are always available;
+/// shipped, a value's meaning never changes. v0.0.1 does not yet use that field to
+/// name a cost model — the compressor writes a literal `0` whatever the estimator is,
+/// and `decompress` rejects every other value — so none of these ids can be read back
+/// out of an archive, `HEURISTIC` included: its `0` and the header's `0` are unrelated
+/// values that happen to coincide. They are meanings the field may carry in a later
+/// version. Ids `0` and `1` are always available;
 /// `2` and `3` name an implementation that ships only under feature `tiktoken`; `4` is
 /// a reserved name with no implementation in v0.0.1.
 pub mod ids {
@@ -306,8 +312,10 @@ impl TokenEstimator for ByteLenEstimator {
 /// can leave. They are opt-in: each constructor loads megabytes of embedded BPE data,
 /// which is why the heuristic, not these, is the default (see the crate feature note).
 /// Adding one changes only which rendering is selected and the reported
-/// [`TokenEstimator::tokenizer_id`]; the recovery archive is unaffected, since it
-/// always records the passthrough tokenizer id `0` regardless of the selector.
+/// [`TokenEstimator::tokenizer_id`]; the recovery archive is unaffected, since v0.0.1
+/// writes a literal `0` into the header's `tokenizer_id` field regardless of the
+/// selector. That `0` names no cost model — an archive produced with `Cl100kEstimator`
+/// is header-identical to one produced with the heuristic.
 #[cfg(feature = "tiktoken")]
 mod exact {
     use super::{TokenEstimator, ids};
@@ -441,8 +449,11 @@ mod tests {
 
     #[test]
     fn shipped_estimators_declare_no_margin() {
-        // Both v0.0.1 estimators leave the candidate rule at "any strict token win",
-        // so selection is unchanged from the release that predates the margin.
+        // Every estimator the crate ships leaves the candidate rule at "any strict
+        // token win", so selection is unchanged from the release that predates the
+        // margin. The two exact tokenizers behind feature `tiktoken` are covered by the
+        // same fact without being constructed here (each ctor loads megabytes of BPE
+        // data): they do not override `over_claim_bps`, so they inherit the trait's `0`.
         // `HeuristicEstimator::MEASURED_OVER_CLAIM_BPS` records the measurement
         // without applying it; promoting it to the default is a format change.
         assert_eq!(HeuristicEstimator.over_claim_bps(), 0);

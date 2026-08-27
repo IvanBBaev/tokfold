@@ -21,10 +21,16 @@ for the command line.
   crates.io page and no docs.rs page, because none of those exist yet. The only
   way to get the binary or the crate is to build from this repository. The one
   badge above is the CI badge: the workflow in `.github/workflows/ci.yml` really
-  does run on every push and pull request, so that badge reflects a real result.
+  does run on every pull request and on every push to `main`, so that badge
+  reflects a real result. Pushes to other branches run nothing — open a pull
+  request to get a gate.
 - The engine crate is `tokfold-core`; the CLI binary is `tokfold`; the MCP
   integration (`tokfold-mcp`) serves the engine as tools over stdio and is
   **experimental and unhardened** — it sees everything passed through it.
+- **A recovery archive is not a protective wrapper.** At v0.0.1 every archive is a
+  passthrough blob: a ~43-byte `TKFD` header followed by **the original bytes
+  verbatim** — not encrypted, not encoded, not obfuscated. An archive is exactly as
+  sensitive as its plaintext; store it with the same care.
 
 This README describes what the project *is* and what it *refuses to claim*. It
 contains no benchmark numbers on purpose — see [Benchmarks](#benchmarks).
@@ -201,7 +207,12 @@ let original = engine.decompress(&artifact.archive)?; // Result<Vec<u8>, Decompr
 
 `compress` is **total on valid JSON**: if no encoder reduces the estimated token
 count, it returns a passthrough artifact with ratio `1.0`. "Couldn't compress" is a
-statistic, never an error. Invalid input (including `NaN`/`Infinity`, truncated
+statistic, never an error. That `1.0` is a floor rather than a measurement: a
+passthrough rendering still carries the 18-byte `raw` sentinel, which costs about
+10 estimated (11 real `cl100k`) tokens more than the bare input, and on that path
+the `*_after` fields are *set* equal to their `*_before` counterparts instead of
+being measured. If you need to account for every token, measure
+`Artifact::rendering` directly. Invalid input (including `NaN`/`Infinity`, truncated
 documents, or trailing garbage) returns a `CompressError`; the caller then forwards
 the original bytes unmodified. The engine never repairs input.
 

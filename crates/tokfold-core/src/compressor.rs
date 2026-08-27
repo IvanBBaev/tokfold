@@ -23,10 +23,15 @@
 //! `encoder_id = 0`, the default `tokenizer_id = 0` and no flags, and its payload is
 //! the original bytes verbatim. Which encoder actually shaped the *rendering* is
 //! reported separately in [`Stats::encoder`], alongside the configured estimator's
-//! [`Stats::tokenizer_id`]. This mirrors the frozen `passthrough_archive` /
-//! `decode_full` pattern in [`format`](mod@crate::format) and lets
-//! [`decompress`](Compressor::decompress) reconstruct the original byte-for-byte and
-//! verify its `SHA-256` before returning anything.
+//! [`Stats::tokenizer_id`]. Because the payload is the original itself,
+//! [`decompress`](Compressor::decompress) can reconstruct it byte-for-byte and verify
+//! its `SHA-256` before returning anything.
+//!
+//! The `format` module's own test module keeps a minimal `passthrough_archive` /
+//! `decode_full` pair that writes and reads this same layout independently of this
+//! module — a test-only reference implementation that cross-checks the framing. Being
+//! `#[cfg(test)]`, neither exists in the published crate or in rustdoc, and they mirror
+//! the production path rather than the other way round.
 //!
 //! # Determinism
 //!
@@ -51,9 +56,18 @@ const DEFAULT_MAX_INPUT_BYTES: usize = 16 * 1024 * 1024;
 /// [`CompressError::DepthExceeded`] rather than overflowing the stack.
 const DEFAULT_MAX_DEPTH: usize = 512;
 
-/// Ceiling for the candidate-rule margin: 10 000 bps = 100%. A larger value asks a
-/// rendering to save more than the whole input, which nothing can do, so it is
-/// clamped rather than accepted as a way to disable compression by accident.
+/// Ceiling for the candidate-rule margin: 10 000 bps = 100%.
+///
+/// The clamp exists so [`Stats::min_saving_bps`] reports a meaningful number — the
+/// margin the pass actually applied, not an arbitrarily larger one a caller happened
+/// to pass in. It does **not** restore compression, and it does not prevent
+/// compression from being disabled.
+///
+/// A margin of 10 000 bps demands a saving equal to the whole input estimate, i.e. a
+/// rendering estimating to zero tokens; no sentinel-framed rendering can reach that.
+/// So every configured value *at or above* this ceiling — the clamped result included
+/// — turns the engine into passthrough for all inputs. Clamping normalizes the
+/// reported number, nothing more.
 const MAX_SAVING_BPS: u32 = 10_000;
 
 /// Encoders offered under [`Profile::Conservative`]: minification only, the
@@ -152,6 +166,11 @@ impl ConfigBuilder {
 
     /// Sets the maximum accepted input length in bytes. Default: 16 MiB. Inputs
     /// above this yield [`CompressError::InputTooLarge`].
+    ///
+    /// The value is not capped here, but tape spans are `u32`, so an input longer
+    /// than `u32::MAX` is rejected by the parser regardless — reporting `u32::MAX` as
+    /// the `limit`, not the value set here. Setting this above 4 GiB therefore raises
+    /// nothing.
     #[must_use]
     pub fn max_input_bytes(mut self, max_input_bytes: usize) -> Self {
         self.max_input_bytes = max_input_bytes;
@@ -178,9 +197,11 @@ impl ConfigBuilder {
     /// in basis points of the input estimate (10 000 bps = 100%).
     ///
     /// Unset, the effective margin is whatever the configured estimator declares via
-    /// [`TokenEstimator::over_claim_bps`] — `0` for both estimators shipped in
-    /// v0.0.1, i.e. "keep any strict token win". Setting it explicitly overrides the
-    /// estimator's declaration in both directions.
+    /// [`TokenEstimator::over_claim_bps`] — `0` for every estimator this crate ships
+    /// in v0.0.1 (the heuristic, the byte-length reference, and the two exact
+    /// tokenizers behind feature `tiktoken`, which override nothing and so inherit the
+    /// trait's `0` default), i.e. "keep any strict token win". Setting it explicitly
+    /// overrides the estimator's declaration in both directions.
     ///
     /// Raise this when a mis-selection is expensive and the cost model is inexact:
     /// with the default [`HeuristicEstimator`] a claimed saving in the low single
@@ -190,7 +211,11 @@ impl ConfigBuilder {
     /// margin also discards genuine wins the model under-rates, and anything much
     /// above ~1100 bps retires E1 on typical pretty-printed JSON.
     ///
-    /// Values above 10 000 are clamped: no rendering can save more than everything.
+    /// Values above 10 000 are clamped to 10 000, which is itself unsatisfiable: a
+    /// margin of 100% asks for a rendering that estimates to zero tokens, so every
+    /// value at or above the ceiling makes the pass return passthrough for all inputs.
+    /// The clamp keeps [`Stats::min_saving_bps`] honest; it does not make such a
+    /// setting work.
     #[must_use]
     pub fn min_saving_bps(mut self, min_saving_bps: u32) -> Self {
         self.min_saving_bps = Some(min_saving_bps);
@@ -263,8 +288,12 @@ impl EncoderId {
 pub struct Stats {
     /// Byte length of the original input.
     pub bytes_before: usize,
-    /// Byte length of the rendering; equals `bytes_before` for passthrough, so
-    /// [`byte_ratio`](Stats::byte_ratio) is exactly `1.0` there.
+    /// Byte length of the rendering. On the passthrough path this is *set* to
+    /// `bytes_before` rather than measured, so it under-reports the 18-byte `raw`
+    /// sentinel — the rendering is always 18 bytes longer than the input there, never
+    /// equal — and [`byte_ratio`](Stats::byte_ratio) is exactly `1.0`; see the
+    /// type-level doc. A caller summing this field to account for bytes actually
+    /// emitted should measure [`Artifact::rendering`] instead.
     pub bytes_after: usize,
     /// Estimated tokens of the original input, per the configured estimator.
     pub est_tokens_before: usize,
@@ -1104,6 +1133,38 @@ mod tests {
         );
     }
 
+    /// `ConfigBuilder` implements `Default` and is re-exported from the crate root,
+    /// so `ConfigBuilder::default()` is a public entry point — but nothing in the
+    /// crate, the tests, or the docs ever calls it, and a mutation-testing tool
+    /// never mutates a function named `new` or `default`. That left the whole
+    /// `Default` path unmeasured: it could have drifted from `Config::builder()`
+    /// without a single test noticing.
+    ///
+    /// Comparing the two builders field by field (rather than through compression
+    /// output) pins every seeded knob, including the two that behaviour alone barely
+    /// distinguishes: the estimator and the unset saving margin.
+    #[test]
+    fn the_default_builder_is_the_same_seed_as_config_builder() {
+        let defaulted = ConfigBuilder::default().build();
+        let seeded = Config::default();
+
+        assert_eq!(defaulted.profile, seeded.profile);
+        assert_eq!(defaulted.max_input_bytes, seeded.max_input_bytes);
+        assert_eq!(defaulted.max_depth, seeded.max_depth);
+        assert_eq!(
+            defaulted.estimator.tokenizer_id(),
+            seeded.estimator.tokenizer_id()
+        );
+        assert_eq!(defaulted.min_saving_bps, seeded.min_saving_bps);
+
+        // Anchored to the documented values too, so the pair cannot drift together.
+        assert_eq!(defaulted.profile, Profile::Balanced);
+        assert_eq!(defaulted.max_input_bytes, 16 * 1024 * 1024);
+        assert_eq!(defaulted.max_depth, 512);
+        assert_eq!(defaulted.estimator.tokenizer_id(), 0); // HeuristicEstimator
+        assert_eq!(defaulted.min_saving_bps, None);
+    }
+
     /// The associated constants are the only way a downstream crate can name an
     /// encoder (`EncoderId` is `#[non_exhaustive]`), so their numeric values are
     /// public API. The rest of the suite compares against `EncoderId(0)` / `(1)`
@@ -1146,8 +1207,10 @@ mod tests {
         };
         // Below the ceiling the configured margin is reported verbatim.
         assert_eq!(stats(600).min_saving_bps, 600);
-        // Above it the margin is clamped, never passed through: a margin over 100%
-        // is unsatisfiable, so it would silently disable compression instead.
+        // Above it the margin is clamped, so `Stats` reports the margin actually
+        // applied rather than the caller's larger number. Clamping does not restore
+        // compression: 10 000 bps is itself unsatisfiable, so the pass still falls back
+        // to passthrough — asserted immediately below.
         assert_eq!(MAX_SAVING_BPS, 10_000);
         assert_eq!(stats(50_000).min_saving_bps, MAX_SAVING_BPS);
         assert_eq!(stats(50_000).encoder, EncoderId::PASSTHROUGH);

@@ -93,6 +93,57 @@ impl Request {
     }
 }
 
+/// Longest run of peer-supplied text this server will copy into an error, in bytes.
+///
+/// 120 bytes is chosen to be longer than anything real and short enough to be free.
+/// The strings that reach an error message this way are method names, tool names, and
+/// protocol revisions: the longest that exist are `notifications/initialized` at 26
+/// bytes, `tokfold_decompress` at 18, and a revision date at 10. A typo, a version
+/// suffix, or a namespaced name from an aggregating client all still arrive intact.
+pub const MAX_ECHO_BYTES: usize = 120;
+
+/// Marker appended to a string [`echo`] had to cut.
+pub const ECHO_ELLIPSIS: &str = "…";
+
+/// Bounds a peer-supplied string before it is copied into an error message.
+///
+/// Returns the input untouched when it is short enough, so the common path allocates
+/// nothing.
+///
+/// # Why echoing unbounded peer text is a problem
+///
+/// Escaping is not the issue — [`crate::json`] already escapes correctly, so nothing
+/// here is about injecting into the wire format. Two other things are:
+///
+/// * **Amplification on the error route.** A refusal quotes the offending name, and the
+///   unsupported-version refusal quotes it twice, once in `message` and once in
+///   `data.requested`. A 30 MB protocol-version string therefore turned a 30 MB request
+///   into a ~60 MB answer. The reply bound in [`render_bounded`] now stops that reply
+///   from being *sent*, but only after it has been built, and it converts a precise
+///   `-32022` into a generic oversize refusal. Cutting the echo at the source is what
+///   makes the request cheap to refuse and keeps the answer useful.
+/// * **Reflected text.** This is a server whose entire purpose is moving text into and
+///   out of prompts. Whatever a peer puts in a method or tool name comes back in a
+///   `message` that agent UIs render and models read. A bound is not a defence against
+///   what those 120 bytes might say — nothing here sanitises content — but it does keep
+///   a name from being used as a channel for a page of instructions.
+#[must_use]
+pub fn echo(value: &str) -> std::borrow::Cow<'_, str> {
+    if value.len() <= MAX_ECHO_BYTES {
+        return std::borrow::Cow::Borrowed(value);
+    }
+    // Walk back to a character boundary. Cutting a UTF-8 sequence in half would panic
+    // on the slice, and `str::floor_char_boundary` is still unstable at this MSRV.
+    let mut end = MAX_ECHO_BYTES;
+    while end > 0 && !value.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    let mut cut = String::with_capacity(end.saturating_add(ECHO_ELLIPSIS.len()));
+    cut.push_str(value.get(..end).unwrap_or_default());
+    cut.push_str(ECHO_ELLIPSIS);
+    std::borrow::Cow::Owned(cut)
+}
+
 /// A JSON-RPC error object.
 #[derive(Debug, Clone)]
 pub struct ErrorObject {
@@ -201,6 +252,79 @@ impl Response {
         }
         .build()
     }
+}
+
+/// Renders `response` as one frame of at most `max` bytes.
+///
+/// A reply is always larger than the call it answers, so a server that caps only what it
+/// reads will eventually emit a frame it would itself refuse to read — a peer of its own
+/// kind cannot consume its output, and the size of that output is chosen by the peer.
+/// This is the one place that rule is enforced, so every caller — the dispatcher, a
+/// batch member, the transport's panic bulkhead — degrades identically.
+///
+/// # The refusal is addressed to the call it replaces
+///
+/// The id comes off the [`Response`] being replaced, which took it from the request, so
+/// it is right by construction and needs no second reading of the line. That matters
+/// more than it looks: a client pairs an answer with a call by id, so an unaddressed
+/// refusal is not a failed call but a hung one — the client waits out its own timeout,
+/// and in a batch it cannot even tell which member failed.
+///
+/// # Why `INVALID_PARAMS`
+///
+/// The specification partitions the implementation-defined range against new codes:
+/// `-32000`..`-32019` is grandfathered and `-32020`..`-32099` belongs to the
+/// specification itself, so this has to be one of the base JSON-RPC codes.
+/// [`INVALID_PARAMS`](crate::protocol::error_code::INVALID_PARAMS) is the one that is
+/// true: the envelope was valid, the method exists, and nothing inside the server went
+/// wrong — what cannot be served is the *size of what the parameters asked for*. It is
+/// also the only choice a client can act on. `INTERNAL_ERROR` would describe a server
+/// bug and invite an identical retry, and `INVALID_REQUEST` would send a client hunting
+/// for a malformation in a request that had none; `-32602` says the arguments are the
+/// problem, which is exactly the thing the client can make smaller.
+///
+/// # The refusal fits by construction
+///
+/// An error whose `data` echoed the payload would reproduce the very bug it reports, so
+/// the replacement carries no `data` at all and its message is a fixed string plus one
+/// decimal number. The only variable-length part of the frame is the id, which came from
+/// a request that was itself inside the read cap — and in the pathological case of an id
+/// nearly as large as the cap, the last resort below drops it. That final frame has no
+/// variable part left, so it is bounded outright.
+///
+/// A caller that sets `max` below the length of that final frame gets it anyway: emitting
+/// nothing would hang the client, which is worse than exceeding a bound the caller chose.
+#[must_use]
+pub fn render_bounded(response: Response, max: usize) -> String {
+    let id = response.id.clone();
+    let frame = response.into_value().to_string();
+    if frame.len() <= max {
+        return frame;
+    }
+    // Released before the replacement is built: this can be most of the process's
+    // resident memory, and the whole point of refusing is not to keep carrying it.
+    drop(frame);
+
+    let addressed = Response::error(id, oversize_error(max))
+        .into_value()
+        .to_string();
+    if addressed.len() <= max {
+        return addressed;
+    }
+    Response::error(None, oversize_error(max))
+        .into_value()
+        .to_string()
+}
+
+/// The error that answers a request whose reply will not fit the frame.
+///
+/// Deliberately carries no `data`: the one thing worth reporting is the limit, and the
+/// one thing that must never go in is any part of the payload that broke it.
+pub(crate) fn oversize_error(max: usize) -> ErrorObject {
+    ErrorObject::new(
+        crate::protocol::error_code::INVALID_PARAMS,
+        format!("the reply exceeds the {max} byte frame limit"),
+    )
 }
 
 /// A refused envelope, carrying the id the refusal has to be addressed to.
@@ -320,7 +444,10 @@ pub fn decode_request(value: &Value) -> Result<Request, Rejection> {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use super::{ErrorObject, Id, Payload, Rejection, Response, decode_request};
+    use super::{
+        ECHO_ELLIPSIS, ErrorObject, Id, MAX_ECHO_BYTES, Payload, Rejection, Response,
+        decode_request, echo, render_bounded,
+    };
     use crate::json::{Value, parse};
 
     fn decode(text: &str) -> Result<super::Request, Rejection> {
@@ -530,5 +657,176 @@ mod tests {
         let response = Response::result(Some(Id::Str("x".to_owned())), Value::string("body"));
         let borrowed = response.to_value();
         assert_eq!(borrowed, response.into_value());
+    }
+
+    /// A reply that fits is handed over untouched.
+    ///
+    /// The bound is a safety net for the pathological case, and a safety net that
+    /// rewrites ordinary traffic is a bug. Every reply this server sends goes through
+    /// here, so "the normal path is byte-identical" is the property that keeps the
+    /// prompt-cache invariant true.
+    #[test]
+    fn a_response_within_the_limit_is_rendered_unchanged() {
+        let response = Response::result(Some(Id::Int(7)), Value::string("body"));
+        let expected = response.to_value().to_string();
+        assert_eq!(render_bounded(response, 1024), expected);
+        // The boundary itself is inclusive: a frame exactly as long as the limit fits.
+        let exact = Response::result(Some(Id::Int(7)), Value::string("body"));
+        assert_eq!(render_bounded(exact, expected.len()), expected);
+    }
+
+    /// One byte over the limit is a refusal, and the refusal answers the same call.
+    ///
+    /// The id is the whole point. A client blocks on the id it sent, so an oversized
+    /// answer that came back unaddressed — or not at all — is not a failed call but a
+    /// hung one, and in a batch it cannot even be attributed to a member.
+    #[test]
+    fn a_response_over_the_limit_becomes_an_error_addressed_to_the_same_id() {
+        // Large enough that the refusal, which is longer than the word "body", is still
+        // comfortably inside the limit the result overran.
+        let response = Response::result(
+            Some(Id::Str("call-1".to_owned())),
+            Value::string("x".repeat(4096)),
+        );
+        let frame = parse(&render_bounded(response, 1024)).unwrap();
+
+        assert_eq!(frame.get("id").and_then(Value::as_str), Some("call-1"));
+        assert!(
+            frame.get("result").is_none(),
+            "the payload must not survive"
+        );
+        let error = frame.get("error").expect("an oversized reply is an error");
+        assert_eq!(
+            error.get("code").and_then(Value::as_i64),
+            Some(i64::from(crate::protocol::error_code::INVALID_PARAMS)),
+            "the code a client branches on is -32602"
+        );
+    }
+
+    /// The refusal carries no trace of what it refused.
+    ///
+    /// An error whose `data` echoed the payload would be the same bug wearing a
+    /// different member name, so what is asserted is absence: no `data` at all, and a
+    /// frame small enough that no plausible limit is troubled by it.
+    #[test]
+    fn the_oversize_refusal_is_small_and_carries_no_payload() {
+        let payload = "x".repeat(4096);
+        let response = Response::result(Some(Id::Int(1)), Value::string(payload.clone()));
+        let frame = render_bounded(response, 64);
+
+        assert!(
+            !frame.contains(&payload),
+            "the refusal must not echo the input"
+        );
+        assert!(
+            frame.len() < 128,
+            "the refusal is a fixed message and one number: {frame}"
+        );
+        assert!(
+            parse(&frame)
+                .unwrap()
+                .get("error")
+                .unwrap()
+                .get("data")
+                .is_none(),
+            "data is where an echo of the payload would hide: {frame}"
+        );
+    }
+
+    /// An id too large to echo is dropped rather than allowed to overrun the frame.
+    ///
+    /// This is the case that makes "an error is obviously small" false: nothing bounds
+    /// a string id below the transport's own line limit, so a client can send an id that
+    /// on its own will not fit a reply. Correlation is sacrificed only here, and only
+    /// because the alternative is emitting the very frame the limit exists to prevent.
+    #[test]
+    fn an_id_too_large_to_echo_is_dropped_rather_than_overrunning_the_frame() {
+        let id = Id::Str("i".repeat(4096));
+        let response = Response::result(Some(id), Value::string("body"));
+        let frame = render_bounded(response, 128);
+
+        assert!(
+            frame.len() <= 128,
+            "the frame must respect the limit: {frame}"
+        );
+        let parsed = parse(&frame).unwrap();
+        assert!(parsed.get("id").is_none(), "an unechoable id is omitted");
+        assert_eq!(
+            parsed
+                .get("error")
+                .and_then(|error| error.get("code"))
+                .and_then(Value::as_i64),
+            Some(i64::from(crate::protocol::error_code::INVALID_PARAMS))
+        );
+    }
+
+    /// A limit smaller than any legal frame still produces a frame.
+    ///
+    /// The documented last resort: below a certain size there is nothing valid left to
+    /// send, and answering with a well-formed frame that exceeds an absurd limit is
+    /// better than answering with silence, which hangs the caller. Pinned because it is
+    /// the one place the function deliberately breaks its own postcondition.
+    #[test]
+    fn an_impossibly_small_limit_still_yields_a_well_formed_frame() {
+        let response = Response::result(Some(Id::Int(1)), Value::string("body"));
+        let frame = render_bounded(response, 0);
+        assert!(parse(&frame).unwrap().get("error").is_some(), "{frame}");
+    }
+
+    #[test]
+    fn a_short_echo_is_returned_whole_and_unallocated() {
+        // The common case: every name this server actually refuses is far under the
+        // limit, so bounding the echo must cost nothing on that path.
+        for name in [
+            "ping",
+            "tools/call",
+            "notifications/initialized",
+            "tokfold_compress",
+        ] {
+            assert!(
+                matches!(echo(name), std::borrow::Cow::Borrowed(_)),
+                "{name}"
+            );
+            assert_eq!(echo(name), name);
+        }
+        // The boundary itself: at the limit is whole, one byte past it is cut.
+        let at_limit = "a".repeat(MAX_ECHO_BYTES);
+        assert_eq!(echo(&at_limit), at_limit);
+        let past_limit = "a".repeat(MAX_ECHO_BYTES + 1);
+        assert_ne!(echo(&past_limit), past_limit);
+    }
+
+    #[test]
+    fn a_long_echo_is_cut_to_the_limit_and_marked() {
+        let name = "b".repeat(4096);
+        let cut = echo(&name);
+        assert!(cut.ends_with(ECHO_ELLIPSIS), "the cut is visible: {cut}");
+        assert_eq!(cut.len(), MAX_ECHO_BYTES + ECHO_ELLIPSIS.len());
+        assert!(cut.starts_with(&"b".repeat(MAX_ECHO_BYTES)));
+    }
+
+    #[test]
+    fn an_echo_is_cut_on_a_character_boundary() {
+        // A multi-byte character straddling the limit must not be halved: slicing a
+        // `str` mid-sequence panics, and a lone continuation byte is not UTF-8 at all.
+        // Cyrillic is two bytes per character, so the cut lands mid-character whenever
+        // the limit is odd relative to the run; the emoji case is four bytes and shifts
+        // the boundary again.
+        for unit in ["\u{430}", "\u{4e00}", "\u{1f600}"] {
+            for extra in 0..8 {
+                let name = format!("{}{}", "x".repeat(extra), unit.repeat(4096));
+                let cut = echo(&name);
+                // Valid UTF-8 by construction — `Cow<str>` could not hold it otherwise —
+                // and never longer than the limit plus the marker.
+                assert!(cut.len() <= MAX_ECHO_BYTES + ECHO_ELLIPSIS.len());
+                assert!(cut.ends_with(ECHO_ELLIPSIS));
+                // Nothing was lost from the front, and the kept prefix is whole.
+                let kept = cut.strip_suffix(ECHO_ELLIPSIS).unwrap();
+                assert!(name.starts_with(kept), "prefix mangled: {kept}");
+                // The cut is as late as the character grid allows: one more character
+                // would not have fitted.
+                assert!(kept.len() + unit.len() > MAX_ECHO_BYTES);
+            }
+        }
     }
 }

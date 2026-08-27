@@ -106,10 +106,12 @@ fn decompress(archive: &str) -> json::Value {
 #[test]
 fn each_kind_of_malformed_request_carries_its_documented_wire_code() {
     // A client does not read the message text; it switches on the number. These five
-    // are the whole vocabulary this server emits, and each one tells the client
-    // something different to do: retry as-is, fix the envelope, stop calling that
-    // method, fix the arguments, or renegotiate the revision. Swapping any two of them
-    // sends a client down the wrong branch while every reply still looks well-formed.
+    // are the whole vocabulary a client can provoke with a message it wrote, and each
+    // one tells it something different to do: retry as-is, fix the envelope, stop
+    // calling that method, fix the arguments, or renegotiate the revision. Swapping any
+    // two of them sends a client down the wrong branch while every reply still looks
+    // well-formed. (The server emits one further code that no request can reach; the
+    // tail of this test says why it is held apart.)
     let cases: &[(&str, i64, &str)] = &[
         ("this is not json", -32700, "unparseable input"),
         (
@@ -157,7 +159,7 @@ fn each_kind_of_malformed_request_carries_its_documented_wire_code() {
     assert_eq!(
         codes,
         vec![-32700, -32602, -32601, -32600, -32022],
-        "the five distinct codes this server emits"
+        "the five distinct codes a request can provoke"
     );
     assert!(
         !codes.iter().any(|code| (-32019..=-32000).contains(code)),
@@ -343,6 +345,66 @@ fn the_tool_catalogue_advertises_a_lifetime_that_is_worth_caching() {
         result.get("nextCursor").is_none(),
         "the catalogue is returned whole; a cursor would send a client paging for a \
          page that does not exist"
+    );
+}
+
+#[test]
+fn the_compress_tool_warns_that_the_archive_is_not_in_the_content_block() {
+    // The one thing a client author cannot discover by reading `content`: the archive
+    // is not there. `tokfold_compress` returns it in `structuredContent.archive` only,
+    // while `content` carries the rendering alone — so a spec-conformant client that
+    // reads only `content` (the common shape for older ones) embeds a compressed
+    // rendering and has thrown away the only means of ever recovering the original.
+    //
+    // The catalogue is the sole channel that reaches that author, and this warning is
+    // prose inside a string constant: delete it and the tools still list, still call,
+    // still round-trip, and every other test in this workspace stays green. Hence a
+    // pin, in the file that pins bare strings.
+    let listed = reply(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#);
+    let tools = listed
+        .get("result")
+        .and_then(|result| result.get("tools"))
+        .and_then(json::Value::as_array)
+        .expect("tools/list returns the catalogue");
+
+    let description = tools
+        .iter()
+        .find(|tool| tool.get("name").and_then(json::Value::as_str) == Some("tokfold_compress"))
+        .and_then(|tool| tool.get("description"))
+        .and_then(json::Value::as_str)
+        .expect("the compress tool is advertised with a description");
+
+    assert!(
+        description.contains("structuredContent.archive"),
+        "the description must name the field the archive actually arrives in: \
+         {description:?}"
+    );
+    assert!(
+        description.contains("content"),
+        "naming the field is not enough — the description must contrast it with the \
+         `content` block the client may be reading instead: {description:?}"
+    );
+    assert!(
+        description.contains("never decompress"),
+        "the description must state the consequence, not merely the field layout: a \
+         content-only client keeps text it can never decompress: {description:?}"
+    );
+
+    // And the loop closes from the other side: a client holding a compress result has
+    // to be told where to read the archive from when it calls decompress.
+    let archive_argument = tools
+        .iter()
+        .find(|tool| tool.get("name").and_then(json::Value::as_str) == Some("tokfold_decompress"))
+        .and_then(|tool| tool.get("inputSchema"))
+        .and_then(|schema| schema.get("properties"))
+        .and_then(|properties| properties.get("archive"))
+        .and_then(|archive| archive.get("description"))
+        .and_then(json::Value::as_str)
+        .expect("the decompress tool documents its one argument");
+    assert!(
+        archive_argument.contains("structuredContent.archive"),
+        "the archive argument must say where that archive is read from: \
+         {archive_argument:?}"
     );
 }
 
@@ -666,17 +728,30 @@ fn the_transport_line_limit_is_the_one_the_documentation_promises() {
     //
     // Both ratios cross the cap from underneath it. A `tokfold_compress` call whose
     // `text` is one byte past core's ceiling is a 16,777,324-byte request; it passes
-    // through, and the reply is 33,554,773 bytes — 341 over the limit. The compress path
-    // is not close: a 10,485,871-byte request of high-entropy JSON is answered with
-    // 34,953,143 bytes, 1,398,711 over. This server can therefore emit a frame it would
-    // itself refuse to read, and a client that sized its reader off this constant refuses
-    // it too.
+    // through, and the reply would be 33,554,773 bytes — 341 over the limit. The compress
+    // path is not close: a 10,485,871-byte request of high-entropy JSON would be answered
+    // with 34,953,143 bytes, 1,398,711 over.
     //
-    // Nothing here bounds the output. Truncating or refusing an oversized reply changes
-    // what a client is promised, so it is an owner decision rather than a test's; what
-    // this test is for is that the constant below has not drifted from the documented
-    // number.
+    // Neither of those frames is emitted any more. The same number bounds what is written
+    // as well as what is read, so a request whose answer would cross it is refused by id
+    // instead — `tests/session.rs` pins that refusal and the multiplier that makes it
+    // reachable. What is left for this test is the constant itself: a client sizes its
+    // reader by it, and both directions now depend on it.
     const _: () = assert!(stdio::MAX_LINE_BYTES > 16 * 1024 * 1024);
+
+    // The transport's limit and the dispatcher's are one number, not two that agree
+    // today. If these ever differed, one side of the session would refuse what the other
+    // considers legal.
+    assert_eq!(
+        stdio::MAX_LINE_BYTES,
+        tokfold_mcp::MAX_MESSAGE_BYTES,
+        "the read limit and the emit limit must be the same constant"
+    );
+    assert_eq!(
+        Server::new().max_message_bytes(),
+        stdio::MAX_LINE_BYTES,
+        "a default server must be bounded by what the transport can carry"
+    );
 
     // A client sizes its own buffers by this number and chunks its payloads under it.
     // It is written as an arithmetic expression, so an editing slip can change it by

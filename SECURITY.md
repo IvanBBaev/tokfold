@@ -18,15 +18,14 @@ impact classes below.
 
 ## Supported Versions
 
-Only the **latest published minor** receives security fixes. While the project is
-pre-1.0, that means the most recent `0.y` line; older `0.y` lines get nothing.
+**There is no supported released version today.** Nothing has been published to a
+package registry and no release has been tagged, so there is no version anyone can
+be running other than a build from this repository. Security fixes land on `main`,
+and a report is assessed against the current `main`.
 
-| Version | Supported |
-|---|---|
-| latest `0.y` minor | yes |
-| any older `0.y` | no |
-
-Once the project reaches 1.0, this table switches to "latest `x.y` minor only".
+Once the first release exists, this section becomes: only the latest published `0.y`
+line receives security fixes, and older `0.y` lines get nothing. At 1.0 that becomes
+"latest `x.y` minor only".
 
 ## Reporting a Vulnerability
 
@@ -60,18 +59,30 @@ it determines severity and triage order:
   actual result. A minimal reproducing input (attached or inlined) speeds triage
   enormously; a failing property-test case is ideal.
 
+**Scope note on `tokfold-mcp`.** That crate is EXPERIMENTAL and explicitly not
+hardened or audited — see its README and the notice it prints on startup; hardening
+it is a separate milestone that gates any public launch. Reports against it are
+welcome and will be recorded, and the impact classes above still apply to it, but
+"unhardened" is the crate's declared state rather than a vulnerability: a report that
+only restates the missing hardening will be closed as known.
+
 ## Coordinated Disclosure
 
 - We aim to acknowledge a report within **3 business days** and to send an initial
   assessment within **7 days**.
 - We follow a **90-day coordinated-disclosure** window: the issue is disclosed
-  publicly (with an advisory and, where relevant, a RUSTSEC entry) once a fix is
-  released or 90 days have elapsed, whichever comes first. If a fix needs more
-  time we will say so and agree a revised date with you.
+  publicly once a fix has landed on `main` or 90 days have elapsed, whichever comes
+  first, via a **GitHub Security Advisory** on this repository. A RUSTSEC entry
+  becomes possible only after the affected crate is published to crates.io —
+  advisories in that database are keyed to a published package name, so until then
+  there is nothing for it to key an advisory to. If a fix needs more time we will
+  say so and agree a revised date with you.
 - Please keep the report private until that window closes.
 
 ## Acknowledgments
 
-Reporters who follow this policy are credited in the published advisory and release
-notes, unless you ask to remain anonymous. There is **no bug-bounty program** and
-no monetary reward — thanks and credit only.
+Reporters who follow this policy are credited in the **GitHub Security Advisory** and
+in the `CHANGELOG.md` entry for the version that carries the fix, unless you ask to
+remain anonymous. Those two are the whole record: there are no release notes to be
+credited in, because nothing has been released. There is **no bug-bounty program**
+and no monetary reward — thanks and credit only.

@@ -8,26 +8,38 @@
 # renamed, mistyped or forgotten `required:` key and rustfmt, clippy, rustdoc,
 # cargo-deny and the packaging check would all silently skip while the job still
 # reported green. A gate that can disappear without anyone noticing is not a
-# gate, so each one now has its own top-level job that runs unconditionally:
+# gate, so each one now has its own top-level job:
 #
 #   actionlint  -- lints this workflow itself, so a malformed job fails loudly
 #                  instead of being skipped or ignored by the runner
 #   fmt         -- cargo fmt --all --check
 #   clippy      -- cargo clippy --all-targets --all-features -D warnings
 #   docs        -- cargo doc with RUSTDOCFLAGS=-D warnings
-#   doc-drift   -- the shipped-docs-vs-code test in tokfold-mcp
+#   doc-drift   -- the EXPERIMENTAL-notice test in tokfold-mcp (see that job)
 #   deny        -- cargo deny check (supply-chain policy)
-#   package     -- cargo publish --dry-run --workspace
+#   package     -- cargo package --workspace
+#
+# Each of those carries exactly one condition, `if: github.event_name !=
+# 'schedule'`, which keeps the weekly cron from paying for the whole gate a
+# second time. That is the only way a gate can be skipped, and it is visible in
+# one grep. What it deliberately is *not* is conditional on a matrix value:
+# nothing a contributor can rename or mistype in a `required:` key can turn a
+# gate off on a push or a pull request.
 #
 # The `test` matrix is now only about *running the test suite* on each
 # OS/toolchain/feature combination. Its `required` key still exists, but its only
 # remaining job is to decide `continue-on-error`; no gate hangs off it.
 #
-# NOTE ON `package`: it runs `cargo publish --dry-run`, which packages and
-# verifies but uploads nothing. Nothing in this workflow authenticates to, or
-# publishes on, any package registry.
+# NOTE ON `package`: it runs `cargo package`, which builds the .crate tarballs
+# and verifies they compile, and it talks to no registry. It is deliberately not
+# `cargo publish --dry-run` -- see the reasoning on the `package` job itself.
+# Nothing in this workflow authenticates to, or publishes on, any package
+# registry.
 #
-# In branch protection, require these status checks (exact names):
+# TO BE APPLIED in branch protection -- this is a to-do, not a description of the
+# current setup: `main` is NOT protected today (no ruleset, no required checks),
+# so nothing below is enforced yet and any of these can be red at merge time.
+# When protection is configured, require these status checks (exact names):
 #   actionlint
 #   fmt
 #   clippy
@@ -43,9 +55,14 @@
 # ---------------------------------------------------------------------------
 # Conventions that apply to every job below
 # ---------------------------------------------------------------------------
-# Every cargo invocation passes `--locked`: CI must fail when the committed
-# Cargo.lock no longer matches the manifests, instead of silently resolving a
-# fresh graph that nobody has reviewed or audited.
+# Every cargo invocation that resolves a dependency graph passes `--locked`: CI
+# must fail when the committed Cargo.lock no longer matches the manifests,
+# instead of silently resolving a fresh graph that nobody has reviewed or
+# audited. Exactly one invocation below deliberately omits the flag -- `cargo
+# fmt`, which never touches the graph. One further command cannot take it:
+# `cargo audit` rejects `--locked` outright (it reads the committed Cargo.lock
+# directly), as its own job comment explains. Note that `cargo deny` *does*
+# accept the flag and carries it: it resolves the graph via `cargo metadata`.
 #
 # Third-party action pins: every third-party action is pinned to a full commit
 # SHA, with the human-readable tag in a trailing comment. A tag (`@v4`) is a
@@ -243,16 +260,25 @@ jobs:
         run: cargo doc --workspace --all-features --no-deps --locked
 
   doc-drift:
-    # Documentation drift gate. rustdoc above only checks that the docs *compile*
-    # and that their links resolve; it cannot notice that a shipped README or
-    # crate-level doc comment promises behaviour the code no longer has.
-    # `tokfold-mcp/tests/experimental_notice.rs` asserts those claims against the
-    # code and the shipped files, so it is the cheap, honest form of that check --
-    # a normal test, no extra tooling, no new dependency.
+    # rustdoc above only checks that the docs *compile* and that their links
+    # resolve; it cannot notice that a shipped README or crate-level doc comment
+    # promises behaviour the code no longer has.
+    #
+    # BE PRECISE ABOUT WHAT THIS GATE COVERS, because the job name oversells it.
+    # `tokfold-mcp/tests/experimental_notice.rs` pins exactly one claim: that the
+    # EXPERIMENTAL warning still says what it must, and that the crate
+    # description agrees with it. It opens no README and reads no markdown --
+    # there is no `include_str!` anywhere in this workspace. So this gate catches
+    # drift in the one claim it was written for and in nothing else; every other
+    # README line and doc comment in this repo is still guarded by review alone.
+    #
+    # The name is kept because branch protection requires it by exact string.
+    # Widening the gate means adding assertions to that test (or a new one) and
+    # extending this comment -- not renaming the job.
     #
     # It is its own job (rather than only riding along inside `cargo test
-    # --workspace`) so that "the docs lie" is a distinct, nameable red check that
-    # branch protection can require and that nobody has to dig a log to find.
+    # --workspace`) so that "the notice drifted" is a distinct, nameable red check
+    # that branch protection can require and that nobody has to dig a log to find.
     if: github.event_name != 'schedule'
     name: doc-drift
     runs-on: ubuntu-latest
@@ -302,7 +328,12 @@ jobs:
 
       - name: Supply-chain policy (cargo-deny)
         # Needs the advisory database, which the runner fetches over the network.
-        run: cargo deny check
+        # `--locked` is a top-level cargo-deny option and must precede `check`:
+        # cargo-deny shells out to `cargo metadata`, which rewrites Cargo.lock if
+        # the manifests have drifted, so without the flag the one job whose whole
+        # purpose is auditing the dependency graph could audit a freshly resolved
+        # graph nobody committed.
+        run: cargo deny --locked check
 
   package:
     if: github.event_name != 'schedule'
