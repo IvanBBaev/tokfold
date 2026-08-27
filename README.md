@@ -17,11 +17,19 @@ for the command line.
 **v0.0.1 — skeleton under active development.**
 
 - The public API is **unstable** and will change without deprecation windows.
-- **Not published** to any registry. There is no `cargo add tokfold`, no
-  crates.io page and no docs.rs page, because none of those exist yet. The only
-  way to get the binary or the crate is to build from this repository. The one
-  badge above is the CI badge: the workflow in `.github/workflows/ci.yml` really
-  does run on every pull request and on every push to `main`, so that badge
+- **Not on crates.io.** There is no `cargo add tokfold`, no crates.io page and no
+  docs.rs page, because none of those exist yet. To use the engine as a library,
+  build from this repository.
+- **npm publication is in progress and not yet usable.** Four of the five
+  prebuilt-binary packages are live at `0.0.1`
+  (`tokfold-darwin-arm64`, `tokfold-darwin-x64`, `tokfold-linux-x64-gnu`,
+  `tokfold-linux-arm64-gnu`); `tokfold-win32-x64` was refused by npm's
+  new-account spam heuristic, and the `tokfold` launcher package is deliberately
+  published **last**, so `npm i -g tokfold` does not work yet and will not until
+  every platform package exists. Until then, build from this repository. See
+  `npm/README.md` for why the ordering is that way round.
+- The one badge above is the CI badge: the workflow in `.github/workflows/ci.yml`
+  really does run on every pull request and on every push to `main`, so that badge
   reflects a real result. Pushes to other branches run nothing — open a pull
   request to get a gate.
 - The engine crate is `tokfold-core`; the CLI binary is `tokfold`; the MCP

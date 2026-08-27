@@ -7,11 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 While the version is below 1.0 the public API is unstable and may change in any
 release, without a deprecation window.
 
-## [0.0.1] - Unreleased
+## [0.0.1] - Partially released
 
-First version of the workspace. Nothing has been published to a package registry,
-so there is no release date and no upgrade path from anything earlier. This entry
-describes what exists in the tree, not what has shipped.
+First version of the workspace, and the first one to leave the repository. There
+is no upgrade path from anything earlier because there is nothing earlier.
+
+On **npm**, four of the five prebuilt-binary packages were published on
+2026-08-27: `tokfold-darwin-arm64`, `tokfold-darwin-x64`, `tokfold-linux-x64-gnu`
+and `tokfold-linux-arm64-gnu`. `tokfold-win32-x64` was refused by npm's
+new-account spam heuristic and the `tokfold` launcher is published last by design,
+so **`npm i -g tokfold` does not work yet**. The release is not complete and this
+entry will get a real date when it is.
+
+On **crates.io** nothing has been published, so there is no `cargo add tokfold`
+and no docs.rs page.
 
 ### Added
 

@@ -79,3 +79,26 @@ nothing to drift. A verify step fails the run if a symlink ever reappears under
 See `.github/workflows/release.yml`. It is `workflow_dispatch`-only and defaults
 to a dry run; publishing takes an explicit `dry_run: false` plus a typed
 confirmation. It is never triggered by a push, a tag, or a merge.
+
+The publish step **skips any package whose exact version is already on the
+registry**, so a run that failed halfway can simply be run again. This is not
+theoretical tidiness: the first real release of `0.0.1` published four platform
+packages and was then refused on the fifth, and npm never lets a version be
+reused, so without the skip the only way out of a partial release would have been
+to burn a version number.
+
+### The npm spam heuristic will refuse a burst of new names
+
+Six packages published back to back from an account that has never published
+before is a shape npm's anti-spam heuristic rejects, with
+`403 ... Package name triggered spam detection` on the name it stops at — even
+though the name is free and the same `<pkg>-<os>-<arch>` convention is used by
+esbuild, swc and others. It is a property of the account and the burst, not of
+the name. Re-running the workflow is the fix; the skip above makes that free, and
+the heuristic's window is measured in hours, not minutes.
+
+Publishing the launcher **last** is what keeps this from being a user-visible
+failure: a launcher whose `optionalDependencies` name a package that does not
+exist installs happily and then fails at run time on exactly the platform whose
+package is missing. Nothing observed this — the launcher was never published in
+the incomplete state.
