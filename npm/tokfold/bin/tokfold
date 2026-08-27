@@ -1,0 +1,86 @@
+#!/usr/bin/env node
+"use strict";
+
+// The `tokfold` command as npm installs it.
+//
+// This file is a launcher, not an implementation. It finds the prebuilt binary
+// for this machine, runs it with the arguments it was given, and reproduces its
+// result as faithfully as a parent process can. Everything tokfold actually does
+// happens in the Rust binary.
+//
+// ---------------------------------------------------------------------------
+// Why the child gets the real file descriptors
+// ---------------------------------------------------------------------------
+// `stdio: "inherit"` hands the child fds 0/1/2 directly instead of piping them
+// through this process. That is load-bearing for three separate reasons:
+//
+//   * tokfold streams. `tokfold compress --input big.json` and the `mcp`
+//     subcommand both read and write incrementally; piping through Node would
+//     add a buffering layer between the two, and `mcp` in particular is a
+//     line-framed protocol server where an extra buffer can stall a session.
+//   * Broken pipes stay broken in the right place. `tokfold compress | head`
+//     closes the pipe early, and the CLI treats that as a clean exit
+//     (crates/tokfold-cli/src/main.rs). With a relay in the middle, the EPIPE
+//     would land on Node instead, where the default is an unhandled error.
+//   * Terminal detection keeps working. The child sees a tty when the user has
+//     one, rather than always seeing a pipe.
+//
+// ---------------------------------------------------------------------------
+// Exit codes
+// ---------------------------------------------------------------------------
+// tokfold's exit codes are normative and documented: 0 success, 2 bad input,
+// 3 a corrupt or unrecoverable archive. Scripts branch on them, so this launcher
+// must never invent, remap or swallow one.
+//
+// When the launcher itself fails — unsupported platform, missing binary, a spawn
+// that never got off the ground — it exits **1**, which is deliberately *not* one
+// of tokfold's codes. A `1` from this command therefore means exactly one thing:
+// tokfold never ran. It cannot be confused with "your input was bad" (2) or
+// "that archive is corrupt" (3), and a script that already distinguishes 2 from 3
+// does not silently treat an installation problem as a data problem.
+
+const { spawnSync } = require("node:child_process");
+const { resolveBinaryPath } = require("../lib/resolve.js");
+
+/** Exit code for a launcher-level failure. Never one of tokfold's own codes. */
+const LAUNCHER_FAILED = 1;
+
+let binary;
+try {
+  binary = resolveBinaryPath();
+} catch (error) {
+  process.stderr.write(`${error.message}\n`);
+  process.exit(LAUNCHER_FAILED);
+}
+
+const result = spawnSync(binary, process.argv.slice(2), { stdio: "inherit" });
+
+// The binary could not be started at all: not on disk, not executable, or the
+// exec failed. `result.error` is set and `status` is null, so it has to be
+// checked before the status is trusted.
+if (result.error) {
+  process.stderr.write(
+    `tokfold: failed to run the binary at ${binary}\n${result.error.message}\n`,
+  );
+  process.exit(LAUNCHER_FAILED);
+}
+
+// The child was killed by a signal rather than exiting. Re-raising the same
+// signal on ourselves is the only way the *parent* shell sees what really
+// happened: a shell reports `130` for SIGINT because the process died by that
+// signal, not because it exited with 130. Translating the signal into some
+// number here would lose that distinction, and `Ctrl-C` on a long compression
+// would look like an ordinary failure.
+//
+// With no listener attached, Node applies the signal's default disposition and
+// this process dies here. The `process.exit` below is the path for a signal that
+// is ignored or cannot be delivered, where returning is possible.
+if (result.signal) {
+  process.kill(process.pid, result.signal);
+  process.exit(LAUNCHER_FAILED);
+}
+
+// Normal termination: hand back the child's own code, untouched. `status` is
+// null only in the cases already handled above; the fallback keeps a null from
+// becoming a silent 0, which would report success for a run that did not finish.
+process.exit(result.status === null ? LAUNCHER_FAILED : result.status);

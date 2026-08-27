@@ -1,0 +1,29 @@
+{
+  "name": "tokfold-win32-x64",
+  "version": "0.0.1",
+  "description": "Prebuilt tokfold binary for Windows on x86-64. Installed automatically as an optional dependency of the 'tokfold' package; there is no reason to depend on this directly.",
+  "homepage": "https://github.com/IvanBBaev/tokfold",
+  "bugs": "https://github.com/IvanBBaev/tokfold/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/IvanBBaev/tokfold.git",
+    "directory": "npm/platforms/win32-x64"
+  },
+  "license": "MIT OR Apache-2.0",
+  "author": "Ivan Baev <ivanbbaev@gmail.com>",
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin/",
+    "LICENSE-MIT",
+    "LICENSE-APACHE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "preferUnplugged": true
+}

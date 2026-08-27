@@ -1,0 +1,42 @@
+{
+  "name": "tokfold",
+  "version": "0.0.1",
+  "description": "Reversible, structure-aware context compression for LLM agents — the tokfold command-line tool",
+  "keywords": [
+    "llm",
+    "compression",
+    "tokens",
+    "agent",
+    "mcp",
+    "cli"
+  ],
+  "homepage": "https://github.com/IvanBBaev/tokfold",
+  "bugs": "https://github.com/IvanBBaev/tokfold/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/IvanBBaev/tokfold.git",
+    "directory": "npm/tokfold"
+  },
+  "license": "MIT OR Apache-2.0",
+  "author": "Ivan Baev <ivanbbaev@gmail.com>",
+  "bin": {
+    "tokfold": "bin/tokfold"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "README.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE"
+  ],
+  "optionalDependencies": {
+    "tokfold-darwin-arm64": "0.0.1",
+    "tokfold-darwin-x64": "0.0.1",
+    "tokfold-linux-arm64-gnu": "0.0.1",
+    "tokfold-linux-x64-gnu": "0.0.1",
+    "tokfold-win32-x64": "0.0.1"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -33,8 +33,11 @@
 # NOTE ON `package`: it runs `cargo package`, which builds the .crate tarballs
 # and verifies they compile, and it talks to no registry. It is deliberately not
 # `cargo publish --dry-run` -- see the reasoning on the `package` job itself.
-# Nothing in this workflow authenticates to, or publishes on, any package
-# registry.
+# Nothing in *this* workflow authenticates to, or publishes on, any package
+# registry, and nothing here should ever be given a credential that would let it.
+# Publication lives in `release.yml`, which is `workflow_dispatch`-only and
+# publishes to npm alone; it is the only workflow holding a registry token, and
+# no push, tag, merge or schedule can start it.
 #
 # TO BE APPLIED in branch protection -- this is a to-do, not a description of the
 # current setup: `main` is NOT protected today (no ruleset, no required checks),
@@ -368,9 +371,11 @@ jobs:
       # checks -- build the tarballs, then compile each one against the packaged
       # copies of its workspace dependencies -- but `cargo package` has no upload
       # path at all, while `publish --dry-run` is a real release command one
-      # dropped flag away from being a release. Publication on any registry is
+      # dropped flag away from being a release. crates.io publication is
       # deliberately held for this project, so the gate that runs on every push
-      # is the one that cannot publish even if it is edited wrongly.
+      # is the one that cannot publish even if it is edited wrongly. (The npm
+      # packages *are* published, but from `release.yml` on manual dispatch and
+      # never from here; this job still has no way to upload anything anywhere.)
       - name: Packaging check (all crates)
         run: cargo package --workspace --locked
 

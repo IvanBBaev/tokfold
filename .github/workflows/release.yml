@@ -1,0 +1,551 @@
+# npm release for the tokfold CLI.
+#
+# ---------------------------------------------------------------------------
+# What this publishes, and what it deliberately does not
+# ---------------------------------------------------------------------------
+# Six npm packages: `tokfold` (a JS launcher, no binary of its own) and five
+# `tokfold-<platform>` packages each carrying one prebuilt executable. See
+# `npm/README.md` for why the split exists.
+#
+# It publishes NOTHING to crates.io. That hold is separate and still in force;
+# there is no `cargo publish` in this file and `ci.yml`'s packaging gate remains
+# `cargo package`, which has no upload path at all.
+#
+# ---------------------------------------------------------------------------
+# Why this cannot fire by accident
+# ---------------------------------------------------------------------------
+# `ci.yml` says a release command must never be one dropped flag away from a
+# release. The same standard applies here, so publication needs FOUR independent
+# things to line up, and no push, tag, merge or schedule can supply any of them:
+#
+#   1. `workflow_dispatch` -- a human starts it, explicitly. There is no `push:`
+#      or `release:` trigger, and adding one would defeat everything below.
+#   2. `dry_run` defaults to **true**. Running the workflow with the form's
+#      defaults uploads nothing; it builds all five binaries and runs
+#      `npm publish --dry-run`, which prints each tarball's contents.
+#   3. `confirm` must be typed as the exact string `PUBLISH`. A boolean alone is
+#      one mis-click; a boolean plus a typed word is not.
+#   4. The version in the form must equal the version in `Cargo.toml` and in all
+#      six package manifests. A release of "whatever happens to be on main" is
+#      not possible.
+#
+# npm makes the consequence of getting this wrong permanent: a published version
+# number can never be reused, and unpublish is restricted to a 72-hour window.
+# That asymmetry is why the safety here is heavier than the job is long.
+#
+# ---------------------------------------------------------------------------
+# Conventions, matching ci.yml
+# ---------------------------------------------------------------------------
+# Every third-party and first-party action is pinned to a full commit SHA with
+# the human-readable tag in a trailing comment -- a tag is a mutable ref, a SHA
+# is not. Every cargo invocation that resolves a dependency graph passes
+# `--locked`. `persist-credentials: false` on every checkout, because nothing
+# here pushes to git.
+#
+# Workflow inputs are passed into `run:` blocks through `env:` rather than
+# interpolated into the script text. A `${{ }}` expansion inside a shell body is
+# substituted before the shell ever sees it, so a crafted input becomes script;
+# through `env:` it is only ever data.
+
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish. Must match Cargo.toml and all six package.json files exactly (e.g. 0.0.1)."
+        required: true
+        type: string
+      dry_run:
+        description: "Build and pack everything, but upload nothing. Leave checked unless you mean to publish."
+        required: true
+        type: boolean
+        default: true
+      confirm:
+        description: "Type PUBLISH (all caps) to allow a real upload. Ignored when dry_run is checked."
+        required: false
+        type: string
+        default: ""
+
+# Least privilege. `id-token: write` is required by npm provenance and by
+# nothing else here: it lets the publish step exchange a short-lived OIDC token
+# for a signed attestation tying each tarball to this workflow, this commit and
+# this runner. It grants no access to repository contents.
+permissions:
+  contents: read
+  id-token: write
+
+# One release at a time. Two concurrent runs would race on the same version
+# numbers, and the loser would fail halfway through six packages -- leaving some
+# published and some not, which on npm cannot be undone by retrying.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Gate. Runs first and blocks everything else.
+  # ---------------------------------------------------------------------------
+  verify:
+    name: verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Confirm intent
+        # Checked before anything is built, so a run that could never publish
+        # fails in seconds rather than after five cross-compilations.
+        if: ${{ !inputs.dry_run }}
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRM" != "PUBLISH" ]; then
+            echo "::error::A real publish requires the confirm input to be exactly PUBLISH."
+            exit 1
+          fi
+          echo "Confirmed: this run will publish."
+
+      - name: Versions agree
+        # Seven places carry the version: the Rust workspace, the launcher
+        # package, its five optionalDependencies pins, and the five platform
+        # packages. They are checked against each other AND against the version
+        # typed into the form, so a half-finished bump cannot ship.
+        env:
+          WANT: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          # The ${...} below are JavaScript template literals inside a
+          # single-quoted script. Shell expansion is exactly what must NOT happen
+          # to them, so SC2016 is the intended state rather than a defect.
+          # shellcheck disable=SC2016
+          node --input-type=commonjs -e '
+            const fs = require("node:fs");
+            const want = process.env.WANT;
+            const problems = [];
+            const check = (where, got) => {
+              if (got !== want) problems.push(`${where}: ${got} (expected ${want})`);
+            };
+
+            const toml = fs.readFileSync("Cargo.toml", "utf8");
+            const m = toml.match(/^\[workspace\.package\]$[\s\S]*?^version\s*=\s*"([^"]+)"/m);
+            if (!m) { problems.push("Cargo.toml: no [workspace.package] version found"); }
+            else { check("Cargo.toml [workspace.package].version", m[1]); }
+
+            const main = JSON.parse(fs.readFileSync("npm/tokfold/package.json", "utf8"));
+            check("npm/tokfold/package.json .version", main.version);
+
+            const dirs = fs.readdirSync("npm/platforms").sort();
+            if (dirs.length !== 5) problems.push(`npm/platforms holds ${dirs.length} directories, expected 5`);
+
+            const pins = main.optionalDependencies ?? {};
+            if (Object.keys(pins).length !== dirs.length) {
+              problems.push(`optionalDependencies lists ${Object.keys(pins).length} packages but npm/platforms holds ${dirs.length}`);
+            }
+
+            for (const dir of dirs) {
+              const p = JSON.parse(fs.readFileSync(`npm/platforms/${dir}/package.json`, "utf8"));
+              check(`npm/platforms/${dir} .version`, p.version);
+              if (!(p.name in pins)) {
+                problems.push(`${p.name} is not listed in the launcher optionalDependencies`);
+              } else {
+                check(`optionalDependencies["${p.name}"]`, pins[p.name]);
+              }
+            }
+
+            if (problems.length) {
+              for (const line of problems) console.log(`::error::version mismatch -- ${line}`);
+              process.exit(1);
+            }
+            console.log(`All seven version sites agree on ${want}.`);
+          '
+
+      - name: Launcher parses and maps every platform
+        # The launcher is the one piece of shipped code no Rust test can reach.
+        # This does not run tokfold; it checks that resolve.js is syntactically
+        # valid under the Node floor the package declares, and that its platform
+        # table and the directories on disk are the same set -- the drift that
+        # would otherwise surface as "no prebuilt binary for linux-arm64" months
+        # after a target was added to one list and not the other.
+        run: |
+          set -euo pipefail
+          node --check npm/tokfold/bin/tokfold
+          node --check npm/tokfold/lib/resolve.js
+          # As above: JavaScript template literals, not shell expansions.
+          # shellcheck disable=SC2016
+          node --input-type=commonjs -e '
+            const fs = require("node:fs");
+            const { PACKAGES } = require("./npm/tokfold/lib/resolve.js");
+            const fromTable = Object.values(PACKAGES).sort();
+            const fromDisk = fs.readdirSync("npm/platforms").sort().map((d) => `tokfold-${d}`);
+            if (JSON.stringify(fromTable) !== JSON.stringify(fromDisk)) {
+              console.log(`::error::resolve.js maps to [${fromTable}] but npm/platforms holds [${fromDisk}]`);
+              process.exit(1);
+            }
+            console.log(`resolve.js and npm/platforms agree on ${fromDisk.length} targets.`);
+          '
+
+      - name: No symlinks under npm/
+        # A regression guard for a defect that already happened once and was
+        # invisible: the licence files were symlinks into the repository root,
+        # `npm pack` dropped them without a word, and the tarball would have been
+        # published under a dual licence carrying neither licence text.
+        #
+        # Nothing under `npm/` may be a symlink. The licences are copied in at
+        # publish time instead; see the "Stage the licences" step.
+        run: |
+          set -euo pipefail
+          found="$(find npm -type l)"
+          if [ -n "$found" ]; then
+            echo "::error::npm/ contains symlinks, which npm pack silently drops:"
+            echo "$found"
+            exit 1
+          fi
+          test -s LICENSE-MIT
+          test -s LICENSE-APACHE
+          echo "No symlinks under npm/, and both licence texts are present at the root."
+
+  # ---------------------------------------------------------------------------
+  # Build. One optimised binary per target.
+  # ---------------------------------------------------------------------------
+  build:
+    name: build (${{ matrix.dir }})
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Publishing needs all five. Cancelling siblings on the first failure only
+      # hides whether the others would also have failed.
+      fail-fast: false
+      matrix:
+        include:
+          - dir: darwin-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            native: true
+          - dir: darwin-x64
+            os: macos-latest
+            target: x86_64-apple-darwin
+            # The macOS runners are arm64. An x64 binary built here can only be
+            # executed under Rosetta, which is not guaranteed to be installed, so
+            # this leg does not try to smoke-test its own output.
+            native: false
+          # Linux legs build on 22.04 rather than latest on purpose. A glibc
+          # binary runs on the glibc it was built against or newer, never older,
+          # so the build image's glibc becomes the floor for every user. 24.04
+          # would raise that floor to 2.39 and break Debian 12 and every
+          # still-supported enterprise distro for no gain.
+          - dir: linux-x64-gnu
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            native: true
+          - dir: linux-arm64-gnu
+            os: ubuntu-22.04
+            target: aarch64-unknown-linux-gnu
+            native: false
+          - dir: win32-x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            native: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust stable
+        # Release binaries are built on stable, not on the 1.85 MSRV floor. MSRV
+        # is a promise to people compiling the crate themselves; a binary we ship
+        # should get current codegen.
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal
+          rustup override set stable
+          rustup target add "$TARGET"
+          rustc --version
+
+      - name: Install the aarch64 cross linker
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        # rustc emits aarch64 objects on its own; it still needs a linker that
+        # can produce an aarch64 ELF, which the host gcc cannot.
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends gcc-aarch64-linux-gnu
+
+      - name: Cache cargo build artifacts
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Build
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+        run: |
+          set -euo pipefail
+          # `strip` is passed as a one-off config override rather than written
+          # into the committed Cargo.toml: stripping is a property of the
+          # binaries we hand to users, not of the release profile everyone else
+          # builds locally, and a developer's backtraces should keep their
+          # symbols. It cuts several megabytes per platform.
+          cargo build \
+            --package tokfold-cli \
+            --release \
+            --locked \
+            --target "$TARGET" \
+            --config 'profile.release.strip="symbols"'
+
+      - name: Smoke-test the binary
+        # Only where the runner can actually execute what was just built. A
+        # cross-compiled artifact is verified on the machine that installs it,
+        # not here.
+        if: matrix.native
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          exe="target/$TARGET/release/tokfold"
+          [ "${RUNNER_OS}" = "Windows" ] && exe="$exe.exe"
+          "$exe" --version
+          # Exercise the real path, not just --version: compress a document and
+          # confirm the round trip returns the original value tree.
+          printf '{"a":[{"x":1,"y":2},{"x":3,"y":4}]}' > sample.json
+          "$exe" compress --input sample.json --archive sample.tkfd > rendering.txt
+          "$exe" expand --input sample.tkfd > restored.json
+          cmp sample.json restored.json
+          echo "round trip verified on $TARGET"
+
+      - name: Stage the binary
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          DIR: ${{ matrix.dir }}
+        run: |
+          set -euo pipefail
+          src="target/$TARGET/release/tokfold"
+          dst="npm/platforms/$DIR/bin/tokfold"
+          if [ "${RUNNER_OS}" = "Windows" ]; then
+            src="$src.exe"
+            dst="$dst.exe"
+          fi
+          mkdir -p "npm/platforms/$DIR/bin"
+          cp "$src" "$dst"
+          chmod +x "$dst"
+          ls -l "$dst"
+
+      - name: Upload the binary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: binary-${{ matrix.dir }}
+          path: npm/platforms/${{ matrix.dir }}/bin/
+          if-no-files-found: error
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Publish. Platform packages first, launcher last.
+  # ---------------------------------------------------------------------------
+  publish:
+    name: publish
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          # Writes an .npmrc pointing at the public registry and reading the
+          # token from NODE_AUTH_TOKEN, so the token never appears in a command
+          # line where it could reach a process listing or a log.
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Download every binary
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: binary-*
+          path: staging
+
+      - name: Place the binaries
+        run: |
+          set -euo pipefail
+          for dir in npm/platforms/*/; do
+            name="$(basename "$dir")"
+            mkdir -p "$dir/bin"
+            cp -a "staging/binary-$name/." "$dir/bin/"
+          done
+          # An empty platform package installs cleanly and then fails at the
+          # moment the user runs the command, which is the worst place to find
+          # out. Refuse to go further unless all five binaries are present and
+          # non-empty.
+          missing=0
+          for dir in npm/platforms/*/; do
+            name="$(basename "$dir")"
+            exe="$dir/bin/tokfold"
+            [ "$name" = "win32-x64" ] && exe="$exe.exe"
+            if [ ! -s "$exe" ]; then
+              echo "::error::$exe is missing or empty"
+              missing=1
+            else
+              chmod +x "$exe"
+              printf '%-20s %s bytes\n' "$name" "$(wc -c < "$exe")"
+            fi
+          done
+          [ "$missing" -eq 0 ]
+
+      - name: Stage the licences
+        # Every package is published as "MIT OR Apache-2.0", and both licences
+        # require their text to travel with the distribution. The repository keeps
+        # exactly one copy of each at the root, and the crates reach them through
+        # symlinks -- which works there because cargo follows a symlink when it
+        # builds a .crate.
+        #
+        # npm does not. `npm pack` omits symlinks silently: no warning, no error,
+        # just a tarball that is missing the files listed in `files`. That is why
+        # the copy happens here instead of a link living in the tree -- one
+        # canonical text at the root, no duplicates to drift, and a real file in
+        # every tarball.
+        run: |
+          set -euo pipefail
+          for dir in npm/tokfold npm/platforms/*/; do
+            cp LICENSE-MIT LICENSE-APACHE "$dir"
+          done
+          # Assert rather than assume, because the failure this guards against is
+          # the silent one: a package that publishes fine and is simply missing
+          # its licence.
+          missing=0
+          for dir in npm/tokfold npm/platforms/*/; do
+            for name in LICENSE-MIT LICENSE-APACHE; do
+              if [ ! -f "$dir/$name" ] || [ ! -s "$dir/$name" ] || [ -L "$dir/$name" ]; then
+                echo "::error::$dir/$name is missing, empty, or still a symlink"
+                missing=1
+              fi
+            done
+          done
+          [ "$missing" -eq 0 ]
+          echo "Licence texts staged into all six packages."
+
+      - name: End-to-end test through the launcher
+        # The last check before anything leaves the runner, and the only one that
+        # exercises the shipped launcher rather than the binary directly. It
+        # builds the exact node_modules layout npm produces -- launcher plus one
+        # platform package -- and runs the `tokfold` command through it, so a
+        # broken resolve path, a lost exit code or a missing executable bit is
+        # caught here rather than by the first person to install it.
+        run: |
+          set -euo pipefail
+          root="$(mktemp -d)"
+          mkdir -p "$root/node_modules"
+          cp -a npm/tokfold "$root/node_modules/tokfold"
+          cp -a npm/platforms/linux-x64-gnu "$root/node_modules/tokfold-linux-x64-gnu"
+
+          run() { node "$root/node_modules/tokfold/bin/tokfold" "$@"; }
+
+          run --version
+
+          # Exit code 0 and a real round trip.
+          printf '{"k":[{"a":1,"b":2},{"a":3,"b":4}]}' > in.json
+          run compress --input in.json --archive out.tkfd > /dev/null
+          run expand --input out.tkfd > back.json
+          cmp in.json back.json
+          echo "round trip through the launcher: ok"
+
+          # Exit code 3: a corrupt archive must stay 3 after crossing the wrapper.
+          printf 'not an archive at all' > bad.tkfd
+          set +e
+          run expand --input bad.tkfd > /dev/null 2>&1
+          code=$?
+          set -e
+          if [ "$code" -ne 3 ]; then
+            echo "::error::corrupt archive returned $code through the launcher, expected 3"
+            exit 1
+          fi
+          echo "exit code 3 preserved through the launcher: ok"
+
+          # Exit code 2: input the compressor rejects.
+          printf 'this is not json' > bad.json
+          set +e
+          run stats --input bad.json > /dev/null 2>&1
+          code=$?
+          set -e
+          if [ "$code" -ne 2 ]; then
+            echo "::error::rejected input returned $code through the launcher, expected 2"
+            exit 1
+          fi
+          echo "exit code 2 preserved through the launcher: ok"
+
+      - name: Publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          # Provenance is only meaningful on a real upload -- it signs a tarball
+          # that is actually being stored -- so a dry run omits the flag rather
+          # than asking the registry to attest to something it will never see.
+          flags="--access public"
+          if [ "$DRY_RUN" = "true" ]; then
+            flags="$flags --dry-run"
+            echo "DRY RUN -- nothing will be uploaded."
+          else
+            flags="$flags --provenance"
+            echo "PUBLISHING $VERSION for real."
+          fi
+
+          # Order matters. The launcher's optionalDependencies name versions that
+          # must already exist: publish it first and there is a window in which
+          # `npm i -g tokfold` installs a launcher whose binary package cannot be
+          # resolved. Platform packages first, launcher last, means the only
+          # visible states are "not yet released" and "released and working".
+          for dir in npm/platforms/*/; do
+            echo "=== $(basename "$dir") ==="
+            # shellcheck disable=SC2086
+            ( cd "$dir" && npm publish $flags )
+          done
+
+          echo "=== tokfold (launcher) ==="
+          # shellcheck disable=SC2086
+          ( cd npm/tokfold && npm publish $flags )
+
+      - name: Summary
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          {
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "## Dry run complete"
+              echo ""
+              echo "Nothing was uploaded. All five binaries built, staged and packed, and the"
+              echo "launcher passed the end-to-end test including exit codes 2 and 3."
+              echo ""
+              echo "To publish for real: run this workflow again with \`dry_run\` unchecked and"
+              echo "\`confirm\` set to \`PUBLISH\`."
+            else
+              echo "## Published \`$VERSION\`"
+              echo ""
+              echo '```'
+              echo "npm install -g tokfold@$VERSION"
+              echo '```'
+              echo ""
+              echo "Six packages: the \`tokfold\` launcher and five platform binaries."
+              echo "npm versions cannot be reused and unpublish is limited to 72 hours."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
