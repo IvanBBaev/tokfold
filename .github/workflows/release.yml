@@ -276,10 +276,18 @@ jobs:
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         # rustc emits aarch64 objects on its own; it still needs a linker that
         # can produce an aarch64 ELF, which the host gcc cannot.
+        #
+        # libc6-dev-arm64-cross is named explicitly because gcc-aarch64-linux-gnu
+        # only *recommends* it, and --no-install-recommends is on. Without it the
+        # cross linker exists but the aarch64 C startup objects do not, and the
+        # link fails on `cannot find Scrt1.o`. Recommends are still off on
+        # purpose: the two packages we do need are cheap, the rest are not.
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends gcc-aarch64-linux-gnu
+          sudo apt-get install --yes --no-install-recommends \
+            gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+          test -f /usr/aarch64-linux-gnu/lib/Scrt1.o
 
       - name: Cache cargo build artifacts
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
