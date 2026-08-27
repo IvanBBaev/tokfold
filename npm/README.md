@@ -24,7 +24,38 @@ npm/
     linux-x64-gnu/
     linux-arm64-gnu/
     win32-x64/
+  tests/                       the launcher's test suite; not part of any package
 ```
+
+## Tests
+
+```sh
+cd npm/tests && node --test
+```
+
+`npm/tests/` covers `bin/tokfold` and `lib/resolve.js`: the platform table against
+the directories in `platforms/`, the musl refusal, the missing-package path, and
+the launcher's exit-code and signal contract. `.github/workflows/ci.yml` runs it on
+Node 18 and 22 on every push and pull request.
+
+Two constraints on anything added there. It uses **`node:test` and
+`node:assert/strict` only** — the packages in this directory ship zero
+dependencies, and a `node_modules` under `npm/` would be a regression in the thing
+being tested, so there is no lockfile and nothing to install. And it lives *beside*
+`tokfold/` rather than inside it, so no `files` entry can reach it and no test file
+can end up in the published tarball; `npm pack --dry-run` in `npm/tokfold` lists
+four files and is the check for that.
+
+Run it with no path argument, from inside the directory. `node --test <dir>` only
+accepts a directory from Node 22 onwards — on the Node 18 floor the package
+declares, a positional is read as a module path and the run fails outright.
+
+The launcher is spawned as a real process against a stand-in binary
+(`fake-tokfold.sh`), because exit codes, signals and inherited descriptors are not
+observable from inside the module. Non-host platforms are simulated by redefining
+`process.platform`, `process.arch` and `process.report` from outside the launcher —
+in-process for the resolver tests, via `node --require` for the process-level ones.
+Nothing in `tokfold/` has a hook, flag or export that exists for the tests.
 
 ## Why five extra packages instead of one
 

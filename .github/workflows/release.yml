@@ -168,11 +168,19 @@ jobs:
 
       - name: Launcher parses and maps every platform
         # The launcher is the one piece of shipped code no Rust test can reach.
-        # This does not run tokfold; it checks that resolve.js is syntactically
-        # valid under the Node floor the package declares, and that its platform
-        # table and the directories on disk are the same set -- the drift that
-        # would otherwise surface as "no prebuilt binary for linux-arm64" months
-        # after a target was added to one list and not the other.
+        # This does not run tokfold; it checks that both files parse, and that
+        # the platform table and the directories on disk are the same set -- the
+        # drift that would otherwise surface as "no prebuilt binary for
+        # linux-arm64" months after a target was added to one list and not the
+        # other.
+        #
+        # `node --check` here runs on the runner's default Node, not on the
+        # `>=18` floor `npm/tokfold/package.json` declares, so it is a parse
+        # check and nothing more: a newer builtin would sail through it. The
+        # floor is tested for real by the `launcher` job in ci.yml, which runs
+        # the suite on 18 and 22 on every push, and which also covers the
+        # behaviour this step cannot see -- exit codes, signals, the musl
+        # refusal, the missing-package path.
         run: |
           set -euo pipefail
           node --check npm/tokfold/bin/tokfold

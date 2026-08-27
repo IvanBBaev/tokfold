@@ -18,6 +18,7 @@
 #   doc-drift   -- the EXPERIMENTAL-notice test in tokfold-mcp (see that job)
 #   deny        -- cargo deny check (supply-chain policy)
 #   package     -- cargo package --workspace
+#   launcher    -- node --test over the npm launcher (see that job)
 #
 # Each of those carries exactly one condition, `if: github.event_name !=
 # 'schedule'`, which keeps the weekly cron from paying for the whole gate a
@@ -50,6 +51,8 @@
 #   doc-drift
 #   deny
 #   package
+#   launcher (node 18)
+#   launcher (node 22)
 #   test (ubuntu-stable-all-features)
 #   test (ubuntu-1.85-default-features)
 #   test (ubuntu-1.85-all-features)
@@ -378,6 +381,70 @@ jobs:
       # never from here; this job still has no way to upload anything anywhere.)
       - name: Packaging check (all crates)
         run: cargo package --workspace --locked
+
+  launcher:
+    # The npm launcher (`npm/tokfold/bin/tokfold` and `lib/resolve.js`) is
+    # shipped code that no other job here compiles, runs or even parses: every
+    # gate above is a cargo command, and cargo does not read JavaScript. It is
+    # also the first thing a user meets -- `npm i -g tokfold` installs the
+    # launcher, and the Rust binary is only ever reached through it -- so a
+    # broken platform mapping or a swallowed exit code is a total outage for
+    # that install path while the whole Rust gate stays green.
+    #
+    # `release.yml` does check the launcher, but only at publish time and only
+    # for the two things a release cares about: that both files parse, and that
+    # the platform table names the same packages as `npm/platforms/`. It cannot
+    # catch a regression before merge, and it says nothing about behaviour --
+    # exit-code propagation, signal re-raise, argument passing, the musl refusal.
+    # This job is where that is checked, on every push and pull request.
+    #
+    # No dependency install step, and no lockfile to cache: the suite uses
+    # `node:test` and `node:assert/strict` and nothing else. The npm packages in
+    # this repo ship with zero dependencies on purpose, and a `node_modules`
+    # under `npm/` would be a regression in the thing being tested.
+    if: github.event_name != 'schedule'
+    name: launcher (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      # Report both legs; a failure on one Node version is not a reason to hide
+      # the other's result.
+      fail-fast: false
+      matrix:
+        # Both legs are required. `npm/tokfold/package.json` declares
+        # `engines: { node: ">=18" }`, and that floor is a promise made to every
+        # user whose distro still ships Node 18. A single leg on the runner's
+        # default Node would let an optional-chaining assignment, a `structuredClone`
+        # or any other newer builtin land in the launcher and break exactly the
+        # users the floor was written for -- with CI green. 18 is the floor the
+        # package claims; 22 is the version `release.yml` publishes from.
+        node: ["18", "22"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node ${{ matrix.node }}
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ matrix.node }}
+          # No `registry-url`, deliberately, unlike the publish job in
+          # release.yml: this job never talks to a registry, so it has no reason
+          # to be handed an .npmrc that knows where one is.
+
+      # Run from inside the directory with no path argument. `node --test` is
+      # given a directory positional only from Node 22 -- on 18 and 20 a
+      # positional is treated as a module path and the run dies with "Cannot
+      # find module" -- while the no-argument form auto-discovers `*.test.js`
+      # from the working directory on every version this job covers.
+      #
+      # Auto-discovery is also the point: a new test file is picked up by
+      # virtue of existing, with no list here to forget to extend. Naming the files
+      # individually would reintroduce the silent-skip failure mode this
+      # workflow's header describes, one directory over.
+      - name: Launcher test suite (node --test)
+        working-directory: npm/tests
+        run: node --test
 
   # ---------------------------------------------------------------------------
   # Test matrix. Runs the suite; gates nothing.
