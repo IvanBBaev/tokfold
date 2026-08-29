@@ -18,11 +18,21 @@ const path = require("node:path");
  * matching binary.
  *
  * The keys are Node's names and the values are npm package names; the two do not
- * have to agree, and for Linux they deliberately do not. Node reports `linux` for
- * both glibc and musl systems, so the package names carry an explicit `-gnu`
- * suffix to leave room for `-musl` packages later without renaming what is
+ * have to agree, and for Linux and Windows they deliberately do not. Node reports
+ * `linux` for both glibc and musl systems, so the package names carry an explicit
+ * `-gnu` suffix to leave room for `-musl` packages later without renaming what is
  * already published. `isMusl()` below is what actually keeps a musl machine from
  * resolving a glibc binary.
+ *
+ * Windows diverges for a duller reason: npm's registry refused `tokfold-win32-x64`
+ * at publish time with "Package name triggered spam detection", twice, two days
+ * apart, while the four sibling names in the same run went through. Unscoped
+ * `<tool>-win32-x64` is the shape a wave of dependency-confusion squats took, and
+ * the classifier appears to have learnt it. `windows-x64` is what the ecosystem
+ * settled on for the same reason -- esbuild, turbo and git-cliff all publish
+ * `-windows-` names, and git-cliff's own `git-cliff-win32-x64` is a tombstoned
+ * `0.0.1-security` held by npm staff. The key stays `win32-x64` because that is
+ * what Node reports; only the name on the registry changed.
  *
  * Adding a target means: a new entry here, a new directory under
  * `npm/platforms/`, a new entry in this package's `optionalDependencies`, and a
@@ -34,7 +44,7 @@ const PACKAGES = Object.freeze({
   "darwin-x64": "tokfold-darwin-x64",
   "linux-arm64": "tokfold-linux-arm64-gnu",
   "linux-x64": "tokfold-linux-x64-gnu",
-  "win32-x64": "tokfold-win32-x64",
+  "win32-x64": "tokfold-windows-x64",
 });
 
 /**

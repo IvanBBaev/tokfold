@@ -408,9 +408,8 @@ test("a musl runtime exits 1 rather than loading a glibc binary", () => {
 });
 
 test("a missing platform package exits 1 and names the package", { skip: NO_PACKAGE }, () => {
-  // The live case: `tokfold-win32-x64` is not on the registry, so every Windows
-  // user reaches this path. It is also what `npm ci --omit=optional` produces
-  // on any platform.
+  // What `npm ci --omit=optional` produces on any platform, and what every user
+  // on a platform whose package failed to publish sees until it does.
   const result = run(bare, ["--version"]);
 
   assert.equal(result.status, 1);

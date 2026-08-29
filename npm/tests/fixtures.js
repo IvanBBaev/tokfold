@@ -73,7 +73,7 @@ process.on("exit", () => {
  * Which subset is the whole point. npm installs exactly one of the five, so
  * "the package for this machine is missing" is not an exotic state to simulate:
  * it is what every user on a platform whose package failed to publish sees, and
- * it is the current state of `tokfold-win32-x64`.
+ * this project has already shipped a release in exactly that state.
  *
  * @param {object} [options]
  * @param {string[]} [options.packages] platform package names to install

@@ -308,7 +308,7 @@ test("the musl check never fires off Linux", () => {
     });
 
     assert.equal(error, undefined, `${platform}-${arch} was refused as musl`);
-    assert.ok(resolved.includes(`tokfold-${platform}-${arch}`), resolved);
+    assert.ok(resolved.includes(PACKAGES[`${platform}-${arch}`]), resolved);
   }
 });
 
@@ -316,9 +316,10 @@ test("the musl check never fires off Linux", () => {
 // The platform package is not installed
 // ---------------------------------------------------------------------------
 //
-// Not a hypothetical: `tokfold-win32-x64` is not on the registry, so this is
-// what a Windows user gets today. It is also what anyone gets from
-// `npm ci --omit=optional`, which is a common default in CI images.
+// Not a hypothetical. `npm ci --omit=optional` produces exactly this, and it is
+// a common default in CI images; so does any install that ran while one of the
+// five platform packages was missing from the registry, which is the state this
+// project spent a release in.
 
 for (const [key, pkg] of Object.entries(PACKAGES)) {
   const [platform, arch] = key.split("-");

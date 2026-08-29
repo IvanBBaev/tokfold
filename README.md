@@ -23,11 +23,12 @@ for the command line.
 - **npm publication is in progress and not yet usable.** Four of the five
   prebuilt-binary packages are live at `0.0.1`
   (`tokfold-darwin-arm64`, `tokfold-darwin-x64`, `tokfold-linux-x64-gnu`,
-  `tokfold-linux-arm64-gnu`); `tokfold-win32-x64` was refused by npm's
-  new-account spam heuristic, and the `tokfold` launcher package is deliberately
-  published **last**, so `npm i -g tokfold` does not work yet and will not until
-  every platform package exists. Until then, build from this repository. See
-  `npm/README.md` for why the ordering is that way round.
+  `tokfold-linux-arm64-gnu`); the Windows package is not, and the `tokfold`
+  launcher package is deliberately published **last**, so `npm i -g tokfold` does
+  not work yet and will not until every platform package exists. Until then,
+  build from this repository. See `npm/README.md` for why the ordering is that
+  way round, and for why the Windows package is `tokfold-windows-x64` rather than
+  the `win32` name Node itself uses.
 - The one badge above is the CI badge: the workflow in `.github/workflows/ci.yml`
   really does run on every pull request and on every push to `main`, so that badge
   reflects a real result. Pushes to other branches run nothing — open a pull

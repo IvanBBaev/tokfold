@@ -23,7 +23,7 @@ npm/
     darwin-x64/
     linux-x64-gnu/
     linux-arm64-gnu/
-    win32-x64/
+    windows-x64/
   tests/                       the launcher's test suite; not part of any package
 ```
 
@@ -235,28 +235,41 @@ any of the six manifests grows a `scripts` block. Either half alone would do tod
 both exist so that editing one away does not silently ship code that runs on every
 user's machine at install time.
 
-### The npm spam heuristic will refuse a burst of new names
+### Why the Windows package is `windows-x64` and not `win32-x64`
 
-Six packages published back to back from an account that has never published
-before is a shape npm's anti-spam heuristic rejects, with
-`403 Forbidden - PUT https://registry.npmjs.org/<name> - Package name triggered
-spam detection` on the name it stops at — even though the name is free and the
-same `<pkg>-<os>-<arch>` convention is used by esbuild, swc and others.
+Node calls the platform `win32`, the table in `lib/resolve.js` keys on `win32-x64`,
+and the obvious package name to match it is `tokfold-win32-x64`. That name is not
+what is published, and the reason is worth writing down because nothing in the
+code explains it.
 
-What is actually known, rather than assumed: the first release run published four
-platform packages and was refused on the fifth, `tokfold-win32-x64`. A second run
-1h38m later was refused on the same name with the same message — and that run was
-not a burst at all. The skip above meant it attempted exactly one publish, and
-that one publish was still rejected. So the tidy story that this is a property of
-the *burst* does not survive its own retry, and neither does an estimate of the
-window: 1h38m was not enough, and nothing here establishes what would be.
+What is known, rather than assumed. The first release run published four platform
+packages and was refused on the fifth, `tokfold-win32-x64`, with
+`403 Forbidden - PUT https://registry.npmjs.org/tokfold-win32-x64 - Package name
+triggered spam detection`. A second run 1h38m later was refused on the same name
+with the same message — and that run was not a burst: the ownership-checked skip
+meant it attempted exactly one publish, and that one publish was still rejected. A
+third run two days later, from the same token, was refused again. So this is not a
+rate limit and not a property of publishing six names at once; it is a property of
+that one name. The message says so.
 
-Re-running the workflow is still the right first move — the skip makes it free and
-it cannot cost a version number — but it is a thing to try, not a known fix. If the
-name stays refused, the next step is npm support rather than another run. Note that
-the launcher has not been published yet, which means the set of package *names* is
-still free to change; it stops being free the moment `tokfold` itself goes out with
-those five names frozen into its `optionalDependencies`.
+The name was free the whole time — `tokfold-win32-x64` still 404s — so this is the
+registry declining to create it, not a collision. Unscoped `<tool>-win32-x64` is
+the exact shape a wave of dependency-confusion squats took, and the classifier
+appears to have learnt it: `git-cliff-win32-x64` is a tombstoned `0.0.1-security`
+held by an npm staff account, while `git-cliff-windows-x64` is live and current
+under the real maintainer. esbuild and turbo ship `-windows-` names too. `win32` is
+not categorically banned — recent unscoped `*-win32-x64` packages do exist — but it
+is the token this name was rejected on, and `windows-x64` is the ecosystem's own
+answer to the same problem.
+
+So the package is `tokfold-windows-x64`. The table key stays `win32-x64`, because
+that is what `process.platform` reports and the key is not negotiable; only the
+registry name changed. `lib/resolve.js` was built to allow exactly this — its keys
+are Node's names and its values are npm's, and they already disagree for Linux.
+
+This was free to do only because the launcher had not been published. The set of
+package *names* stops being free the moment `tokfold` itself goes out with those
+five names frozen into its `optionalDependencies`.
 
 Publishing the launcher **last** is what keeps this from being a user-visible
 failure, and the ordering matters more than it first looks. Under npm and pnpm, a

@@ -34,7 +34,7 @@
     "tokfold-darwin-x64": "0.0.1",
     "tokfold-linux-arm64-gnu": "0.0.1",
     "tokfold-linux-x64-gnu": "0.0.1",
-    "tokfold-win32-x64": "0.0.1"
+    "tokfold-windows-x64": "0.0.1"
   },
   "engines": {
     "node": ">=18"

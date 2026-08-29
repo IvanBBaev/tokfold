@@ -429,7 +429,7 @@ jobs:
           # branch that only ever runs there -- the binary is `tokfold.exe`, and
           # the win32 entries in the platform table are the ones a Linux or
           # macOS host can only reach through a stubbed `process.platform`. We
-          # publish a `tokfold-win32-x64` package, so the one host that resolves
+          # publish a `tokfold-windows-x64` package, so the one host that resolves
           # it for real should be a host CI has actually used.
           #
           # It is also the only place `packaging.test.js` takes its `shell: true`
