@@ -160,9 +160,9 @@ runners are arm64 and Rosetta is not guaranteed to be present. Emulation is
 invoked explicitly rather than through `binfmt_misc`, so the step does not depend
 on whether the runner image has the handlers registered.
 
-That is the workflow as it stands, and it is not retroactive. The four packages
-already on the registry at `0.0.1` were built before the aarch64 smoke test
-existed, when the step was gated on `if: matrix.native` — so the published
+That is the workflow as it stands, and it is not retroactive. The four platform
+packages that went out in the first release run were built before the aarch64
+smoke test existed, when the step was gated on `if: matrix.native` — so the published
 `tokfold-linux-arm64-gnu` binary has never been executed by anyone, anywhere. Later
 release runs rebuild and smoke-test that target, which verifies the *source* at
 that commit, but the skip means they do not republish it: the bytes a user
@@ -255,12 +255,30 @@ that one name. The message says so.
 The name was free the whole time — `tokfold-win32-x64` still 404s — so this is the
 registry declining to create it, not a collision. Unscoped `<tool>-win32-x64` is
 the exact shape a wave of dependency-confusion squats took, and the classifier
-appears to have learnt it: `git-cliff-win32-x64` is a tombstoned `0.0.1-security`
-held by an npm staff account, while `git-cliff-windows-x64` is live and current
-under the real maintainer. esbuild and turbo ship `-windows-` names too. `win32` is
-not categorically banned — recent unscoped `*-win32-x64` packages do exist — but it
-is the token this name was rejected on, and `windows-x64` is the ecosystem's own
-answer to the same problem.
+appears to have learnt it.
+
+This is documented precedent, not a guess. `git-cliff` hit the identical refusal
+on 2023-01-09 and wrote it up — same status, same URL shape, same sentence — and
+renamed the same day (`git-cliff` commit `ce1d468`, "rename the NPM binary package
+for Windows"). npm support's reply to that report said the block was deliberate
+("we've initiated some blocks related to package names… as support, we're able to
+move beyond the block") and unblocked the name by creating a placeholder and
+transferring write access to the maintainer. That is why `git-cliff-win32-x64` is
+a `0.0.1-security` stub held by an npm staff account and `git-cliff-windows-x64`
+is the live one: the stub is a fossil of the block, not the remains of a
+withdrawn package. esbuild and turbo ship `-windows-` names too.
+
+`win32` is not categorically banned — recent unscoped `*-win32-x64` packages do
+exist — but it is the token this name was rejected on, and `windows-x64` is the
+ecosystem's own answer to the same problem. Two other reflexes are worth ruling
+out in writing, because both look obvious and neither works: retrying the same
+name does not clear the flag (no publicly documented case of it doing so, and
+this project's own three attempts across two days are three more), and appending
+`-msvc` does not either — several `*-win32-x64-msvc` names were refused with the
+same message, so the signal is not carried by the trailing token. Scoping would
+sidestep it entirely, since npm's package-name guidelines apply the similarity
+and authorship rules only to unscoped names; that is a larger decision than this
+release needed, and the names are frozen now that the launcher has shipped.
 
 So the package is `tokfold-windows-x64`. The table key stays `win32-x64`, because
 that is what `process.platform` reports and the key is not negotiable; only the

@@ -20,15 +20,14 @@ for the command line.
 - **Not on crates.io.** There is no `cargo add tokfold`, no crates.io page and no
   docs.rs page, because none of those exist yet. To use the engine as a library,
   build from this repository.
-- **npm publication is in progress and not yet usable.** Four of the five
-  prebuilt-binary packages are live at `0.0.1`
+- **On npm.** `npm i -g tokfold` installs the CLI. The launcher package carries no
+  binary of its own; it declares one package per platform
   (`tokfold-darwin-arm64`, `tokfold-darwin-x64`, `tokfold-linux-x64-gnu`,
-  `tokfold-linux-arm64-gnu`); the Windows package is not, and the `tokfold`
-  launcher package is deliberately published **last**, so `npm i -g tokfold` does
-  not work yet and will not until every platform package exists. Until then,
-  build from this repository. See `npm/README.md` for why the ordering is that
-  way round, and for why the Windows package is `tokfold-windows-x64` rather than
-  the `win32` name Node itself uses.
+  `tokfold-linux-arm64-gnu`, `tokfold-windows-x64`) as optional dependencies, so
+  an install pulls down only the binary matching the machine. All six are
+  published at `0.0.1` with npm provenance attestations. See `npm/README.md` for
+  why the launcher is published last, and for why the Windows package is
+  `tokfold-windows-x64` rather than the `win32` name Node itself uses.
 - The one badge above is the CI badge: the workflow in `.github/workflows/ci.yml`
   really does run on every pull request and on every push to `main`, so that badge
   reflects a real result. Pushes to other branches run nothing — open a pull

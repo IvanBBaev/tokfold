@@ -7,20 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 While the version is below 1.0 the public API is unstable and may change in any
 release, without a deprecation window.
 
-## [0.0.1] - Partially released
+## [0.0.1] - 2026-08-29
 
 First version of the workspace, and the first one to leave the repository. There
 is no upgrade path from anything earlier because there is nothing earlier.
 
-On **npm**, four of the five prebuilt-binary packages were published on
-2026-08-27: `tokfold-darwin-arm64`, `tokfold-darwin-x64`, `tokfold-linux-x64-gnu`
-and `tokfold-linux-arm64-gnu`. The fifth was refused: npm answered `PUT
-tokfold-win32-x64` with "Package name triggered spam detection", twice, two days
-apart, from the same token that had just published its four siblings. The package
-is therefore named **`tokfold-windows-x64`**, which is the name esbuild, turbo and
-git-cliff all use for the same reason. The `tokfold` launcher is published last by
-design, so until the Windows package lands **`npm i -g tokfold` does not work**.
-The release is not complete and this entry will get a real date when it is.
+Released on **npm**: `npm i -g tokfold`. All six packages — the launcher plus the
+five prebuilt-binary packages — are live at `0.0.1`, published from CI with
+provenance attestations.
+
+Four of the platform packages went out on 2026-08-27; the fifth was refused. npm
+answered `PUT tokfold-win32-x64` with "Package name triggered spam detection",
+three times over two days, from the same token that had just published its four
+siblings. The package is therefore named **`tokfold-windows-x64`**, which is the
+name esbuild, turbo and git-cliff all use for the same reason — `git-cliff` hit
+this same refusal in 2023 and renamed rather than fight it. Renaming was free
+only because the launcher had not published yet; the
+platform table in `npm/tokfold/lib/resolve.js` keys on Node's `win32-x64` and
+always did, so only the name on the registry moved.
 
 On **crates.io** nothing has been published, so there is no `cargo add tokfold`
 and no docs.rs page.
@@ -164,7 +168,7 @@ and no docs.rs page.
 ### Not included
 
 - No crates.io release. There is no `cargo add`, no crates.io page and no
-  docs.rs page. The npm side is partial; see the note at the top of this entry.
+  docs.rs page. Only npm distributes this version.
 - Reserved but unimplemented: legend folding, Hugging Face tokenizer backends
   (the `hf` feature is a placeholder), language bindings, and the MCP *proxy*
   shape (upstream connection, content-addressed archive store, `retrieve` tool).
