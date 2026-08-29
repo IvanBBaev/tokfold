@@ -78,10 +78,23 @@ process.on("exit", () => {
  * @param {object} [options]
  * @param {string[]} [options.packages] platform package names to install
  * @param {string[]} [options.withBinary] which of those also get an executable
+ * @param {string[]} [options.unrunnable] which get a `bin/tokfold` that exists
+ *   and is executable but is not a program -- a truncated download, a partly
+ *   written package, a binary built for another architecture
+ * @param {string[]} [options.binIsFile] which get a plain file where `bin/`
+ *   should be, so the path the launcher builds cannot resolve. Contrived on its
+ *   own; kept because it is the one unstartable state every platform reports
+ *   the same way, and `unrunnable` is not (see the launcher suite)
  * @returns {{root: string, launcher: string, resolveModule: string,
- *            packageDir: (name: string) => string}}
+ *            packageDir: (name: string) => string,
+ *            binaryPath: (name: string) => string}}
  */
-function createInstall({ packages = [], withBinary = [] } = {}) {
+function createInstall({
+  packages = [],
+  withBinary = [],
+  unrunnable = [],
+  binIsFile = [],
+} = {}) {
   // `realpathSync` matters on macOS, where `os.tmpdir()` is `/var/folders/...`
   // but `require.resolve` returns the `/private/var/...` it really lives at.
   // Without it every expected path in the suite would differ from the resolved
@@ -99,24 +112,40 @@ function createInstall({ packages = [], withBinary = [] } = {}) {
     platformDirs().map((dir) => [platformManifest(dir).name, dir]),
   );
 
+  // The real packages carry `tokfold.exe` on Windows; the launcher picks the
+  // name from the *running* platform, so the fixture follows the host.
+  const exe = process.platform === "win32" ? "tokfold.exe" : "tokfold";
+
   for (const name of packages) {
     const dir = byName.get(name);
     if (dir === undefined) {
       throw new Error(`no platform package named ${name} under npm/platforms`);
     }
     const dest = path.join(nodeModules, name);
-    fs.mkdirSync(path.join(dest, "bin"), { recursive: true });
+    fs.mkdirSync(dest, { recursive: true });
     fs.cpSync(
       path.join(PLATFORMS_DIR, dir, "package.json"),
       path.join(dest, "package.json"),
     );
 
+    if (binIsFile.includes(name)) {
+      fs.writeFileSync(path.join(dest, "bin"), "not a directory\n");
+      continue;
+    }
+
+    fs.mkdirSync(path.join(dest, "bin"), { recursive: true });
+    const target = path.join(dest, "bin", exe);
+
     if (withBinary.includes(name)) {
-      // The real packages carry `tokfold.exe` on Windows; the launcher picks
-      // the name from the *running* platform, so the fixture follows the host.
-      const exe = process.platform === "win32" ? "tokfold.exe" : "tokfold";
-      const target = path.join(dest, "bin", exe);
       fs.copyFileSync(FAKE_BINARY, target);
+      fs.chmodSync(target, 0o755);
+    } else if (unrunnable.includes(name)) {
+      // Shaped like a truncated ELF rather than filled with noise, because that
+      // is what the state actually looks like in the field: an interrupted
+      // download or an unpacked-but-incomplete package leaves a real header and
+      // nothing behind it. Executable, so the failure is "cannot run this", not
+      // "cannot read this".
+      fs.writeFileSync(target, Buffer.from("\x7fELF\x02\x01\x01\0truncated"));
       fs.chmodSync(target, 0o755);
     }
   }
@@ -126,6 +155,7 @@ function createInstall({ packages = [], withBinary = [] } = {}) {
     launcher: path.join(nodeModules, "tokfold", "bin", "tokfold"),
     resolveModule: path.join(nodeModules, "tokfold", "lib", "resolve.js"),
     packageDir: (name) => path.join(nodeModules, name),
+    binaryPath: (name) => path.join(nodeModules, name, "bin", exe),
   };
 }
 

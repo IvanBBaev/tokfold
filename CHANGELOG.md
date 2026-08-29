@@ -96,6 +96,40 @@ and no docs.rs page.
   and unaudited, it sees everything passed through it, and it is not covered by the
   reversibility guarantees of the engine. Not for production secrets.
 
+#### npm distribution
+
+- `tokfold` on npm: a launcher package carrying no binary of its own, plus one
+  package per platform (`tokfold-darwin-arm64`, `tokfold-darwin-x64`,
+  `tokfold-linux-x64-gnu`, `tokfold-linux-arm64-gnu`, `tokfold-win32-x64`) each
+  holding a single prebuilt executable. They are wired as `optionalDependencies`
+  with exact versions, so an install downloads only the binary that matches the
+  machine and an unsupported platform fails at run time with an explanation
+  rather than failing the install.
+- The launcher hands the binary the caller's own file descriptors, so streaming,
+  broken pipes and terminal detection behave as they do for the binary run
+  directly; it reproduces the child's exit code untouched and re-raises the
+  signal the child died of. Its own failures — unsupported platform, a platform
+  package that is not installed, a binary that will not start — all exit `1`,
+  which is deliberately not one of tokfold's codes.
+- A signal addressed to the launcher is forwarded to the binary and the launcher
+  outlives it, so no supervisor can kill the launcher and leave the binary
+  running on the caller's descriptors. `SIGKILL` is the exception it cannot
+  cover.
+- Alpine and other musl runtimes are refused by name instead of resolving a
+  glibc binary and failing later with an error that mentions neither musl nor
+  tokfold. The published Linux binaries reference glibc symbols up to
+  `GLIBC_2.34`. The Windows binary links the C runtime statically, so it does
+  not require the Visual C++ Redistributable; rustc's default for that target
+  would have made `VCRUNTIME140.dll` a run-time dependency.
+- Publication is ordered: every platform package first, the launcher last. A
+  launcher whose `optionalDependencies` name a package that does not exist
+  installs cleanly under npm and pnpm and then fails at run time on the one
+  platform whose package is missing — but yarn treats a 404 on an optional
+  dependency as fatal during resolution, before `os`/`cpu` filtering can rule
+  the package out, so there a single missing platform package breaks the install
+  on every platform. The ordering is what keeps a partial release invisible
+  instead of broken for everyone.
+
 #### Project-level
 
 - Three-crate workspace (`tokfold-core`, `tokfold-cli`, `tokfold-mcp`), edition
@@ -105,9 +139,14 @@ and no docs.rs page.
 - CI workflow (`.github/workflows/ci.yml`): each gate is its own top-level job —
   workflow lint, format, clippy, rustdoc, a test pinning the wording of the
   EXPERIMENTAL notice, a `cargo-deny` supply-chain policy gate (vulnerabilities
-  and unmaintained crates fail the build; a yanked crate only warns) and a
-  `cargo package` check — alongside a test matrix over Linux/macOS/Windows and
-  two MSRV legs. No gate hangs off a matrix value, so none can be switched off by
+  and unmaintained crates fail the build; a yanked crate only warns), a
+  `cargo package` check, and a launcher gate running the npm suite on Linux,
+  Windows and macOS — the shipped JavaScript is the one piece of this release no
+  cargo command reads. That suite covers the platform table, the musl refusal,
+  the launcher's exit-code and signal contract, and what each of the six npm
+  packages would actually publish; Node 18 and 22 both run, because the package
+  declares a Node 18 floor. All of it alongside a test matrix over
+  Linux/macOS/Windows and two MSRV legs. No gate hangs off a matrix value, so none can be switched off by
   a renamed key; the only condition any of them carries is one that skips the
   gate on the weekly cron. Weekly jobs re-run the suite under the release profile
   and on nightly, and re-scan a fresh advisory database with `cargo-audit`. Every
@@ -117,12 +156,12 @@ and no docs.rs page.
   `keywords`, `categories` and an explicit `include` allow list; each publishable
   crate carries its own README and licence texts. The `documentation` URLs point
   at docs.rs pages that do not exist yet — docs.rs builds them on first publish,
-  and nothing here has been published.
+  and nothing has been published to crates.io.
 
 ### Not included
 
-- No package-registry release. There is no `cargo add`, no crates.io page and no
-  docs.rs page.
+- No crates.io release. There is no `cargo add`, no crates.io page and no
+  docs.rs page. The npm side is partial; see the note at the top of this entry.
 - Reserved but unimplemented: legend folding, Hugging Face tokenizer backends
   (the `hf` feature is a placeholder), language bindings, and the MCP *proxy*
   shape (upstream connection, content-addressed archive store, `retrieve` tool).

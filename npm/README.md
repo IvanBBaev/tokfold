@@ -34,17 +34,52 @@ cd npm/tests && node --test
 ```
 
 `npm/tests/` covers `bin/tokfold` and `lib/resolve.js`: the platform table against
-the directories in `platforms/`, the musl refusal, the missing-package path, and
-the launcher's exit-code and signal contract. `.github/workflows/ci.yml` runs it on
-Node 18 and 22 on every push and pull request.
+the directories in `platforms/`, the musl refusal, the missing-package path, the
+launcher's exit-code and signal contract, and what each of the six packages would
+actually publish. `.github/workflows/ci.yml` runs it on every push and pull
+request: Node 18 and 22 on Linux, and Node 22 on Windows and macOS.
+
+The three operating systems are not redundancy. Windows is the only host where
+`lib/resolve.js` takes its `.exe` branch for real, and the only one where the
+packaging test has to go through a shell to reach `npm.cmd`; macOS is the only
+non-Linux host that runs the process-level suite, and signals, orphan reaping and
+inherited descriptors are kernel behaviour rather than something Linux can vouch
+for on macOS's behalf.
+
+What Windows skips is narrower than it looks. Only the tests that need the
+launcher to *succeed* are skipped there, because the stand-in binary is a
+`#!/bin/sh` script Windows cannot exec — so the exit-code and signal contract is
+verified on Linux and macOS. Every test in which the launcher is supposed to
+fail runs on all three, because none of them reaches the stand-in: an
+unsupported platform, a platform package that is not installed, and a binary
+that cannot be started all end before there is a child process, and those are
+the paths a user is most likely to hit.
+
+Two of those deserve naming, because they are the reason the `spawn` call is
+wrapped in a `try`. Node reports most start-up failures on the asynchronous
+`error` event but throws the rest synchronously, so "the file is there and the
+kernel will not run it" arrives by a different route than "the file is not
+there". The suite covers both: a plain file where `bin/` should be, which every
+platform reports the same way, and a truncated ELF. The second one is probed for
+first and skipped when the probe says the host started it anyway — glibc's
+`execvp` retries an `ENOEXEC` through `/bin/sh`, so on a glibc Linux a corrupt
+binary begins life as a shell script instead of failing, and asserting a
+launcher-level failure there would be asserting something untrue.
 
 Two constraints on anything added there. It uses **`node:test` and
 `node:assert/strict` only** — the packages in this directory ship zero
 dependencies, and a `node_modules` under `npm/` would be a regression in the thing
 being tested, so there is no lockfile and nothing to install. And it lives *beside*
 `tokfold/` rather than inside it, so no `files` entry can reach it and no test file
-can end up in the published tarball; `npm pack --dry-run` in `npm/tokfold` lists
-four files and is the check for that.
+can end up in the published tarball.
+
+That second one is asserted rather than assumed. `packaging.test.js` runs
+`npm pack --dry-run` in all six package directories and checks the file list against
+an allow list — an allow list rather than an exact set, because a release run stages
+a binary and copies two licence files in before packing, so the exact set is
+different in CI from what a checkout produces. It also asserts the launcher tarball
+still contains the two files it exists to ship, since an allow list on its own is
+satisfied by an empty package.
 
 Run it with no path argument, from inside the directory. `node --test <dir>` only
 accepts a directory from Node 22 onwards — on the Node 18 floor the package
@@ -56,6 +91,35 @@ observable from inside the module. Non-host platforms are simulated by redefinin
 `process.platform`, `process.arch` and `process.report` from outside the launcher —
 in-process for the resolver tests, via `node --require` for the process-level ones.
 Nothing in `tokfold/` has a hook, flag or export that exists for the tests.
+
+## The launcher outlives the binary, never the other way round
+
+`bin/tokfold` spawns the binary **asynchronously** and forwards `SIGINT`,
+`SIGTERM`, `SIGHUP` and `SIGQUIT` to it. `spawnSync` would be shorter and is
+wrong: it blocks the event loop for the whole life of the child, so no signal
+handler can run while the child is alive — and with no handler installed, a signal
+sent to the launcher alone gets its default disposition and kills the launcher on
+the spot, leaving the binary running, reparented to init, still holding the
+caller's fds 0/1/2.
+
+That is what `timeout`, a cancelled CI job, systemd with `KillMode=process`, and
+any parent calling `child.kill()` on a pid all do. For `tokfold mcp` it means an
+orphaned protocol server holding a client's pipes open after the client believes
+it killed the session. `Ctrl-C` never showed it, which is why it went unnoticed:
+a terminal interrupt goes to the whole foreground process group, so the binary was
+signalled directly and died on its own.
+
+`SIGKILL` is the exception no launcher can cover. Everything else is tested —
+`launcher.test.js` signals the launcher's pid alone and asserts the binary is gone
+afterwards, and those tests fail against the previous `spawnSync` version.
+
+Two smaller things in the same file, for the same reason of being frozen once
+published. Its own error messages go through `fs.writeSync(2, …)` rather than
+`process.stderr.write`, which is documented as *asynchronous* when stderr is a TTY
+on Windows and would let `process.exit` discard the one explanation the user gets.
+And `lib/resolve.js` resolves `<pkg>/package.json` and joins to `bin/tokfold`
+rather than resolving the binary's subpath directly, so a future `exports` field in
+a platform package cannot intercept the lookup.
 
 ## Why five extra packages instead of one
 
@@ -88,6 +152,42 @@ matching directory, and publishes. A checkout of this repository therefore canno
 publish a working package by hand, which is deliberate — the workflow verifies the
 binary exists and refuses to publish an empty package.
 
+Four of the five are executed before they are published: the three native legs run
+a compress/expand round trip on the runner that built them, and the aarch64 Linux
+binary runs the same round trip under `qemu-user-static` against the cross sysroot
+the linker step already installs. Only `darwin-x64` ships unexecuted — the macOS
+runners are arm64 and Rosetta is not guaranteed to be present. Emulation is
+invoked explicitly rather than through `binfmt_misc`, so the step does not depend
+on whether the runner image has the handlers registered.
+
+That is the workflow as it stands, and it is not retroactive. The four packages
+already on the registry at `0.0.1` were built before the aarch64 smoke test
+existed, when the step was gated on `if: matrix.native` — so the published
+`tokfold-linux-arm64-gnu` binary has never been executed by anyone, anywhere. Later
+release runs rebuild and smoke-test that target, which verifies the *source* at
+that commit, but the skip means they do not republish it: the bytes a user
+downloads stay the ones from the first run. Replacing them would cost a version
+number. It is written down here rather than quietly fixed, because "verified" and
+"verified for these exact bytes" are different claims and only the second one is
+worth much. `darwin-x64` at `0.0.1` was likewise unexecuted in CI, though that one
+has since been run by hand under Rosetta 2 and round-trips correctly.
+
+The Windows binary is linked against the **static** C runtime. rustc does not do
+that by default on `x86_64-pc-windows-msvc` — `rustc --print cfg` for that target
+lists no `crt-static` feature — so a default build produces a `tokfold.exe` that
+needs `VCRUNTIME140.dll`, which ships with the Visual C++ Redistributable and not
+with Windows. A user installing a CLI from npm has not been told a C++ toolchain
+is involved, and the failure they would get names a DLL rather than tokfold. The
+flag is scoped to that one target as a `[target.<triple>]` entry, so it does not
+reach build scripts or proc macros, which are host artefacts a bare `RUSTFLAGS`
+would break.
+
+Release builds also run **without a cargo cache**, unlike `ci.yml`. `--locked` pins
+which dependency versions resolve; it says nothing about where a compiled `.rlib`
+came from, so a restored cache entry would let the provenance attestation read
+"built from commit X" while covering a binary partly made of code that commit
+cannot account for.
+
 ## The licences are copied in at publish time, not linked
 
 No `LICENSE-MIT` or `LICENSE-APACHE` sits in these directories, and none may be
@@ -111,25 +211,66 @@ See `.github/workflows/release.yml`. It is `workflow_dispatch`-only and defaults
 to a dry run; publishing takes an explicit `dry_run: false` plus a typed
 confirmation. It is never triggered by a push, a tag, or a merge.
 
-The publish step **skips any package whose exact version is already on the
-registry**, so a run that failed halfway can simply be run again. This is not
-theoretical tidiness: the first real release of `0.0.1` published four platform
-packages and was then refused on the fifth, and npm never lets a version be
-reused, so without the skip the only way out of a partial release would have been
-to burn a version number.
+The publish step **skips any package whose exact version is already on the registry
+and was published by the account this run is authenticated as**, so a run that
+failed halfway can simply be run again. This is not theoretical tidiness: the first
+real release of `0.0.1` published four platform packages and was then refused on
+the fifth, and npm never lets a version be reused, so without the skip the only way
+out of a partial release would have been to burn a version number.
+
+The publisher half of that condition is load-bearing, not paranoia. "Already there"
+and "already ours" are different questions, and only the second one is safe to skip
+on: these names are public, some of them are still unclaimed, and the design
+publishes the most valuable one — `tokfold` itself — last. A bare existence check
+would turn a squatter's upload into a workflow that reports success having uploaded
+nothing, while `npm i -g tokfold` runs their code. So the step compares
+`_npmUser.name` against `npm whoami` and stops the entire release on any other
+answer, including a registry that will not say. A lookup that fails for any other
+reason falls through to publishing, where npm itself rejects a duplicate version —
+the cost of trying is an error, the cost of wrongly skipping is a release that
+silently did not happen.
+
+Publishing also runs with `--ignore-scripts`, and a verify-job step fails the run if
+any of the six manifests grows a `scripts` block. Either half alone would do today;
+both exist so that editing one away does not silently ship code that runs on every
+user's machine at install time.
 
 ### The npm spam heuristic will refuse a burst of new names
 
 Six packages published back to back from an account that has never published
 before is a shape npm's anti-spam heuristic rejects, with
-`403 ... Package name triggered spam detection` on the name it stops at — even
-though the name is free and the same `<pkg>-<os>-<arch>` convention is used by
-esbuild, swc and others. It is a property of the account and the burst, not of
-the name. Re-running the workflow is the fix; the skip above makes that free, and
-the heuristic's window is measured in hours, not minutes.
+`403 Forbidden - PUT https://registry.npmjs.org/<name> - Package name triggered
+spam detection` on the name it stops at — even though the name is free and the
+same `<pkg>-<os>-<arch>` convention is used by esbuild, swc and others.
+
+What is actually known, rather than assumed: the first release run published four
+platform packages and was refused on the fifth, `tokfold-win32-x64`. A second run
+1h38m later was refused on the same name with the same message — and that run was
+not a burst at all. The skip above meant it attempted exactly one publish, and
+that one publish was still rejected. So the tidy story that this is a property of
+the *burst* does not survive its own retry, and neither does an estimate of the
+window: 1h38m was not enough, and nothing here establishes what would be.
+
+Re-running the workflow is still the right first move — the skip makes it free and
+it cannot cost a version number — but it is a thing to try, not a known fix. If the
+name stays refused, the next step is npm support rather than another run. Note that
+the launcher has not been published yet, which means the set of package *names* is
+still free to change; it stops being free the moment `tokfold` itself goes out with
+those five names frozen into its `optionalDependencies`.
 
 Publishing the launcher **last** is what keeps this from being a user-visible
-failure: a launcher whose `optionalDependencies` name a package that does not
-exist installs happily and then fails at run time on exactly the platform whose
-package is missing. Nothing observed this — the launcher was never published in
-the incomplete state.
+failure, and the ordering matters more than it first looks. Under npm and pnpm, a
+launcher whose `optionalDependencies` name a package that does not exist installs
+happily and then fails at run time on exactly the platform whose package is
+missing — bad, but confined to that platform.
+
+**Yarn does not do that.** A 404 on an optional dependency is fatal during
+resolution, before `os`/`cpu` filtering has a chance to rule the package out, so a
+single missing platform package breaks every yarn install on *every* platform. This
+was measured against yarn 4.9.2 and 1.22.22 with a byte-identical control tarball;
+npm and pnpm skipped the same package cleanly. Publishing the launcher last is
+therefore not tidiness. It is the difference between a partial release being
+invisible and a partial release being broken for everyone.
+
+Nothing observed either failure: the launcher has never been published in the
+incomplete state.

@@ -222,7 +222,7 @@ jobs:
           rustc --version
 
       - name: Cache cargo build artifacts
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Clippy
         # `--all-targets` so tests and benches are linted too: the workspace sets
@@ -248,7 +248,7 @@ jobs:
           rustc --version
 
       - name: Cache cargo build artifacts
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       # rustdoc is a third compiler front end with its own lint set (broken
       # intra-doc links, invalid rustdoc attributes), none of which `cargo test`
@@ -302,7 +302,7 @@ jobs:
           rustc --version
 
       - name: Cache cargo build artifacts
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Docs vs. code (experimental notice)
         run: cargo test -p tokfold-mcp --test experimental_notice --all-features --locked
@@ -359,7 +359,7 @@ jobs:
           rustc --version
 
       - name: Cache cargo build artifacts
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       # Packaging must be checked for *every* publishable crate: a manifest can
       # be unpublishable (missing README, a path dependency without a version,
@@ -403,21 +403,63 @@ jobs:
     # this repo ship with zero dependencies on purpose, and a `node_modules`
     # under `npm/` would be a regression in the thing being tested.
     if: github.event_name != 'schedule'
-    name: launcher (node ${{ matrix.node }})
-    runs-on: ubuntu-latest
+    name: launcher (${{ matrix.leg }})
+    runs-on: ${{ matrix.os }}
     strategy:
-      # Report both legs; a failure on one Node version is not a reason to hide
-      # the other's result.
+      # Report every leg; a failure on one Node version or one OS is not a
+      # reason to hide the others' results.
       fail-fast: false
       matrix:
-        # Both legs are required. `npm/tokfold/package.json` declares
-        # `engines: { node: ">=18" }`, and that floor is a promise made to every
-        # user whose distro still ships Node 18. A single leg on the runner's
-        # default Node would let an optional-chaining assignment, a `structuredClone`
-        # or any other newer builtin land in the launcher and break exactly the
-        # users the floor was written for -- with CI green. 18 is the floor the
-        # package claims; 22 is the version `release.yml` publishes from.
-        node: ["18", "22"]
+        include:
+          # Both Node legs are required. `npm/tokfold/package.json` declares
+          # `engines: { node: ">=18" }`, and that floor is a promise made to
+          # every user whose distro still ships Node 18. A single leg on the
+          # runner's default Node would let an optional-chaining assignment, a
+          # `structuredClone` or any other newer builtin land in the launcher
+          # and break exactly the users the floor was written for -- with CI
+          # green. 18 is the floor the package claims; 22 is the version
+          # `release.yml` publishes from.
+          - leg: linux-node18
+            os: ubuntu-latest
+            node: "18"
+          - leg: linux-node22
+            os: ubuntu-latest
+            node: "22"
+          # Windows is not a duplicate of the Linux legs. `lib/resolve.js` has a
+          # branch that only ever runs there -- the binary is `tokfold.exe`, and
+          # the win32 entries in the platform table are the ones a Linux or
+          # macOS host can only reach through a stubbed `process.platform`. We
+          # publish a `tokfold-win32-x64` package, so the one host that resolves
+          # it for real should be a host CI has actually used.
+          #
+          # It is also the only place `packaging.test.js` takes its `shell: true`
+          # path: `npm` on PATH is `npm.cmd` there, and since the fix for
+          # CVE-2024-27980 Node refuses to spawn a `.cmd` without a shell. On
+          # Linux that branch is dead code.
+          #
+          # One Node version rather than two, and 22 because that is what
+          # `release.yml` publishes from. The engines floor is a promise about
+          # the JavaScript the launcher uses, and that is the same JavaScript on
+          # every OS -- the Linux legs already hold that line. What is being
+          # bought here is the platform branch, not a second version sweep.
+          #
+          # `launcher.test.js` skips itself on Windows and says so: its stand-in
+          # binary is a `#!/bin/sh` script that Windows cannot exec. That is a
+          # real gap, not a silent one -- on Windows this leg covers the
+          # resolver and the packaging check, and the process-level exit-code
+          # and signal contract is carried by the legs below and above.
+          - leg: windows-node22
+            os: windows-latest
+            node: "22"
+          # macOS runs the process-level suite for real, and it is the only host
+          # here that is not Linux and not Windows. Signals, orphan reaping and
+          # `stdio: "inherit"` are kernel behaviour, and two of the five
+          # published binaries are macOS binaries: the launcher's contract
+          # should hold on a BSD kernel because it was observed to, not because
+          # Linux implies it.
+          - leg: macos-node22
+            os: macos-latest
+            node: "22"
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -529,7 +571,7 @@ jobs:
           rustc --version
 
       - name: Cache cargo build artifacts
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       # PROPTEST_CASES is read by proptest itself, so it raises every property
       # suite in the workspace: `tokfold-core/tests/roundtrip.rs`, whose `config()`
@@ -627,7 +669,7 @@ jobs:
           rustc --version
 
       - name: Cache cargo build artifacts
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Test (release profile)
         env:
@@ -677,7 +719,7 @@ jobs:
           rustc --version
 
       - name: Cache cargo build artifacts
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Test on nightly (release profile)
         continue-on-error: true

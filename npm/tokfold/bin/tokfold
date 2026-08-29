@@ -26,6 +26,30 @@
 //     one, rather than always seeing a pipe.
 //
 // ---------------------------------------------------------------------------
+// Why the spawn is asynchronous
+// ---------------------------------------------------------------------------
+// `spawnSync` would be the shorter way to write this and it is the wrong one.
+// It blocks the event loop for the whole life of the child, so no signal
+// handler can run while the child is alive -- and with no handler installed,
+// a signal sent to this process alone gets its default disposition and kills
+// the launcher on the spot, leaving the child running, reparented to init, and
+// still holding the caller's fds 0/1/2.
+//
+// That is not a corner case. It is what `timeout`, a cancelled CI job, systemd
+// with `KillMode=process`, and any parent that calls `child.kill()` on a pid
+// all do. For `tokfold mcp` it means an orphaned protocol server holding a
+// client's pipes open after the client believes it killed the session.
+//
+// Ctrl-C never showed this, which is why it is worth spelling out: a terminal
+// interrupt goes to the whole foreground process group, so the child was
+// signalled directly and died on its own. Only a signal addressed to this pid
+// alone produces the orphan.
+//
+// Spawning asynchronously keeps the event loop free, so the handlers below can
+// forward the signal to the child and then wait for it to die -- the child
+// always outlives nothing, and this process always outlives the child.
+//
+// ---------------------------------------------------------------------------
 // Exit codes
 // ---------------------------------------------------------------------------
 // tokfold's exit codes are normative and documented: 0 success, 2 bad input,
@@ -39,48 +63,241 @@
 // "that archive is corrupt" (3), and a script that already distinguishes 2 from 3
 // does not silently treat an installation problem as a data problem.
 
-const { spawnSync } = require("node:child_process");
+const fs = require("node:fs");
+const { spawn } = require("node:child_process");
 const { resolveBinaryPath } = require("../lib/resolve.js");
 
 /** Exit code for a launcher-level failure. Never one of tokfold's own codes. */
 const LAUNCHER_FAILED = 1;
 
+/**
+ * Signals worth relaying to the child before this process goes away.
+ *
+ * These are the ones a supervisor actually sends to ask for a clean shutdown.
+ * SIGKILL is absent because it cannot be caught, so a `kill -9` on the launcher
+ * still orphans the child -- that is a property of SIGKILL and no launcher can
+ * fix it.
+ *
+ * Windows supports a different subset, and it does not refuse the same names at
+ * both ends. Listening is permissive -- `SIGHUP` is accepted there and mapped
+ * onto `CTRL_CLOSE_EVENT` -- while delivery is not: libuv's `kill` handles only
+ * `SIGTERM`, `SIGKILL`, `SIGINT` and `0`, and anything else comes back as
+ * `ENOSYS`, which Node raises as a throw. So both ends need guarding, and the
+ * one that matters is the second: a throw out of a signal handler is an
+ * uncaught exception that kills the launcher and leaves the binary running.
+ */
+const FORWARDED = ["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"];
+
+/**
+ * How many EAGAINs in a row `writeStderr` will sit through before giving up,
+ * and how long it pauses between them. Together: about a second of patience.
+ */
+const EAGAIN_ATTEMPTS = 1000;
+const EAGAIN_PAUSE_MS = 1;
+
+/**
+ * Blocks this thread for `ms`, without turning the event loop.
+ *
+ * The write below is synchronous on purpose, so anything it waits on has to be
+ * synchronous too: `setTimeout` needs an event-loop turn, and every caller here
+ * is on its way to `process.exit`, which never gives it one. `Atomics.wait` on
+ * a location nobody else touches is the supported way to sleep a thread in
+ * Node, and unlike in a browser it is permitted on the main thread.
+ *
+ * @param {number} ms
+ */
+function pause(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Writes to stderr and is done writing by the time it returns.
+ *
+ * `process.stderr.write` is documented as *asynchronous* when stderr is a TTY
+ * on Windows, and `process.exit` does not wait for a pending asynchronous
+ * write. Every message this launcher produces is followed immediately by an
+ * exit, so on a Windows console the one explanation the user gets could arrive
+ * truncated or not at all, leaving nothing but a bare exit code 1 to act on.
+ * `fs.writeSync` has no such gap on any platform.
+ *
+ * The loop is not defensive padding: a short write is legal, and EAGAIN is
+ * reachable whenever fd 2 is a non-blocking pipe, which is the caller's choice
+ * and not ours. EPIPE means nobody is reading, which is not a failure worth
+ * reporting -- there is nowhere left to report it to.
+ *
+ * The EAGAIN retry is both paused and bounded. A reader that never drains is a
+ * real state -- a pipe whose far end is alive but stopped, a terminal under
+ * flow control -- and an unpaused, unbounded retry answers it by pinning a core
+ * for as long as it lasts, turning a diagnostic message into a hang. The
+ * message is worth waiting about a second for; it is not worth the command
+ * never returning. Progress resets the count, so a reader draining slowly is
+ * waited out however long it takes.
+ *
+ * @param {string} message
+ */
+function writeStderr(message) {
+  const buffer = Buffer.from(message, "utf8");
+  let written = 0;
+  let stalls = 0;
+
+  while (written < buffer.length) {
+    try {
+      written += fs.writeSync(2, buffer, written);
+      stalls = 0;
+    } catch (error) {
+      if (error.code === "EAGAIN") {
+        if (stalls >= EAGAIN_ATTEMPTS) {
+          return;
+        }
+        stalls += 1;
+        pause(EAGAIN_PAUSE_MS);
+        continue;
+      }
+      // Anything else: stderr is unusable, so there is no channel left to
+      // explain that stderr is unusable. Give up rather than turn a failed
+      // message into a second, noisier failure.
+      return;
+    }
+  }
+}
+
 let binary;
 try {
   binary = resolveBinaryPath();
 } catch (error) {
-  process.stderr.write(`${error.message}\n`);
+  writeStderr(`${error.message}\n`);
   process.exit(LAUNCHER_FAILED);
 }
 
-const result = spawnSync(binary, process.argv.slice(2), { stdio: "inherit" });
-
-// The binary could not be started at all: not on disk, not executable, or the
-// exec failed. `result.error` is set and `status` is null, so it has to be
-// checked before the status is trusted.
-if (result.error) {
-  process.stderr.write(
-    `tokfold: failed to run the binary at ${binary}\n${result.error.message}\n`,
+/**
+ * The binary could not be started at all: not on disk, not executable, not a
+ * program this kernel can run, or the exec failed for some other reason.
+ *
+ * One function because the same failure reaches this process by two different
+ * routes -- see the spawn below -- and a user who sees one of them should not
+ * be able to tell which route it took.
+ *
+ * @param {Error} error
+ * @returns {never}
+ */
+function failedToRun(error) {
+  writeStderr(
+    `tokfold: failed to run the binary at ${binary}\n${error.message}\n`,
   );
   process.exit(LAUNCHER_FAILED);
 }
 
-// The child was killed by a signal rather than exiting. Re-raising the same
-// signal on ourselves is the only way the *parent* shell sees what really
-// happened: a shell reports `130` for SIGINT because the process died by that
-// signal, not because it exited with 130. Translating the signal into some
-// number here would lose that distinction, and `Ctrl-C` on a long compression
-// would look like an ordinary failure.
-//
-// With no listener attached, Node applies the signal's default disposition and
-// this process dies here. The `process.exit` below is the path for a signal that
-// is ignored or cannot be delivered, where returning is possible.
-if (result.signal) {
-  process.kill(process.pid, result.signal);
-  process.exit(LAUNCHER_FAILED);
+/** The child, once there is one. Null for the length of the spawn call. */
+let child = null;
+
+/**
+ * A signal that arrived before the child existed, held for replay.
+ *
+ * Only the last one is kept. Two different shutdown requests racing the spawn
+ * is not a distinction worth preserving: both mean stop, and the child gets
+ * told to stop either way.
+ *
+ * @type {NodeJS.Signals | null}
+ */
+let pending = null;
+
+/**
+ * Relays one signal to the child, or remembers it if there is not one yet.
+ *
+ * @param {NodeJS.Signals} signal
+ */
+function forward(signal) {
+  if (child === null) {
+    pending = signal;
+    return;
+  }
+
+  try {
+    // Best effort by design. The child may have exited already, in which case
+    // this is a no-op and its `exit` event is what ends us.
+    child.kill(signal);
+  } catch {
+    try {
+      // The name is not deliverable on this platform -- Windows, where only
+      // SIGTERM/SIGKILL/SIGINT survive the trip. Ask for termination in the
+      // way this platform can express instead, because the promise being kept
+      // is that the binary does not outlive the launcher, not that a
+      // particular signal number reaches it.
+      child.kill();
+    } catch {
+      // Already gone, or not signallable at all. Either way the `exit` handler
+      // below is what ends this process, and a throw escaping a signal handler
+      // here would be the very orphan this file exists to prevent.
+    }
+  }
 }
 
-// Normal termination: hand back the child's own code, untouched. `status` is
-// null only in the cases already handled above; the fallback keeps a null from
-// becoming a silent 0, which would report success for a run that did not finish.
-process.exit(result.status === null ? LAUNCHER_FAILED : result.status);
+// Installed *before* the spawn, not after. Signals are delivered by the kernel
+// whenever they like, and between forking a child and registering a handler the
+// default disposition still applies -- a SIGTERM landing in that window would
+// kill the launcher outright and leave the binary running on the caller's
+// descriptors. Handlers first closes the window; `pending` covers the signal
+// that arrives while the window is closed but there is nothing to forward to.
+const installed = [];
+for (const signal of FORWARDED) {
+  try {
+    process.on(signal, () => forward(signal));
+    installed.push(signal);
+  } catch {
+    // This platform does not support listening for that signal. Nothing to
+    // relay, and nothing that needs saying about it.
+  }
+}
+
+try {
+  child = spawn(binary, process.argv.slice(2), { stdio: "inherit" });
+} catch (error) {
+  // `spawn` reports most start-up failures asynchronously, on the `error` event
+  // below -- but not all of them, and the exceptions are not obscure. Node
+  // defers exactly EACCES, EAGAIN, EMFILE, ENFILE and ENOENT; every other errno
+  // from `uv_spawn` is thrown from this call. That includes **ENOEXEC**: the
+  // file is present, is executable, and is not something this kernel can
+  // execute -- a truncated download, a partially written package, a binary for
+  // the wrong architecture. Without this catch the user gets a Node stack trace
+  // naming `child_process.js`, and exit code 1 by accident rather than by
+  // contract.
+  failedToRun(error);
+}
+
+child.on("error", failedToRun);
+
+if (pending !== null) {
+  // A signal arrived while the spawn was in flight. Deliver it now, so a
+  // `timeout` that fires during start-up still takes the binary with it.
+  forward(pending);
+}
+
+child.on("exit", (code, signal) => {
+  // The child was killed by a signal rather than exiting. Re-raising the same
+  // signal on ourselves is the only way the *parent* shell sees what really
+  // happened: a shell reports `130` for SIGINT because the process died by that
+  // signal, not because it exited with 130. Translating the signal into some
+  // number here would lose that distinction, and `Ctrl-C` on a long compression
+  // would look like an ordinary failure.
+  if (signal) {
+    // The handlers above replaced the default disposition for the signals they
+    // cover, and a signal with a listener attached does not kill anything.
+    // Dropping them restores the default, which is what makes the re-raise
+    // below fatal instead of a no-op that loops straight back into `kill`.
+    for (const name of installed) {
+      process.removeAllListeners(name);
+    }
+
+    process.kill(process.pid, signal);
+
+    // Reached only for a signal that is ignored or cannot be delivered --
+    // Node ignores SIGPIPE process-wide, for instance.
+    process.exit(LAUNCHER_FAILED);
+  }
+
+  // Normal termination: hand back the child's own code, untouched. `code` is
+  // null only in the signal case already handled above; the fallback keeps a
+  // null from becoming a silent 0, which would report success for a run that
+  // did not finish.
+  process.exit(code === null ? LAUNCHER_FAILED : code);
+});

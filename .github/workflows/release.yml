@@ -67,13 +67,14 @@ on:
         type: string
         default: ""
 
-# Least privilege. `id-token: write` is required by npm provenance and by
-# nothing else here: it lets the publish step exchange a short-lived OIDC token
-# for a signed attestation tying each tarball to this workflow, this commit and
-# this runner. It grants no access to repository contents.
+# Least privilege, and the floor every job inherits unless it says otherwise.
+# `id-token: write` is deliberately NOT here. Granted at workflow level it also
+# reaches the five `build` legs, and `cargo build` runs `build.rs` from every
+# crate in the dependency graph -- third-party code, on a runner that could then
+# mint a short-lived OIDC token asserting this repository's identity. Exactly
+# one job needs that ability, so exactly one job is granted it, below.
 permissions:
   contents: read
-  id-token: write
 
 # One release at a time. Two concurrent runs would race on the same version
 # numbers, and the loser would fail halfway through six packages -- leaving some
@@ -169,10 +170,18 @@ jobs:
       - name: Launcher parses and maps every platform
         # The launcher is the one piece of shipped code no Rust test can reach.
         # This does not run tokfold; it checks that both files parse, and that
-        # the platform table and the directories on disk are the same set -- the
-        # drift that would otherwise surface as "no prebuilt binary for
-        # linux-arm64" months after a target was added to one list and not the
-        # other.
+        # three lists which must name the same five packages actually do: the
+        # platform table in resolve.js, the directories under npm/platforms, and
+        # the launcher's own optionalDependencies.
+        #
+        # Any two of the three agreeing is not enough. "Versions agree" above
+        # compares the dependencies against the directories, and this step used
+        # to compare only the table against the directories, so a rename applied
+        # to a platform manifest and to the dependency pin but not to resolve.js
+        # satisfied every gate in this file and shipped a launcher that resolves
+        # a package it does not depend on. Either way the drift surfaces as "no
+        # prebuilt binary for linux-arm64", months later, on someone else's
+        # machine.
         #
         # `node --check` here runs on the runner's default Node, not on the
         # `>=18` floor `npm/tokfold/package.json` declares, so it is a parse
@@ -190,13 +199,19 @@ jobs:
           node --input-type=commonjs -e '
             const fs = require("node:fs");
             const { PACKAGES } = require("./npm/tokfold/lib/resolve.js");
+            const main = JSON.parse(fs.readFileSync("npm/tokfold/package.json", "utf8"));
             const fromTable = Object.values(PACKAGES).sort();
             const fromDisk = fs.readdirSync("npm/platforms").sort().map((d) => `tokfold-${d}`);
+            const fromDeps = Object.keys(main.optionalDependencies ?? {}).sort();
             if (JSON.stringify(fromTable) !== JSON.stringify(fromDisk)) {
               console.log(`::error::resolve.js maps to [${fromTable}] but npm/platforms holds [${fromDisk}]`);
               process.exit(1);
             }
-            console.log(`resolve.js and npm/platforms agree on ${fromDisk.length} targets.`);
+            if (JSON.stringify(fromTable) !== JSON.stringify(fromDeps)) {
+              console.log(`::error::resolve.js maps to [${fromTable}] but the launcher depends on [${fromDeps}]`);
+              process.exit(1);
+            }
+            console.log(`resolve.js, npm/platforms and optionalDependencies agree on ${fromDisk.length} targets.`);
           '
 
       - name: No symlinks under npm/
@@ -219,6 +234,39 @@ jobs:
           test -s LICENSE-APACHE
           echo "No symlinks under npm/, and both licence texts are present at the root."
 
+      - name: No lifecycle scripts under npm/
+        # npm runs a package's lifecycle scripts on publish -- in the publish
+        # job, with the release token in the environment -- and again on every
+        # user's machine at install time. None of the six manifests declares
+        # any, and `npm publish --ignore-scripts` in the publish job means one
+        # appearing would not run *here*; this step is the other half, so one
+        # appearing does not get published either.
+        #
+        # It exists because nothing else in this file would notice. Every other
+        # check reads versions, names, files and directory sets, so a single
+        # added line in one manifest would ship code that runs on install with
+        # all gates green.
+        run: |
+          set -euo pipefail
+          # As above: JavaScript template literals, not shell expansions.
+          # shellcheck disable=SC2016
+          node --input-type=commonjs -e '
+            const fs = require("node:fs");
+            const files = ["npm/tokfold/package.json"].concat(
+              fs.readdirSync("npm/platforms").sort().map((d) => `npm/platforms/${d}/package.json`),
+            );
+            let bad = false;
+            for (const file of files) {
+              const pkg = JSON.parse(fs.readFileSync(file, "utf8"));
+              if ("scripts" in pkg) {
+                console.log(`::error::${file} declares scripts: ${Object.keys(pkg.scripts).join(", ")}`);
+                bad = true;
+              }
+            }
+            if (bad) process.exit(1);
+            console.log(`None of the ${files.length} manifests declares a lifecycle script.`);
+          '
+
   # ---------------------------------------------------------------------------
   # Build. One optimised binary per target.
   # ---------------------------------------------------------------------------
@@ -230,19 +278,20 @@ jobs:
       # Publishing needs all five. Cancelling siblings on the first failure only
       # hides whether the others would also have failed.
       fail-fast: false
+      # Three keys and no more. Whether a leg is native, and whether it needs an
+      # emulator, used to be matrix keys too -- and a matrix key is a thing a
+      # future edit can rename, misspell or drop, which is how a smoke test
+      # stops running without anyone deciding it should. Both are now derived
+      # from `target` inside the step that would fail if the derivation were
+      # wrong. See "Smoke-test the binary" below.
       matrix:
         include:
           - dir: darwin-arm64
             os: macos-latest
             target: aarch64-apple-darwin
-            native: true
           - dir: darwin-x64
             os: macos-latest
             target: x86_64-apple-darwin
-            # The macOS runners are arm64. An x64 binary built here can only be
-            # executed under Rosetta, which is not guaranteed to be installed, so
-            # this leg does not try to smoke-test its own output.
-            native: false
           # Linux legs build on 22.04 rather than latest on purpose. A glibc
           # binary runs on the glibc it was built against or newer, never older,
           # so the build image's glibc becomes the floor for every user. 24.04
@@ -251,15 +300,12 @@ jobs:
           - dir: linux-x64-gnu
             os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-            native: true
           - dir: linux-arm64-gnu
             os: ubuntu-22.04
             target: aarch64-unknown-linux-gnu
-            native: false
           - dir: win32-x64
             os: windows-latest
             target: x86_64-pc-windows-msvc
-            native: true
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -280,7 +326,7 @@ jobs:
           rustup target add "$TARGET"
           rustc --version
 
-      - name: Install the aarch64 cross linker
+      - name: Install the aarch64 cross toolchain and emulator
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         # rustc emits aarch64 objects on its own; it still needs a linker that
         # can produce an aarch64 ELF, which the host gcc cannot.
@@ -289,19 +335,45 @@ jobs:
         # only *recommends* it, and --no-install-recommends is on. Without it the
         # cross linker exists but the aarch64 C startup objects do not, and the
         # link fails on `cannot find Scrt1.o`. Recommends are still off on
-        # purpose: the two packages we do need are cheap, the rest are not.
+        # purpose: the packages we do need are cheap, the rest are not.
+        #
+        # qemu-user-static is what turns this leg from "compiled, never run"
+        # into a smoke-tested one. The static build is chosen so the emulator
+        # itself needs nothing from the sysroot it is about to point at.
+        #
+        # libgcc-s1-arm64-cross is named for the same reason as the libc: the
+        # binary needs libgcc_s.so.1 at *run* time for unwinding, and nothing in
+        # the link step would notice its absence.
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends \
-            gcc-aarch64-linux-gnu libc6-dev-arm64-cross
-          test -f /usr/aarch64-linux-gnu/lib/Scrt1.o
+            gcc-aarch64-linux-gnu libc6-dev-arm64-cross libgcc-s1-arm64-cross \
+            qemu-user-static
 
-      - name: Cache cargo build artifacts
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        with:
-          key: release-${{ matrix.target }}
+          # These three are what `qemu-aarch64-static -L /usr/aarch64-linux-gnu`
+          # will need to start the binary at all, and the earlier check here --
+          # for the C startup object -- was not one of them: a missing Scrt1.o
+          # fails the link, loudly, naming the file. A missing loader or libc
+          # fails the smoke test instead, and what it prints is
+          # "No such file or directory" about a path that exists. Check the
+          # things whose absence would otherwise be misreported.
+          for lib in ld-linux-aarch64.so.1 libc.so.6 libgcc_s.so.1; do
+            find /usr/aarch64-linux-gnu -name "$lib" -print -quit | grep -q . \
+              || { echo "aarch64 sysroot has no $lib" >&2; exit 1; }
+          done
+          qemu-aarch64-static --version | head -1
 
+      # Unlike ci.yml, there is no build cache here, and adding one back would
+      # quietly undo the attestation the publish job pays for. `--locked` pins
+      # which dependency *versions* resolve; it says nothing about where a
+      # compiled `.rlib` came from. A restored cache entry was produced by an
+      # earlier run, from a tree nothing in this run can see, yet the provenance
+      # signature would still read "built from commit X" while covering a binary
+      # partly made of code no attestation covers. This repository has already
+      # been bitten once by a stale artifact outliving the sources it claimed to
+      # be built from. Release builds are cold, every time. The cost is a few
+      # minutes on a workflow that runs a handful of times a year.
       - name: Build
         shell: bash
         env:
@@ -309,23 +381,50 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
         run: |
           set -euo pipefail
-          # `strip` is passed as a one-off config override rather than written
-          # into the committed Cargo.toml: stripping is a property of the
-          # binaries we hand to users, not of the release profile everyone else
-          # builds locally, and a developer's backtraces should keep their
-          # symbols. It cuts several megabytes per platform.
+          # Both overrides are passed as one-off `--config` rather than written
+          # into the committed Cargo.toml: each is a property of the binaries we
+          # hand to users, not of the tree everyone else builds locally.
+          #
+          # `strip` because a developer's backtraces should keep their symbols
+          # while a shipped binary has no use for them. It cuts several
+          # megabytes per platform.
+          #
+          # `crt-static` because rustc does not enable it on the MSVC target --
+          # `rustc --print cfg --target x86_64-pc-windows-msvc` lists no
+          # `crt-static` feature, so the C runtime is linked dynamically and the
+          # published `tokfold.exe` would need `VCRUNTIME140.dll`, which is part
+          # of the Visual C++ Redistributable and not of Windows. That is a
+          # machine-dependent failure at first run, with a message naming a DLL
+          # rather than tokfold, on a binary a user installed from npm without
+          # ever being told a C++ toolchain was involved. Static is also what
+          # this ecosystem already does: node-gyp builds addons `/MT`, and the
+          # napi-rs template and swc both set this same flag.
+          #
+          # Scoped to the one target on purpose. As a `[target.<triple>]` entry
+          # it does not reach build scripts or proc macros, which are host
+          # artefacts and which `crt-static` in a bare RUSTFLAGS would break.
+          # On the other four targets the line is simply inert.
           cargo build \
             --package tokfold-cli \
             --release \
             --locked \
             --target "$TARGET" \
-            --config 'profile.release.strip="symbols"'
+            --config 'profile.release.strip="symbols"' \
+            --config 'target.x86_64-pc-windows-msvc.rustflags=["-C","target-feature=+crt-static"]'
 
       - name: Smoke-test the binary
-        # Only where the runner can actually execute what was just built. A
-        # cross-compiled artifact is verified on the machine that installs it,
-        # not here.
-        if: matrix.native
+        # No `if:`. The previous version of this step was gated on
+        # `matrix.native || matrix.emulator != ''`, which made "was this binary
+        # ever executed" a property of two matrix keys: rename either one and
+        # every leg silently stops being smoke-tested while the run stays green
+        # and publishes anyway. That is not hypothetical here -- the aarch64
+        # binary already on the registry was published by a run in which this
+        # step did not execute.
+        #
+        # So the default is now "run it", the exceptions are named by target,
+        # and the step records what it did. The Stage step below refuses to
+        # stage a binary this step did not write a verdict for, which is what
+        # makes re-adding a condition fail loudly instead of quietly.
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
@@ -333,14 +432,52 @@ jobs:
           set -euo pipefail
           exe="target/$TARGET/release/tokfold"
           [ "${RUNNER_OS}" = "Windows" ] && exe="$exe.exe"
-          "$exe" --version
+
+          # Derived from the target rather than carried in the matrix, for the
+          # same reason the `if:` is gone: this is the only place that knows
+          # which targets this runner cannot execute unaided, and it is the
+          # place that fails if it is wrong.
+          emulator=""
+          case "$TARGET" in
+            aarch64-unknown-linux-gnu)
+              # Not native, but not unrunnable either -- qemu-user executes the
+              # aarch64 binary on this x86-64 runner, so this leg is smoke-tested
+              # like the rest instead of being published untested, which is what
+              # it used to be. `-L` points at the cross sysroot the toolchain
+              # step installs, so the aarch64 loader and libc resolve from there.
+              # Emulating explicitly rather than relying on binfmt_misc keeps
+              # this independent of whether the runner image has the handlers
+              # registered.
+              emulator="qemu-aarch64-static -L /usr/aarch64-linux-gnu"
+              ;;
+            x86_64-apple-darwin)
+              # The macOS runners are arm64 and Rosetta 2 is not guaranteed to
+              # be installed on them, so this is the one binary that ships
+              # unexecuted. Recorded rather than skipped in silence.
+              echo "not executed: no x86_64 macOS runner and Rosetta 2 is not guaranteed" \
+                > "smoke-$TARGET.verdict"
+              echo "::warning::$TARGET is published without having been executed in CI"
+              exit 0
+              ;;
+          esac
+
+          # Word splitting is the point: `emulator` is either nothing at all or
+          # a command followed by flags, and quoting it would turn the latter
+          # into one impossible filename. Everything after it stays quoted.
+          # shellcheck disable=SC2086
+          tokfold() { $emulator "$exe" "$@"; }
+
+          tokfold --version
           # Exercise the real path, not just --version: compress a document and
           # confirm the round trip returns the original value tree.
           printf '{"a":[{"x":1,"y":2},{"x":3,"y":4}]}' > sample.json
-          "$exe" compress --input sample.json --archive sample.tkfd > rendering.txt
-          "$exe" expand --input sample.tkfd > restored.json
+          tokfold compress --input sample.json --archive sample.tkfd > rendering.txt
+          tokfold expand --input sample.tkfd > restored.json
           cmp sample.json restored.json
-          echo "round trip verified on $TARGET"
+
+          verdict="round trip verified on $TARGET${emulator:+ (under $emulator)}"
+          echo "$verdict" > "smoke-$TARGET.verdict"
+          echo "$verdict"
 
       - name: Stage the binary
         shell: bash
@@ -349,6 +486,18 @@ jobs:
           DIR: ${{ matrix.dir }}
         run: |
           set -euo pipefail
+
+          # The smoke step's verdict, or nothing was staged. A binary reaching a
+          # tarball without this file means the step above did not run for it,
+          # and the whole point of the step is that a published binary has been
+          # executed or is on a written list of the ones that could not be.
+          verdict="smoke-$TARGET.verdict"
+          if [ ! -f "$verdict" ]; then
+            echo "no smoke-test verdict for $TARGET: the smoke step did not run" >&2
+            exit 1
+          fi
+          echo "smoke test says: $(cat "$verdict")"
+
           src="target/$TARGET/release/tokfold"
           dst="npm/platforms/$DIR/bin/tokfold"
           if [ "${RUNNER_OS}" = "Windows" ]; then
@@ -375,6 +524,15 @@ jobs:
     name: publish
     needs: build
     runs-on: ubuntu-latest
+    # The only job that mints an OIDC token. npm provenance exchanges it for a
+    # signed attestation tying each tarball to this workflow, this commit and
+    # this runner; nothing else in this file has a use for it. A job-level block
+    # replaces the workflow default rather than adding to it, which is why
+    # `contents: read` is restated -- without it the checkout below cannot read
+    # the repository.
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -512,16 +670,72 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Everything after the @ in `npm view "pkg@$VERSION"` is parsed as a
+          # semver RANGE, never as a literal. `pkg@` and `pkg@^4.0.0` both
+          # resolve, and so does a one- or two-component `pkg@1`, which means
+          # "newest 1.x" -- so a version of the wrong shape silently turns the
+          # lookups below into questions about a different release. The
+          # "Versions agree" job already rejects anything that is not the
+          # version in the tree, but that is a different job: a guard sitting
+          # away from the code it guards is one refactor from being gone, and
+          # the code it guards here is the code that decides whether to upload.
+          #
+          # Prerelease suffixes are refused rather than parsed. Nothing in this
+          # repository has ever shipped one, and accepting them means reasoning
+          # about npm's range grammar again -- do that deliberately, not by
+          # loosening a regex.
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::VERSION must be a literal x.y.z release, not a range or a prerelease; got '$VERSION'."
+            exit 1
+          fi
+
           # Provenance is only meaningful on a real upload -- it signs a tarball
           # that is actually being stored -- so a dry run omits the flag rather
           # than asking the registry to attest to something it will never see.
-          flags="--access public"
+          #
+          # `--ignore-scripts` because publishing executes the package's own
+          # lifecycle scripts, in this job, with the release token in the
+          # environment. The verify job proves none of the six manifests has a
+          # `scripts` block, so this flag changes nothing today. That is the
+          # point of it: it is the half that still holds if the other half is
+          # ever edited away.
+          flags="--access public --ignore-scripts"
           if [ "$DRY_RUN" = "true" ]; then
             flags="$flags --dry-run"
             echo "DRY RUN -- nothing will be uploaded."
           else
             flags="$flags --provenance"
             echo "PUBLISHING $VERSION for real."
+          fi
+
+          # Which account this run is authenticated as, resolved once here
+          # rather than six times in the loop. It is half of the skip decision
+          # below, and on a real publish it must exist: a run that cannot say
+          # who it is has no business deciding that a name already belongs to
+          # us, so `set -e` stopping here is the correct outcome.
+          publisher=""
+          if [ "$DRY_RUN" = "true" ]; then
+            # A rehearsal may be started without NPM_TOKEN in scope. That must
+            # not fail the run -- but it does mean the ownership question cannot
+            # be answered, so say so loudly rather than printing a verdict the
+            # run did not actually reach.
+            publisher="$(npm whoami 2>/dev/null || true)"
+            if [ -z "$publisher" ]; then
+              echo "npm whoami found no registry auth -- ownership cannot be checked in this run."
+              echo "The rehearsal below falls back to a bare existence check and says so per package."
+            else
+              echo "Authenticated as: $publisher"
+            fi
+          else
+            # This is also the first command in the whole workflow that uses the
+            # token, so it is where a missing or expired one surfaces -- and what
+            # it prints is an `ENEEDAUTH` or `E401` that names no secret and no
+            # repository. Say which knob to turn before `set -e` ends the run.
+            echo "Resolving the publishing account; this is the first use of NPM_TOKEN."
+            echo "If it fails with ENEEDAUTH or E401, the repository secret NPM_TOKEN is"
+            echo "missing, expired, or not an automation token with publish rights."
+            publisher="$(npm whoami)"
+            echo "Authenticated as: $publisher"
           fi
 
           # A version already on the registry is treated as done, not as an
@@ -532,15 +746,117 @@ jobs:
           # only way out of a partial release would be to burn a version
           # number. With it, re-running the workflow converges on the intended
           # state instead of deadlocking on the work it already did.
+          #
+          # "Already there" is not the same question as "already ours", and only
+          # the second one is safe to skip on. These names are public and some
+          # of them are still unclaimed, so a squatter who publishes one first
+          # would otherwise turn this into a workflow that reports success
+          # having uploaded nothing, while `npm i -g tokfold` runs their code.
+          # Hence `_npmUser.name`: equal to us means done, anything else -- a
+          # different account, or a registry that will not say -- means stop,
+          # because whatever is under that name at that version is not ours and
+          # never becomes ours by continuing.
+          #
+          # A lookup that fails for any other reason (network, registry outage,
+          # rate limit) exits non-zero too and therefore lands on "publish",
+          # where npm itself rejects a duplicate version. That direction is the
+          # safe one: the cost of trying is an error, the cost of wrongly
+          # skipping is a release that silently did not happen.
+
+          # `npm view` answers two different questions with the same exit code.
+          # `E404` is a real answer -- that name at that version is not on the
+          # registry -- while a timeout, a 5xx or a rate limit is no answer at
+          # all, and both come back as 1. Separating them is worth the code
+          # because they deserve opposite treatment: E404 is final and must not
+          # be retried, and everything else is worth asking again before falling
+          # through to a publish that will fail the run and take every package
+          # after it down too.
+          #
+          # Exit 0 prints the publisher (possibly empty). Exit 1 is "not on the
+          # registry". Exit 2 is "the registry did not answer".
+          lookup_owner() {
+            local name="$1" attempt=1 errors out
+            errors="$(mktemp)"
+            while :; do
+              if out="$(npm view "$name@$VERSION" _npmUser.name 2>"$errors")"; then
+                rm -f "$errors"
+                printf '%s' "$out"
+                return 0
+              fi
+              if grep -q 'E404' "$errors"; then
+                rm -f "$errors"
+                return 1
+              fi
+              if [ "$attempt" -ge 3 ]; then
+                echo "npm view $name@$VERSION failed $attempt times:" >&2
+                cat "$errors" >&2
+                rm -f "$errors"
+                return 2
+              fi
+              attempt=$((attempt + 1))
+              sleep 5
+            done
+          }
+
           publish_one() {
-            local dir="$1" name
+            local dir="$1" name owner skip=no reason="" found=0
             name="$(node -p "require('./$dir/package.json').name")"
             echo "=== $name ==="
-            if [ "$DRY_RUN" != "true" ] \
-              && npm view "$name@$VERSION" version >/dev/null 2>&1; then
-              echo "already published -- skipping"
+
+            owner="$(lookup_owner "$name")" || found=$?
+
+            if [ "$found" -eq 2 ]; then
+              # Three failures is not evidence of anything about the name, so
+              # this deliberately does not skip. Publishing is the safe guess:
+              # if the version does exist, npm refuses the upload and the run
+              # fails loudly; if it does not, the release proceeds as intended.
+              echo "the registry did not answer after 3 tries -- attempting the publish anyway"
+            elif [ "$found" -eq 0 ]; then
+              if [ -z "$publisher" ]; then
+                skip=yes
+                reason="already on the registry; publisher NOT verified (no npm auth in this run)"
+              elif [ -z "$owner" ]; then
+                # The registry answered, and the answer contained no publisher.
+                # That is not "someone else owns this" -- it is "this registry
+                # will not say who owns it", which happens with an unpublished
+                # version left as a tombstone, a mirror that strips the field,
+                # or a package whose metadata predates it. Distinguishing the
+                # two changes nothing about what happens next, and everything
+                # about what the person reading the log goes and checks.
+                echo "::error::$name@$VERSION exists on the registry, but it reports no publisher at all."
+                echo "::error::Ownership cannot be established, so it cannot be treated as ours. Stopping the whole release."
+                exit 1
+              elif [ "$owner" = "$publisher" ]; then
+                skip=yes
+                reason="already published by $publisher"
+              else
+                echo "::error::$name@$VERSION is already on the registry, published by '$owner', not by '$publisher'."
+                echo "::error::That name at that version is not under our control. Stopping the whole release."
+                # Not `return 1`: the remaining packages must not be uploaded
+                # either. A release that found someone else holding one of its
+                # names is over, not partially continuable.
+                exit 1
+              fi
+            fi
+
+            # The dry run answers the same question against the same registry
+            # and then packs anyway. Rehearsing the decision is the point --
+            # this is the most fragile code in the file and it used to be
+            # skipped entirely when DRY_RUN was true, which is precisely how it
+            # reached the live registry unexercised -- but packing all six is
+            # what makes a dry run worth running, so the verdict is printed
+            # rather than acted on.
+            if [ "$DRY_RUN" = "true" ]; then
+              if [ "$skip" = "yes" ]; then
+                echo "would skip -- $reason"
+              else
+                echo "would publish -- $name@$VERSION is not on the registry"
+              fi
+            elif [ "$skip" = "yes" ]; then
+              echo "skipping -- $reason"
               return 0
             fi
+
             # shellcheck disable=SC2086
             ( cd "$dir" && npm publish $flags )
           }

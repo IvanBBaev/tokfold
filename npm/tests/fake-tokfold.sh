@@ -15,8 +15,9 @@
 #
 #   TOKFOLD_FAKE_EXIT    exit with this code (default 0)
 #   TOKFOLD_FAKE_SIGNAL  kill self with this signal before doing anything else
-#   TOKFOLD_FAKE_MODE    argv (default) | stdin | file
+#   TOKFOLD_FAKE_MODE    argv (default) | stdin | file | hold
 #   TOKFOLD_FAKE_FILE    file to copy to stdout in `file` mode
+#   TOKFOLD_FAKE_PIDFILE where `hold` mode records its own pid
 #   TOKFOLD_FAKE_STDERR  write this line to stderr before exiting
 
 if [ -n "${TOKFOLD_FAKE_SIGNAL:-}" ]; then
@@ -36,6 +37,20 @@ stdin)
 	;;
 file)
 	cat "$TOKFOLD_FAKE_FILE"
+	;;
+hold)
+	# Stays alive until something kills it, so a test can signal the launcher
+	# and then ask whether this process outlived it.
+	#
+	# `exec` rather than a plain `sleep` so that this pid *is* the sleeping
+	# process. A forked `sleep` would be a grandchild the launcher never knew
+	# about, and killing the recorded pid would leave it behind -- the test
+	# would then be measuring the fixture's own orphan instead of the
+	# launcher's.
+	if [ -n "${TOKFOLD_FAKE_PIDFILE:-}" ]; then
+		printf '%s\n' "$$" >"$TOKFOLD_FAKE_PIDFILE"
+	fi
+	exec sleep 30
 	;;
 esac
 
