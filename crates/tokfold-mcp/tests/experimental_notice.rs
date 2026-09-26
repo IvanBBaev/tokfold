@@ -6,9 +6,10 @@
 //! to stderr before it starts serving. It is not decoration. The server it introduces
 //! is unhardened and unaudited, it sits in the secrets path — a transcript passed
 //! through it is fully visible to it — and the audit that would make that acceptable
-//! is a separate milestone gating any public launch. The notice is the only thing
-//! standing between a user and pointing that component at a production transcript, so
-//! its wording and its shape are a contract.
+//! has not been done. The `0.0.1` npm release shipped the server anyway, so the notice
+//! is not a placeholder for a gate that has yet to open: it is the only thing standing
+//! between a released user and pointing this component at a production transcript. Its
+//! wording and its shape are therefore a contract.
 //!
 //! These are integration tests deliberately: they see the crate exactly as the
 //! downstream consumer (`tokfold-cli`) does, so demoting the constant out of the
@@ -16,8 +17,8 @@
 
 use tokfold_mcp::EXPERIMENTAL_NOTICE;
 
-/// `cmd_mcp` in `tokfold-cli` emits the notice with a single `eprintln!`, so the
-/// constant must be exactly one line.
+/// `cmd_mcp` in `tokfold-cli` emits the notice as one diagnostic line — a single
+/// `writeln!` to stderr — so the constant must be exactly one line.
 ///
 /// This is the least obvious way the notice can rot. The literal is written with a
 /// Rust line-continuation escape — a lone `\` at end of source line — which is
@@ -39,10 +40,14 @@ fn notice_is_one_unbroken_line() {
 
 /// The same line-continuation hazard, one step further along.
 ///
-/// A source-level rewrap that keeps the `\` but changes the indentation, or a
-/// hand-joining of the two source lines that forgets to collapse the leading spaces,
-/// produces a notice that reads `not covered     by the ...` on a user's terminal.
-/// That is a lower-stakes failure than a split line, so it is easier to ship.
+/// Only one half of the obvious story is real, and the unreal half is the reason the
+/// notice is written the way it is. A rewrap that *keeps* the `\` cannot do this
+/// whatever it does to the indentation: the escape swallows the newline and every
+/// leading space on the line after it. What does reach here is hand-joining the two
+/// source lines — deleting the `\` and the newline but leaving the second line's
+/// indentation inside the literal — and the ordinary typo of a doubled space in the
+/// text. Either produces a notice that reads `not covered     by the ...` on a user's
+/// terminal. That is a lower-stakes failure than a split line, so it is easier to ship.
 #[test]
 fn notice_carries_no_stray_whitespace() {
     assert!(
@@ -154,9 +159,10 @@ fn notice_names_the_subcommand_it_guards() {
 
 /// The manifest description is the notice's twin for anyone who never runs the binary.
 ///
-/// Publication of this crate is held deliberately, because the server sits in the
-/// secrets path unaudited. Whenever that hold is lifted, the description is the first and often
-/// only thing a registry visitor reads, so it has to carry the same refusal the runtime
+/// Publication to **crates.io** is held deliberately, because the server sits in the
+/// secrets path unaudited — the `0.0.1` npm release ships the binary, not this crate as
+/// a library. Whenever that hold is lifted, the description is the first and often only
+/// thing a registry visitor reads, so it has to carry the same refusal the runtime
 /// notice does. Pinning it here means a manifest reword cannot quietly drop the warning
 /// between now and publication.
 #[test]

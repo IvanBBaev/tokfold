@@ -92,15 +92,29 @@ test("resolution is path arithmetic and does not require the binary to exist", (
 // Drift between the table, the directories, and the manifests
 // ---------------------------------------------------------------------------
 //
-// `release.yml` already checks that the table's *values* and the directory
-// names agree. These go further, because that check passes just as happily when
-// a manifest inside one of those directories claims the wrong CPU -- and the
-// symptom of that is npm silently declining to install the package, which
-// surfaces to the user as "not installed" on a platform that is fully supported.
+// `release.yml` runs equivalent checks, and deliberately so: that workflow only
+// runs on a release, while these run on every pull request and every push to
+// `main`, so a drift introduced on a branch under review surfaces there rather
+// than at the moment someone tries to ship. (A push to a branch with no pull
+// request open runs nothing at all -- these tests are a review gate, not a
+// commit gate.) They are also the only place the reasoning is written down.
+//
+// What is being guarded is npm's install filter. A manifest that claims the
+// wrong CPU makes npm silently decline to install the package, and the symptom
+// reaching the user is "not installed" on a platform that is fully supported --
+// a failure with no error message anywhere pointing at the manifest.
 
 test("the table and npm/platforms describe the same set of targets", () => {
   const fromTable = ALL_PACKAGES.slice().sort();
-  const fromDisk = platformDirs().map((dir) => `tokfold-${dir}`);
+  // Each manifest's own `name`, never `tokfold-${dir}`. A directory publishes
+  // under the name its manifest declares, and the two agree today only by
+  // coincidence: `npm/platforms/windows-x64` publishes as `tokfold-windows-x64`
+  // because npm refused `tokfold-win32-x64`, not because the directory names it.
+  // Reconstructing the name would make this test compare the table against a
+  // string no registry has ever seen.
+  const fromDisk = platformDirs()
+    .map((dir) => platformManifest(dir).name)
+    .sort();
 
   assert.deepEqual(fromTable, fromDisk);
 });
@@ -139,6 +153,33 @@ test("optionalDependencies pins exactly the packages the table can resolve", () 
   const pinned = Object.keys(launcherManifest().optionalDependencies).sort();
 
   assert.deepEqual(pinned, ALL_PACKAGES.slice().sort());
+});
+
+test("every platform package is at the version the launcher pins for it", () => {
+  // The launcher and the binary are two halves of one release, and the release
+  // workflow enforces that by comparing every version site against the
+  // dispatched `version` input. That check only ever runs on a publish. This one
+  // catches the same drift while it is still a diff: bump `npm/tokfold` and
+  // forget one `npm/platforms/*/package.json`, and the launcher ships pinning a
+  // version of that platform package which does not exist on the registry --
+  // npm cannot install it, and every user on that one platform gets "the package
+  // holding this platform's binary is not installed" on a supported machine.
+  const manifest = launcherManifest();
+
+  for (const dir of platformDirs()) {
+    const platform = platformManifest(dir);
+    assert.equal(
+      manifest.optionalDependencies[platform.name],
+      platform.version,
+      `${platform.name} is at ${platform.version} but the launcher pins ` +
+        `${manifest.optionalDependencies[platform.name]}`,
+    );
+    assert.equal(
+      platform.version,
+      manifest.version,
+      `${platform.name} and the launcher must ship as one release`,
+    );
+  }
 });
 
 test("the table is frozen", () => {
@@ -243,17 +284,39 @@ test("a glibc runtime resolves the -gnu package", () => {
   assert.ok(resolved.includes("tokfold-linux-x64-gnu"), resolved);
 });
 
-test("musl is refused before the architecture is looked up", () => {
-  // Ordering, not politeness: on a musl machine with no build at all, the libc
-  // is the reason nothing will work, and reporting the architecture instead
-  // would send someone to add a target that still could not run.
+test("an unsupported architecture on musl is told about both", () => {
+  // Two independent reasons the install cannot work, and naming either one alone
+  // costs a round trip: the libc message sends someone to swap their base image,
+  // where the architecture is still unsupported, and the architecture message alone
+  // lets them go add a glibc target they could not have run. Building from source is
+  // the one remedy that answers both, so it is the one the message ends on.
   const { error } = resolveUnder(complete, {
     platform: "linux",
     arch: "riscv64",
     libc: "musl",
   });
 
+  assert.ok(error.message.includes("no prebuilt binary for linux-riscv64"), error.message);
   assert.ok(error.message.includes("musl libc"), error.message);
+  assert.ok(
+    error.message.includes(
+      "cargo install --git https://github.com/IvanBBaev/tokfold tokfold-cli",
+    ),
+    error.message,
+  );
+});
+
+test("an unsupported architecture on glibc is not told about musl", () => {
+  // The libc sentence is conditional, not boilerplate: on a glibc host it would be
+  // a false explanation for a failure that has nothing to do with libc.
+  const { error } = resolveUnder(complete, {
+    platform: "linux",
+    arch: "riscv64",
+    libc: "glibc",
+  });
+
+  assert.ok(error.message.includes("no prebuilt binary for linux-riscv64"), error.message);
+  assert.ok(!error.message.includes("musl"), error.message);
 });
 
 test("a diagnostic report with no header is treated as musl", () => {
@@ -341,10 +404,13 @@ for (const [key, pkg] of Object.entries(PACKAGES)) {
   });
 }
 
-test("the missing-package error suggests the version the launcher pins", () => {
-  // A bare `npm install tokfold-linux-x64-gnu` would fetch whatever is newest,
-  // and the launcher and the binary are two halves of one release. The advice
-  // is only safe if it carries the same exact version as optionalDependencies.
+test("the missing-package error points at the launcher, pinned, not the package", () => {
+  // `npm install tokfold-linux-x64-gnu` is wrong twice over. It fetches whatever
+  // is newest, and the launcher and the binary are two halves of one release; and
+  // it drops the platform package into the current directory, which is not where
+  // a launcher installed with `-g` looks for it. Following that advice therefore
+  // reports success and changes nothing, which is worse than no advice at all.
+  // Reinstalling the launcher is what actually re-runs npm's install filter.
   const manifest = launcherManifest();
 
   for (const [key, pkg] of Object.entries(PACKAGES)) {
@@ -352,10 +418,18 @@ test("the missing-package error suggests the version the launcher pins", () => {
     const { error } = resolveUnder(bare, { platform, arch, libc: "glibc" });
 
     assert.ok(
-      error.message.includes(
-        `Fix it with: npm install ${pkg}@${manifest.optionalDependencies[pkg]}`,
-      ),
+      error.message.includes(`npm install -g tokfold@${manifest.version}`),
       error.message,
+    );
+    assert.ok(
+      error.message.includes(`Installing ${pkg} by itself is not the fix`),
+      error.message,
+    );
+    assert.equal(
+      manifest.optionalDependencies[pkg],
+      manifest.version,
+      "the advice pins the launcher's version, which is only the right advice " +
+        "while the launcher pins its platform packages to that same version",
     );
   }
 });

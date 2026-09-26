@@ -51,9 +51,15 @@ pub const FIRST_MODERN_VERSION: &str = "2026-07-28";
 
 /// Whether a protocol revision uses the stateless, per-request-metadata model.
 ///
-/// Unknown revision strings are treated as legacy. That is the safe direction: a
-/// legacy answer to a modern client fails loudly at the client's version check,
-/// whereas a modern answer to a legacy client looks like a malformed handshake.
+/// The split is by date rather than by a list, so this says nothing about whether the
+/// revision is one this build knows: the comparison is lexicographic against
+/// [`FIRST_MODERN_VERSION`], and anything sorting at or above it is modern. A
+/// future-dated revision is therefore modern, which is the intended answer, and so is
+/// any string that happens to sort there. Nothing is decided by that alone — both call
+/// sites gate on [`is_supported_version`] first, so an unrecognised revision never
+/// reaches here as something to serve. Below the split, legacy is the safe answer: a
+/// legacy reply to a modern client fails loudly at the client's version check, whereas
+/// a modern reply to a legacy client looks like a malformed handshake.
 #[must_use]
 pub fn is_modern_version(version: &str) -> bool {
     version >= FIRST_MODERN_VERSION

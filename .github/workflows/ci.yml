@@ -13,23 +13,49 @@
 #   actionlint  -- lints this workflow itself, so a malformed job fails loudly
 #                  instead of being skipped or ignored by the runner
 #   fmt         -- cargo fmt --all --check
-#   clippy      -- cargo clippy --all-targets --all-features -D warnings
-#   docs        -- cargo doc with RUSTDOCFLAGS=-D warnings
+#   clippy      -- cargo clippy --workspace --all-targets --all-features
+#                  --locked -- -D warnings
+#   docs        -- cargo doc --workspace --all-features --no-deps --locked,
+#                  under RUSTDOCFLAGS=-D warnings
 #   doc-drift   -- the EXPERIMENTAL-notice test in tokfold-mcp (see that job)
-#   deny        -- cargo deny check (supply-chain policy)
-#   package     -- cargo package --workspace
+#   deny        -- cargo deny --locked check (supply-chain policy)
+#   package     -- cargo package --workspace --locked
 #   launcher    -- node --test over the npm launcher (see that job)
 #
-# Each of those carries exactly one condition, `if: github.event_name !=
+# Where a line above gives a command, it is that job's `run:` verbatim (the
+# `docs` line names its RUSTDOCFLAGS separately, because that one is an
+# environment variable and not an argument), so a reader can paste it and get
+# what the runner gets. The shortened spellings this list carried until
+# 2026-09-22 were not shorter ways of saying the same thing: the one it gave for
+# clippy, `cargo clippy --all-targets --all-features -D warnings`, is refused by
+# cargo outright -- "unexpected argument '-D' found", because `-D warnings` is an
+# argument for the lint driver and has to follow a `--`. A legend nobody can run
+# cannot be checked against the job it claims to summarize, which is the only
+# thing a legend is for. Three lines describe rather than quote: `doc-drift` and
+# `launcher` point at their own job, and `actionlint` runs a downloaded binary
+# (`./actionlint -color`) rather than a cargo command.
+#
+# Each of those eight jobs carries exactly one condition, `if: github.event_name !=
 # 'schedule'`, which keeps the weekly cron from paying for the whole gate a
 # second time. That is the only way a gate can be skipped, and it is visible in
 # one grep. What it deliberately is *not* is conditional on a matrix value:
-# nothing a contributor can rename or mistype in a `required:` key can turn a
-# gate off on a push or a pull request.
+# nothing a contributor can rename or mistype in a `required:` key can turn one
+# of *those eight* gates off on a push or a pull request.
 #
 # The `test` matrix is now only about *running the test suite* on each
-# OS/toolchain/feature combination. Its `required` key still exists, but its only
-# remaining job is to decide `continue-on-error`; no gate hangs off it.
+# OS/toolchain/feature combination. Its `required` key still exists, and its only
+# remaining job is to decide `continue-on-error`.
+#
+# That is not the same as "no gate hangs off it", which this comment used to
+# claim, and the difference is worth being exact about. Three `test` legs are on
+# the branch-protection list below, and the `continue-on-error` expression on
+# that job is precisely what decides whether a failing leg still reports success.
+# Flip `required: true` to `false` on one of those three and it goes green while
+# failing -- the very thing the paragraph above says a `required:` key can no
+# longer do. The eight jobs are unreachable that way; those three legs are not.
+# Closing the gap would mean hoisting the required legs out of the matrix, which
+# renames the checks branch protection matches by exact string, so it is not a
+# change to make quietly.
 #
 # NOTE ON `package`: it runs `cargo package`, which builds the .crate tarballs
 # and verifies they compile, and it talks to no registry. It is deliberately not
@@ -51,12 +77,21 @@
 #   doc-drift
 #   deny
 #   package
-#   launcher (node 18)
-#   launcher (node 22)
+#   launcher (linux-node18)
+#   launcher (linux-node22)
+#   launcher (macos-node22)
+#   launcher (windows-node22)
 #   test (ubuntu-stable-all-features)
 #   test (ubuntu-1.85-default-features)
 #   test (ubuntu-1.85-all-features)
-# The macOS and Windows legs run for signal only and are `continue-on-error`.
+# The names are the leg ids, not prose: GitHub matches a required check by exact
+# string, and a required name no job ever reports stays pending forever, so a
+# guessed name blocks every pull request on a check that cannot go green.
+# The macOS and Windows legs of the `test` matrix run for signal only and are
+# `continue-on-error`, which is why they are not on the list. The `launcher` job
+# has no `continue-on-error` on any leg -- all four block today, and all four
+# belong on the list: they are the only gate covering the shipped JavaScript,
+# which no cargo command reads.
 #
 # ---------------------------------------------------------------------------
 # Conventions that apply to every job below
@@ -138,8 +173,9 @@ env:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Gates. Each of these is a separate, unconditional job on purpose -- see the
-  # header. None of them may grow an `if:` that depends on matrix data.
+  # Gates. Each of these is a separate job on purpose -- see the header. The one
+  # condition they carry is `github.event_name != 'schedule'`, which depends on
+  # the trigger alone; none of them may grow an `if:` that depends on matrix data.
   # ---------------------------------------------------------------------------
 
   actionlint:
@@ -227,8 +263,12 @@ jobs:
       - name: Clippy
         # `--all-targets` so tests and benches are linted too: the workspace sets
         # clippy pedantic+nursery to warn, and `-D warnings` makes every one of
-        # those a hard error wherever it appears.
-        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+        # those a hard error wherever it appears. `--workspace` is explicit for
+        # the same reason every sibling gate spells it out: the root manifest is
+        # virtual today, so bare cargo already selects all three members, but a
+        # `default-members` added for faster local builds would silently narrow
+        # this gate to one crate while `-D warnings` stayed green.
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
   docs:
     if: github.event_name != 'schedule'
@@ -375,8 +415,9 @@ jobs:
       # copies of its workspace dependencies -- but `cargo package` has no upload
       # path at all, while `publish --dry-run` is a real release command one
       # dropped flag away from being a release. crates.io publication is
-      # deliberately held for this project, so the gate that runs on every push
-      # is the one that cannot publish even if it is edited wrongly. (The npm
+      # deliberately held for this project, so the gate that runs on every pull
+      # request and every push to `main` is the one that cannot publish even if
+      # it is edited wrongly. (The npm
       # packages *are* published, but from `release.yml` on manual dispatch and
       # never from here; this job still has no way to upload anything anywhere.)
       - name: Packaging check (all crates)
@@ -385,18 +426,22 @@ jobs:
   launcher:
     # The npm launcher (`npm/tokfold/bin/tokfold` and `lib/resolve.js`) is
     # shipped code that no other job here compiles, runs or even parses: every
-    # gate above is a cargo command, and cargo does not read JavaScript. It is
+    # other gate above is a cargo command, actionlint reads only the workflow
+    # files, and none of them reads JavaScript. It is
     # also the first thing a user meets -- `npm i -g tokfold` installs the
     # launcher, and the Rust binary is only ever reached through it -- so a
     # broken platform mapping or a swallowed exit code is a total outage for
     # that install path while the whole Rust gate stays green.
     #
     # `release.yml` does check the launcher, but only at publish time and only
-    # for the two things a release cares about: that both files parse, and that
-    # the platform table names the same packages as `npm/platforms/`. It cannot
-    # catch a regression before merge, and it says nothing about behaviour --
-    # exit-code propagation, signal re-raise, argument passing, the musl refusal.
-    # This job is where that is checked, on every push and pull request.
+    # for what a release can establish without running anything: that both files
+    # parse, that the platform table, the manifests under `npm/platforms/` and
+    # the launcher's `optionalDependencies` name the same five packages, and
+    # that each of those packages declares the `os` and `cpu` its table key
+    # promises. It cannot catch a regression before merge, and it says nothing
+    # about behaviour -- exit-code propagation, signal re-raise, argument
+    # passing, the musl refusal. This job is where that is checked, on every
+    # pull request and every push to `main`.
     #
     # No dependency install step, and no lockfile to cache: the suite uses
     # `node:test` and `node:assert/strict` and nothing else. The npm packages in
@@ -443,11 +488,16 @@ jobs:
           # every OS -- the Linux legs already hold that line. What is being
           # bought here is the platform branch, not a second version sweep.
           #
-          # `launcher.test.js` skips itself on Windows and says so: its stand-in
-          # binary is a `#!/bin/sh` script that Windows cannot exec. That is a
-          # real gap, not a silent one -- on Windows this leg covers the
-          # resolver and the packaging check, and the process-level exit-code
-          # and signal contract is carried by the legs below and above.
+          # `launcher.test.js` skips *part* of itself on Windows and says so:
+          # its stand-in binary is a `#!/bin/sh` script that Windows cannot
+          # exec, so every test needing a child that runs is skipped, and so is
+          # the cleared-execute-bit case -- for the unrelated reason that
+          # Windows does not deny execution through mode bits. The launcher
+          # failure paths that never start a child do run here. That is a real
+          # gap, not a silent one: on Windows this leg covers the resolver, the
+          # packaging check and those failure paths, and the process-level
+          # exit-code and signal contract is carried by the legs below and
+          # above.
           - leg: windows-node22
             os: windows-latest
             node: "22"
@@ -474,11 +524,15 @@ jobs:
           # release.yml: this job never talks to a registry, so it has no reason
           # to be handed an .npmrc that knows where one is.
 
-      # Run from inside the directory with no path argument. `node --test` is
-      # given a directory positional only from Node 22 -- on 18 and 20 a
-      # positional is treated as a module path and the run dies with "Cannot
-      # find module" -- while the no-argument form auto-discovers `*.test.js`
-      # from the working directory on every version this job covers.
+      # Run from inside the directory with no path argument. Naming the
+      # directory depends on the Node version: `node --test npm/tests` ran all
+      # 76 tests on v18.20.8 and v20.20.2, and on v22.23.0 and v22.23.2 handed
+      # the directory to the module loader instead, dying with "Cannot find
+      # module" before a test ran (measured on macOS; the release where it
+      # changed was not bisected). So the node22 legs could not use it. The
+      # no-argument form ran all 76 on v18.20.8 and v22.23.2, the two majors
+      # this job covers (measured on macOS), and so does the one path-taking
+      # form that works on both, a glob: `node --test npm/tests/*.test.js`.
       #
       # Auto-discovery is also the point: a new test file is picked up by
       # virtue of existing, with no list here to forget to extend. Naming the files
@@ -489,7 +543,12 @@ jobs:
         run: node --test
 
   # ---------------------------------------------------------------------------
-  # Test matrix. Runs the suite; gates nothing.
+  # Test matrix. Runs the suite on each OS/toolchain/feature combination. Three of
+  # its five legs gate: `continue-on-error` below is `!matrix.required`, so a
+  # failing required leg fails the run, and those same three legs are on the
+  # branch-protection list in this file's header. The other two report for signal
+  # only. The header spells out why "no gate hangs off it" is true of the eight
+  # jobs above and false of these three legs.
   # ---------------------------------------------------------------------------
 
   test:

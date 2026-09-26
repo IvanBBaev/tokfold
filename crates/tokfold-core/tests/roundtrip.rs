@@ -235,7 +235,11 @@ fn render_pretty(n: &Node, depth: usize, out: &mut String) {
 
 /// Number lexemes: boundary integers, a 100-digit literal, floats and exponents.
 /// Hostile generator from the frozen spec: "numbers at i64/u64/f64 boundaries and
-/// 100-digit literals".
+/// 100-digit literals". The `f64` boundaries are spelled as literals, not produced
+/// from an `f64`, because the property under test is that the *lexeme* survives:
+/// `f64::MAX.to_string()` would hand the engine a 309-digit integer, not the
+/// shortest round-trip spelling a real producer emits. `1e309` is a valid JSON
+/// number that no `f64` holds — the engine must carry it untouched too.
 fn arb_num() -> impl Strategy<Value = String> {
     prop_oneof![
         any::<i64>().prop_map(|n| n.to_string()),
@@ -249,6 +253,14 @@ fn arb_num() -> impl Strategy<Value = String> {
         // 100-digit integer, no leading zero.
         Just(format!("9{}", "0".repeat(99))),
         Just("1".repeat(100)),
+        // f64 boundaries as producers spell them: MAX, MIN_POSITIVE, the smallest
+        // subnormal, negative zero with a fraction, and one past MAX.
+        Just("1.7976931348623157e308".to_string()),
+        Just("-1.7976931348623157E+308".to_string()),
+        Just("2.2250738585072014e-308".to_string()),
+        Just("5e-324".to_string()),
+        Just("-0.0".to_string()),
+        Just("1e309".to_string()),
         // Fraction and exponent forms.
         (any::<i32>(), 0u32..1_000_000).prop_map(|(a, b)| format!("{a}.{b}")),
         (any::<i16>(), any::<i8>()).prop_map(|(m, e)| format!("{m}e{e}")),
@@ -944,7 +956,24 @@ fn non_utf8_input_is_rejected() {
             .collect::<Vec<u8>>(),
     ] {
         match c.compress(&bytes) {
-            Err(CompressError::NotUtf8) => {}
+            Err(CompressError::NotUtf8 { byte_offset }) => {
+                // The offset is only worth reporting if it points at the break. It
+                // is `valid_up_to`, so everything before it must decode and the
+                // byte at it must not -- an offset that satisfies both cannot be a
+                // constant somebody wired in.
+                assert!(
+                    byte_offset < bytes.len(),
+                    "offset {byte_offset} is past the end of {bytes:?}"
+                );
+                assert!(
+                    core::str::from_utf8(&bytes[..byte_offset]).is_ok(),
+                    "bytes before offset {byte_offset} do not decode: {bytes:?}"
+                );
+                assert!(
+                    core::str::from_utf8(&bytes[..=byte_offset]).is_err(),
+                    "offset {byte_offset} is not where {bytes:?} stops decoding"
+                );
+            }
             other => panic!("expected NotUtf8 for {bytes:?}, got {other:?}"),
         }
     }

@@ -18,11 +18,22 @@
 //! at ratio 1.0 — "couldn't compress" is a statistic, never an error.
 //!
 //! This byte-blind rule is mandatory, not cosmetic: minification is **not**
-//! uniformly a token win (cl100k/o200k tokenize a multi-space indentation run and a
-//! post-key `": "` as single tokens), so a byte-count objective would select
-//! encoders that add tokens. The two `compress` guarantees follow directly:
+//! uniformly a token win, because bytes and tokens are priced by a lookup table
+//! rather than by a rule. cl100k/o200k spend a single token on many indentation
+//! widths — 4, 8, 16 and 128 spaces all cost 1 — so stripping a run sheds bytes
+//! without shedding tokens in proportion. The table is finite, but it is also
+//! **not monotonic**, so there is no width past which the price simply rises: the
+//! first run that costs 2 is 82 spaces under cl100k and 80 under o200k, yet 83,
+//! 87, 91, 95 and 128 are all back to 1, and only well beyond the table does a run
+//! cost several — 400 spaces are 4 tokens and 2048 are 16, where stripping is worth
+//! far more than the bytes suggest. A byte-count objective misprices in both
+//! directions, and would select encoders that add tokens. Only a token estimate
+//! settles it, and the figures above are measured rather than asserted — they are
+//! pinned against the real tokenizers in [`estimator`](crate::estimator). The two
+//! `compress` guarantees follow directly:
 //!
-//! * **Total on valid JSON** — no winner yields a passthrough artifact, never an error.
+//! * **Total on valid JSON within the configured limits** — no winner yields a
+//!   passthrough artifact, never an error.
 //! * **Do-no-harm** — the chosen rendering's estimated tokens never exceed the
 //!   input's, or the result is passthrough.
 
@@ -133,6 +144,17 @@ pub(crate) struct Selection {
     /// so `token_ratio` is exactly 1.0 there. The `raw` sentinel is framing
     /// overhead, not counted as compression harm.
     pub est_tokens_after: usize,
+    /// Whether at least one encoder produced a rendering that [`clears_margin`]
+    /// refused, for either of the two reasons that function refuses for: the
+    /// rendering was not a strict token win, or the win was under `min_saving_bps`.
+    ///
+    /// `false` only when nothing reached the gate to be refused — `enabled` was
+    /// empty, or every encoder in it declined to render (returned `None`) or had its
+    /// rendering kept. Note that "the input was already minimal" is *not* one of the
+    /// `false` cases: E1 renders such an input anyway, the framed rendering then
+    /// fails the strict comparison, and the flag goes up. Set independently of the
+    /// outcome — a candidate can be refused while a later one still wins.
+    pub gate_rejected_candidate: bool,
 }
 
 /// Apply the candidate rule (see the module docs) and return the winning [`Selection`].
@@ -155,6 +177,7 @@ pub(crate) fn select(
 ) -> Selection {
     let est_before = estimator.estimate(input);
     let mut best: Option<(usize, Encoder, String)> = None;
+    let mut gate_rejected_candidate = false;
 
     for &enc in enabled {
         if matches!(enc, Encoder::Passthrough) {
@@ -166,7 +189,10 @@ pub(crate) fn select(
         };
         let est = estimator.estimate(&candidate);
         if !clears_margin(est, est_before, min_saving_bps) {
-            continue; // do-no-harm: keep only a win that clears the margin
+            // do-no-harm: keep only a win that clears the margin. Record that a
+            // candidate existed, so a passthrough result can say *why* it happened.
+            gate_rejected_candidate = true;
+            continue;
         }
         let wins = match &best {
             None => true,
@@ -183,12 +209,14 @@ pub(crate) fn select(
             rendering,
             est_tokens_before: est_before,
             est_tokens_after: est_after,
+            gate_rejected_candidate,
         },
         None => Selection {
             encoder: Encoder::Passthrough,
             rendering: framed(Encoder::Passthrough, input),
             est_tokens_before: est_before,
             est_tokens_after: est_before,
+            gate_rejected_candidate,
         },
     }
 }
@@ -203,19 +231,28 @@ pub(crate) fn select(
 ///
 /// The comparison is cross-multiplied rather than divided so it stays exact integer
 /// arithmetic — a float ratio would reintroduce rounding into a decision that must be
-/// bit-deterministic. `u64` keeps the product safe for the 16 MiB input ceiling
-/// on a 32-bit target: the largest factor is `est_before * 10_000`, and `est_before`
-/// cannot exceed the input's character count.
+/// bit-deterministic. The products are taken in `u128` because the gate must hold for
+/// *any* [`TokenEstimator`], not only the shipped ones. Every estimator this crate
+/// ships is bounded by the input's character count, so `est_before * 10_000` fits `u64`
+/// comfortably under the 16 MiB ceiling — but the trait is public, and a caller's
+/// estimator may return anything a `usize` holds. In `u64` both sides saturate at
+/// `u64::MAX` once a factor passes ~1.8e19, and two saturated sides compare equal, so
+/// the gate would answer `true` for *every* candidate — a 100% margin admitting a
+/// 0.02% saving. `u128` cannot overflow here. `usize::MAX` is at most 2^64 − 1 on
+/// every supported target, so the left product is under 2^78 (`BPS_SCALE` is 10 000)
+/// and the right under 2^96 (`bps` is a `u32`, and callers below `compress` are not
+/// obliged to have clamped it to `MAX_SAVING_BPS`). Both sit far inside `u128`, so
+/// the multiplications are plain and the comparison stays exact.
 const fn clears_margin(est_after: usize, est_before: usize, bps: u32) -> bool {
     if est_after >= est_before {
         return false;
     }
-    let saved = (est_before - est_after) as u64;
-    saved.saturating_mul(BPS_SCALE) >= (est_before as u64).saturating_mul(bps as u64)
+    let saved = (est_before - est_after) as u128;
+    saved * BPS_SCALE >= (est_before as u128) * (bps as u128)
 }
 
 /// Basis-point scale: 10 000 bps = 100%.
-const BPS_SCALE: u64 = 10_000;
+const BPS_SCALE: u128 = 10_000;
 
 /// Whether a candidate should replace the current best: strictly fewer estimated
 /// tokens, or an equal estimate broken by the lower encoder id. The id tie-break
@@ -229,8 +266,8 @@ const fn prefers(new_est: usize, new_id: u8, best_est: usize, best_id: u8) -> bo
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use super::{Encoder, clears_margin, prefers, render, select};
-    use crate::estimator::{ByteLenEstimator, HeuristicEstimator};
+    use super::{Encoder, SENTINEL_OPEN, clears_margin, prefers, render, select};
+    use crate::estimator::{ByteLenEstimator, HeuristicEstimator, TokenEstimator, ids};
     use crate::tape;
 
     /// The v0.0.1 candidate rule: any strict token win is kept.
@@ -350,6 +387,85 @@ mod tests {
         assert!(!clears_margin(1, 100, 10_000));
     }
 
+    /// A cost model whose counts are large enough that the gate's cross-multiplied
+    /// products no longer fit `u64`. Nothing this crate ships can reach here — every
+    /// shipped estimator is bounded by the input's character count, so ~1.7e7 at the
+    /// 16 MiB ceiling — but [`TokenEstimator`] is the crate's public extension point,
+    /// so a caller's model may return anything a `usize` holds.
+    ///
+    /// It answers by shape: the framed candidate always opens with the sentinel, the
+    /// bare input never does.
+    struct SaturatingEstimator {
+        before: usize,
+        saved: usize,
+    }
+
+    impl TokenEstimator for SaturatingEstimator {
+        fn estimate(&self, text: &str) -> usize {
+            if text.starts_with(SENTINEL_OPEN) {
+                self.before - self.saved
+            } else {
+                self.before
+            }
+        }
+
+        fn tokenizer_id(&self) -> u16 {
+            ids::BYTE_LEN
+        }
+    }
+
+    /// `before` and `saved` for the saturating tests: a saving of 2.5 bps — 0.025% —
+    /// which every margin from 3 bps up must refuse.
+    ///
+    /// On a 64-bit target these reproduce the defect: `saved * 10_000` (~2.3e19) and
+    /// `before * 10_000` (~9.2e22) both exceed `u64::MAX`, so the old saturating
+    /// arithmetic compared `u64::MAX` with `u64::MAX`, found them equal, and admitted
+    /// the candidate at *any* margin including 100%. On a 32-bit target no product
+    /// saturates and the assertions below simply hold on their merits.
+    fn saturating_pair() -> (usize, usize) {
+        let before = usize::MAX / 2;
+        (before, before / 4_000)
+    }
+
+    #[test]
+    fn clears_margin_refuses_a_tiny_saving_at_counts_that_overflow_u64() {
+        let (before, saved) = saturating_pair();
+        let after = before - saved;
+        // A 100% margin demands a rendering that costs nothing; 0.025% is not that.
+        assert!(!clears_margin(after, before, 10_000));
+        assert!(!clears_margin(after, before, 600));
+        assert!(!clears_margin(after, before, 3));
+        // ...and the gate is still a gate at this magnitude, not a blanket refusal:
+        // 2.5 bps clears a 2 bps bar and the strict v0.0.1 rule.
+        assert!(clears_margin(after, before, 2));
+        assert!(clears_margin(after, before, NO_MARGIN));
+    }
+
+    #[test]
+    fn a_saturating_estimator_cannot_bully_the_gate_into_accepting() {
+        // The same defect seen through `select`, which is where it would have done
+        // damage: an encoder chosen on a 0.025% claimed saving under a 100% margin.
+        let input = pretty_object(30);
+        let t = tape_of(&input);
+        let (before, saved) = saturating_pair();
+        let est = SaturatingEstimator { before, saved };
+
+        let refused = select(&t, &input, &est, &[Encoder::E1Minify], 10_000);
+        assert_eq!(
+            refused.encoder,
+            Encoder::Passthrough,
+            "a 100% margin admitted a 0.025% saving"
+        );
+        assert_eq!(refused.est_tokens_after, refused.est_tokens_before);
+
+        // Vacuity guard: with a bar the saving really does clear, the same estimator
+        // and input select the encoder — so the assertion above is about the margin,
+        // not about the encoder being unreachable at these counts.
+        let kept = select(&t, &input, &est, &[Encoder::E1Minify], 2);
+        assert_eq!(kept.encoder, Encoder::E1Minify);
+        assert_eq!(kept.est_tokens_after, before - saved);
+    }
+
     #[test]
     fn a_margin_refuses_a_win_the_v0_0_1_rule_would_keep() {
         // The mechanism has to actually bite, or every other margin test passes
@@ -453,6 +569,57 @@ mod tests {
         );
         assert_eq!(sel.encoder, Encoder::Passthrough);
         assert_eq!(sel.est_tokens_after, sel.est_tokens_before);
+    }
+
+    #[test]
+    fn the_gate_flag_separates_a_refusal_from_nothing_to_refuse() {
+        // A passthrough result has two very different causes, and only this flag tells
+        // them apart. `min_saving_bps` cannot: it reports the bar, not whether anything
+        // hit it, and it is the same number in both cases below.
+        let input = pretty_object(30);
+        let t = tape_of(&input);
+
+        // (a) An encoder applied and won: nothing was refused.
+        let won = select(
+            &t,
+            &input,
+            &HeuristicEstimator,
+            &[Encoder::E1Minify],
+            NO_MARGIN,
+        );
+        assert_eq!(won.encoder, Encoder::E1Minify);
+        assert!(!won.gate_rejected_candidate);
+
+        // (b) The same encoder on the same input, refused by a margin it cannot clear.
+        let refused = select(
+            &t,
+            &input,
+            &HeuristicEstimator,
+            &[Encoder::E1Minify],
+            10_000,
+        );
+        assert_eq!(refused.encoder, Encoder::Passthrough);
+        assert!(refused.gate_rejected_candidate);
+
+        // (c) No encoder enabled at all: passthrough with nothing to refuse. This is
+        // what stops the flag from being "passthrough" spelled differently.
+        let nothing = select(&t, &input, &HeuristicEstimator, &[], 10_000);
+        assert_eq!(nothing.encoder, Encoder::Passthrough);
+        assert!(!nothing.gate_rejected_candidate);
+
+        // (d) A candidate that loses the strict comparison, with no margin in play:
+        // an already-minimal object gains only the sentinel, so E1 is refused at 0 bps.
+        let tiny = "{\"a\":1}";
+        let tiny_tape = tape_of(tiny);
+        let lost = select(
+            &tiny_tape,
+            tiny,
+            &HeuristicEstimator,
+            &[Encoder::E1Minify],
+            NO_MARGIN,
+        );
+        assert_eq!(lost.encoder, Encoder::Passthrough);
+        assert!(lost.gate_rejected_candidate);
     }
 
     #[test]

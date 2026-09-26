@@ -35,9 +35,16 @@
 //!
 //! # Determinism
 //!
-//! The same logical input yields byte-identical `rendering` and `archive` on every
-//! call and every build. Nothing here reads a clock, hashes with a per-process seed,
-//! or iterates a `std` `HashMap`, so the provider's prompt cache stays warm.
+//! The same input bytes under the same [`Config`] yield byte-identical `rendering` and
+//! `archive` on every call of one build — the same bytes, not the same JSON value,
+//! since the archive holds the input as written. Nothing here reads a clock, hashes with a per-process seed,
+//! or iterates a `std` `HashMap`, so the provider's prompt cache stays warm. Across
+//! targets it is not established: E2 counts shapes by an `FxHasher` value, which
+//! differs between 32- and 64-bit targets, so an input whose key lists collide on one
+//! target and not the other gets a different table there — and, where that changes
+//! which encoder wins, a different encoder id in the archive header too. See the
+//! determinism note in [`encoder`](mod@crate::encoder)'s E2 module. Only 64-bit
+//! `aarch64` has been measured.
 
 use std::sync::Arc;
 
@@ -46,6 +53,12 @@ use crate::error::{CompressError, DecompressError};
 use crate::estimator::{HeuristicEstimator, TokenEstimator};
 use crate::fidelity::Fidelity;
 use crate::format::{self, Flags, Header};
+// Header field offsets, used only to aim a `Corrupt` error at the offending field.
+// These are `format`'s own constants, not a second copy of the arithmetic: a copy
+// stays right until the frozen layout moves, and then both sides still compile
+// while every offset an archive reports names the wrong field. The CLI makes the
+// same call about `MAGIC` for the same reason.
+use crate::format::{ENCODER_ID_OFFSET, FLAGS_OFFSET, ORIGINAL_LEN_OFFSET, TOKENIZER_ID_OFFSET};
 use crate::tape;
 
 /// Default input ceiling: 16 MiB. Inputs larger than this are rejected with
@@ -64,10 +77,19 @@ const DEFAULT_MAX_DEPTH: usize = 512;
 /// compression from being disabled.
 ///
 /// A margin of 10 000 bps demands a saving equal to the whole input estimate, i.e. a
-/// rendering estimating to zero tokens; no sentinel-framed rendering can reach that.
-/// So every configured value *at or above* this ceiling — the clamped result included
-/// — turns the engine into passthrough for all inputs. Clamping normalizes the
-/// reported number, nothing more.
+/// rendering the configured [`TokenEstimator`] rates at zero tokens. Every estimator
+/// this crate ships rates a framed rendering above zero — it opens with the sentinel
+/// line, which costs tokens under all four — so under any of them a value *at or
+/// above* this ceiling turns the engine into passthrough for all inputs.
+///
+/// That is a property of those estimators, not of the arithmetic. [`TokenEstimator`]
+/// is the crate's only public extension point, and a caller's model that rates a
+/// framed rendering at zero clears a 100% bar exactly: the saving then equals the
+/// whole input estimate and the gate's comparison holds with equality. Clamping is
+/// what leaves even that reachable — a margin strictly above this ceiling would demand
+/// a saving *larger* than the input estimate, which no estimator can report, so the
+/// clamp turns an impossible bar into a merely unreachable one. It normalizes the
+/// reported number; it does not restore compression.
 const MAX_SAVING_BPS: u32 = 10_000;
 
 /// Encoders offered under [`Profile::Conservative`]: minification only, the
@@ -79,13 +101,6 @@ const CONSERVATIVE_ENCODERS: &[Encoder] = &[Encoder::E1Minify];
 /// currently offer the same set; the split exists so aggressive codecs can be added
 /// later without an API change.
 const FULL_ENCODERS: &[Encoder] = &[Encoder::E1Minify, Encoder::E2Tabular];
-
-// Header field offsets, derived from the frozen `TKFD` layout (see `format`). Used
-// only to aim a `Corrupt` error at the offending field.
-const ENCODER_ID_OFFSET: usize = format::MAGIC.len() + 1;
-const TOKENIZER_ID_OFFSET: usize = ENCODER_ID_OFFSET + 1;
-const FLAGS_OFFSET: usize = TOKENIZER_ID_OFFSET + 2;
-const ORIGINAL_LEN_OFFSET: usize = FLAGS_OFFSET + 2;
 
 /// How aggressively [`compress`](Compressor::compress) is allowed to re-encode.
 ///
@@ -169,8 +184,8 @@ impl ConfigBuilder {
     ///
     /// The value is not capped here, but tape spans are `u32`, so an input longer
     /// than `u32::MAX` is rejected by the parser regardless — reporting `u32::MAX` as
-    /// the `limit`, not the value set here. Setting this above 4 GiB therefore raises
-    /// nothing.
+    /// the `limit`, not the value set here. Setting this to 4 GiB or more therefore
+    /// raises nothing past `u32::MAX`, one byte under 4 GiB.
     #[must_use]
     pub fn max_input_bytes(mut self, max_input_bytes: usize) -> Self {
         self.max_input_bytes = max_input_bytes;
@@ -211,11 +226,13 @@ impl ConfigBuilder {
     /// margin also discards genuine wins the model under-rates, and anything much
     /// above ~1100 bps retires E1 on typical pretty-printed JSON.
     ///
-    /// Values above 10 000 are clamped to 10 000, which is itself unsatisfiable: a
-    /// margin of 100% asks for a rendering that estimates to zero tokens, so every
-    /// value at or above the ceiling makes the pass return passthrough for all inputs.
-    /// The clamp keeps [`Stats::min_saving_bps`] honest; it does not make such a
-    /// setting work.
+    /// Values above 10 000 are clamped to 10 000, a margin of 100%: it asks for a
+    /// rendering the estimator rates at zero tokens. No framed rendering reaches that
+    /// under any estimator this crate ships, so with those a value at or above the
+    /// ceiling makes the pass return passthrough for all inputs. A caller's own
+    /// estimator that rates a framed rendering at zero is the sole exception the gate's
+    /// arithmetic admits — see this module's `MAX_SAVING_BPS`. The clamp keeps
+    /// [`Stats::min_saving_bps`] honest; it does not make such a setting work.
     #[must_use]
     pub fn min_saving_bps(mut self, min_saving_bps: u32) -> Self {
         self.min_saving_bps = Some(min_saving_bps);
@@ -278,11 +295,14 @@ impl EncoderId {
 /// `1.0` — "couldn't compress" is a statistic, never an error.
 ///
 /// That `1.0` is a floor, not a measurement: a passthrough rendering still carries the
-/// 18-byte `raw` sentinel, which costs about 10 estimated (11 real `cl100k`) tokens
-/// more than the bare input. The `*_after` fields are *set* equal to their `*_before`
-/// counterparts on that path rather than measured, so the framing overhead is
-/// deliberately not attributed to compression. Callers that must account for every
-/// token should measure [`Artifact::rendering`] directly.
+/// 18-byte `raw` sentinel, which costs 10 estimated (11 real `cl100k`, 13 real
+/// `o200k`) tokens more than a bare input that opens with a non-whitespace byte;
+/// leading whitespace can merge with the sentinel's newline and move each figure by
+/// at most one token (see the crate-level "Do no harm" guarantee). The `*_after`
+/// fields are *set* equal to their `*_before` counterparts on that path rather than
+/// measured, so the framing overhead is deliberately not attributed to compression.
+/// Callers that must account for every token should measure [`Artifact::rendering`]
+/// directly.
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct Stats {
@@ -299,7 +319,8 @@ pub struct Stats {
     pub est_tokens_before: usize,
     /// Estimated tokens of the rendering. On the passthrough path this is *set* to
     /// `est_tokens_before` rather than measured, so it under-reports the sentinel
-    /// frame by about 10 tokens; see the type-level doc.
+    /// frame by whatever the configured estimator charges for it — 10 or 11 tokens
+    /// under the default heuristic; see the type-level doc.
     pub est_tokens_after: usize,
     /// Which encoder shaped the rendering.
     pub encoder: EncoderId,
@@ -310,9 +331,33 @@ pub struct Stats {
     /// applied — the configured override if there was one, otherwise the estimator's
     /// declared [`over_claim_bps`](TokenEstimator::over_claim_bps), clamped to
     /// 10 000. Reported so a passthrough result is explainable after the fact: it
-    /// distinguishes "no encoder produced a win" from "a win was produced and
-    /// refused for being inside the estimator's error budget".
+    /// says which bar was applied. It does *not* say whether anything hit that bar —
+    /// [`gate_rejected_candidate`](Stats::gate_rejected_candidate) is the field that
+    /// answers that.
     pub min_saving_bps: u32,
+    /// Whether the do-no-harm gate refused at least one candidate rendering.
+    ///
+    /// `true` when some enabled encoder produced a rendering and the gate turned it
+    /// down. The gate refuses for either of two reasons and this flag does not say
+    /// which: the rendering was not a strict token win at all, or it was a win too
+    /// small to clear [`min_saving_bps`](Stats::min_saving_bps).
+    ///
+    /// `false` only when nothing was refused — every encoder the profile enabled
+    /// either declined to render this input (E2 declines when no array qualifies) or
+    /// produced a rendering the gate kept.
+    ///
+    /// Note what that does *not* say. An input the encoders cannot improve — an
+    /// already-minified document, say — still reaches passthrough with this `true`:
+    /// minification does render it, and the rendering then loses the strict
+    /// comparison by the width of the sentinel. Every profile enables E1, and E1
+    /// declines only on a defensive path that valid JSON does not reach, so a
+    /// passthrough artifact from [`compress`](Compressor::compress) reports `true` in
+    /// practice. What the flag separates in the field is the other case: a pass that
+    /// *won* and still refused something, which says the winning encoder was not the
+    /// only one that had a rendering to offer.
+    ///
+    /// It is a statistic about the pass, never an error.
+    pub gate_rejected_candidate: bool,
     /// Fidelity of the reconstruction. Always [`Fidelity::Lossless`] in v0.0.1.
     pub fidelity: Fidelity,
 }
@@ -350,6 +395,15 @@ pub struct Artifact {
     /// Sentinel-framed text for model context. When an encoder won it is token-reduced
     /// and canonicalized, so not byte-identical to the input; on the passthrough path
     /// it is the input verbatim behind a `raw` sentinel, so it is neither.
+    ///
+    /// The frame is the **first line and only the first line**. The sentinel is written
+    /// once, at the very start, and is never escaped out of the body, so a document that
+    /// legitimately contains the sentinel's own text carries it through into the
+    /// rendering: compressing the JSON string `"⟦tkfd:v1:raw⟧"` yields a two-line
+    /// rendering whose body is that text. A consumer that splits renderings apart must
+    /// therefore cut at the first newline rather than search for the sentinel, and one
+    /// that concatenates renderings must keep its own boundaries — scanning a
+    /// concatenation for sentinels will find ones the body wrote.
     pub rendering: String,
     /// `TKFD` recovery blob that reconstructs the exact original via
     /// [`decompress`](Compressor::decompress).
@@ -383,6 +437,12 @@ impl Compressor {
     /// [`CompressError::NotUtf8`] for non-UTF-8 bytes, and
     /// [`CompressError::InvalidJson`] / [`CompressError::DepthExceeded`] for input
     /// the parser rejects. Every variant is recoverable: forward the original bytes.
+    ///
+    /// The `limit` an `InputTooLarge` reports is not always the ceiling configured here.
+    /// From 4 GiB up the parser rejects the input on its own — tape spans are `u32`, so
+    /// the longest input it addresses is `u32::MAX` bytes — and reports `u32::MAX`.
+    /// That is reachable only by setting [`ConfigBuilder::max_input_bytes`] to 4 GiB or
+    /// more, which raises nothing.
     pub fn compress(&self, input: &[u8]) -> Result<Artifact, CompressError> {
         // 1. Size guard — before any allocation or parsing.
         if input.len() > self.config.max_input_bytes {
@@ -393,7 +453,9 @@ impl Compressor {
         }
 
         // 2. UTF-8 validation. Core never repairs input.
-        let text = core::str::from_utf8(input).map_err(|_| CompressError::NotUtf8)?;
+        let text = core::str::from_utf8(input).map_err(|err| CompressError::NotUtf8 {
+            byte_offset: err.valid_up_to(),
+        })?;
 
         // 3. Parse to a lexeme-preserving tape (propagates InvalidJson / DepthExceeded).
         let parsed = tape::parse(text, self.config.max_depth)?;
@@ -451,6 +513,7 @@ impl Compressor {
             encoder: EncoderId(selection.encoder.id()),
             tokenizer_id: estimator.tokenizer_id(),
             min_saving_bps,
+            gate_rejected_candidate: selection.gate_rejected_candidate,
             fidelity: Fidelity::Lossless,
         };
 
@@ -476,8 +539,10 @@ impl Compressor {
     /// [`UnsupportedVersion`](DecompressError::UnsupportedVersion),
     /// [`ReservedBitsSet`](DecompressError::ReservedBitsSet),
     /// [`Corrupt`](DecompressError::Corrupt) for malformed framing or unexpected
-    /// metadata, or [`ChecksumMismatch`](DecompressError::ChecksumMismatch) when the
-    /// reconstruction does not match the recorded digest.
+    /// metadata — including a header length that disagrees with the bytes that
+    /// follow it, which is framing and not integrity — or
+    /// [`ChecksumMismatch`](DecompressError::ChecksumMismatch) when a payload of the
+    /// right length does not match the recorded digest.
     pub fn decompress(&self, archive: &[u8]) -> Result<Vec<u8>, DecompressError> {
         let (header, payload_start) = Header::decode(archive)?;
 
@@ -513,7 +578,15 @@ impl Compressor {
             });
         };
         if payload.len() != expected_len {
-            return Err(DecompressError::ChecksumMismatch);
+            // Framing, not integrity: the header's length field disagrees with the
+            // bytes that follow it, and no digest has been computed at this point.
+            // Reporting `ChecksumMismatch` here — as this branch used to — told a
+            // truncated-file caller that the *content* failed verification, and
+            // threw away the one thing `Corrupt` carries that would have located
+            // the disagreement.
+            return Err(DecompressError::Corrupt {
+                byte_offset: ORIGINAL_LEN_OFFSET,
+            });
         }
 
         // Verify the reconstructed original against the header digest before returning.
@@ -846,6 +919,38 @@ mod tests {
         assert_eq!(c.decompress(&art.archive).unwrap(), input.as_bytes());
     }
 
+    /// The frame is the first line and nothing else, and the body is free to contain
+    /// the sentinel's own text.
+    ///
+    /// A consumer that looks for the sentinel anywhere but at the start would split
+    /// this rendering in the wrong place, and nothing in the format stops a document
+    /// from carrying that text: there is no escaping pass over the body. Pinned here so
+    /// that the rule [`Artifact::rendering`] states stays a fact rather than a
+    /// description of what happened to be true.
+    #[test]
+    fn a_body_may_contain_the_sentinel_the_frame_is_written_with() {
+        let c = compressor();
+        let input = "\"\u{27E6}tkfd:v1:raw\u{27E7}\"";
+        let art = c.compress(input.as_bytes()).unwrap();
+
+        let (frame, body) = art
+            .rendering
+            .split_once('\n')
+            .expect("a rendering is a sentinel line and a body");
+        assert_eq!(frame, "\u{27E6}tkfd:v1:raw\u{27E7}");
+        assert!(
+            body.contains("\u{27E6}tkfd:v1:raw\u{27E7}"),
+            "the body must carry the document's own sentinel text: {body:?}"
+        );
+        assert_eq!(
+            art.rendering.matches("\u{27E6}tkfd:v1:").count(),
+            2,
+            "one sentinel from the frame and one from the document: {}",
+            art.rendering
+        );
+        assert_eq!(c.decompress(&art.archive).unwrap(), input.as_bytes());
+    }
+
     #[test]
     fn minification_wins_on_pretty_printed_input() {
         let c = compressor();
@@ -872,7 +977,7 @@ mod tests {
         let c = compressor();
         // 0xFF is never a valid UTF-8 lead byte.
         let err = c.compress(&[0xFF, 0xFE, 0x00]).unwrap_err();
-        assert!(matches!(err, CompressError::NotUtf8));
+        assert!(matches!(err, CompressError::NotUtf8 { .. }));
     }
 
     #[test]
@@ -909,6 +1014,28 @@ mod tests {
         assert_eq!(a.stats.est_tokens_after, b.stats.est_tokens_after);
     }
 
+    /// Every single-bit flip, through the public entry point.
+    ///
+    /// `format`'s `any_single_bit_flip_is_rejected` drives a test-only decoder, so it
+    /// proves the format admits no silent flip, not that `decompress` rejects one.
+    #[test]
+    fn decompress_rejects_every_single_bit_flip() {
+        let c = compressor();
+        let input = homogeneous_array(6);
+        let archive = c.compress(input.as_bytes()).unwrap().archive;
+        assert_eq!(c.decompress(&archive).unwrap(), input.as_bytes());
+        for byte in 0..archive.len() {
+            for bit in 0..8 {
+                let mut flipped = archive.clone();
+                flipped[byte] ^= 1 << bit;
+                assert!(
+                    c.decompress(&flipped).is_err(),
+                    "flip at byte {byte} bit {bit} was accepted"
+                );
+            }
+        }
+    }
+
     #[test]
     fn decompress_fails_closed_on_corruption() {
         let c = compressor();
@@ -938,7 +1065,7 @@ mod tests {
     }
 
     #[test]
-    fn conservative_profile_offers_minify_only() {
+    fn conservative_profile_keeps_the_tabular_encoder_out() {
         // A homogeneous array is E2's target, but Conservative does not enable E2, so
         // it stays passthrough (the array is already whitespace-free, so E1 can't win).
         let cfg = Config::builder().profile(Profile::Conservative).build();
@@ -1209,8 +1336,10 @@ mod tests {
         assert_eq!(stats(600).min_saving_bps, 600);
         // Above it the margin is clamped, so `Stats` reports the margin actually
         // applied rather than the caller's larger number. Clamping does not restore
-        // compression: 10 000 bps is itself unsatisfiable, so the pass still falls back
-        // to passthrough — asserted immediately below.
+        // compression: under this estimator 10 000 bps is unsatisfiable, so the pass
+        // still falls back to passthrough — asserted immediately below. The one
+        // estimator shape that *can* clear the ceiling is pinned separately, in
+        // `a_zero_rating_estimator_reaches_the_clamped_ceiling`.
         assert_eq!(MAX_SAVING_BPS, 10_000);
         assert_eq!(stats(50_000).min_saving_bps, MAX_SAVING_BPS);
         assert_eq!(stats(50_000).encoder, EncoderId::PASSTHROUGH);
@@ -1219,6 +1348,112 @@ mod tests {
         let default_stats = compressor().compress(input.as_bytes()).unwrap().stats;
         assert_eq!(default_stats.min_saving_bps, 0);
         assert_eq!(default_stats.encoder, EncoderId::E1_MINIFY);
+    }
+
+    /// The one exception to "at or above the ceiling is passthrough for all inputs".
+    ///
+    /// That claim holds for every estimator this crate ships, because each rates the
+    /// sentinel line above zero, so a framed rendering can never estimate to nothing.
+    /// [`TokenEstimator`] is public, though, and a model rating a framed rendering at
+    /// zero saves the whole input estimate — which clears a 100% bar with equality,
+    /// not by exceeding it. Without this test the corrected wording on `MAX_SAVING_BPS`
+    /// would be an unverified claim about a path nothing exercises.
+    #[test]
+    fn a_zero_rating_estimator_reaches_the_clamped_ceiling() {
+        /// Rates by shape: the framed candidate always opens with the sentinel, the
+        /// bare input never does. A cache-aware model treating an already-cached
+        /// prefix as free is the realistic version of this.
+        #[derive(Debug)]
+        struct ZeroRatesFramed;
+        impl TokenEstimator for ZeroRatesFramed {
+            fn estimate(&self, text: &str) -> usize {
+                if text.starts_with('\u{27E6}') {
+                    0
+                } else {
+                    text.len()
+                }
+            }
+            fn tokenizer_id(&self) -> u16 {
+                4243
+            }
+        }
+
+        let input = pretty_object(30);
+        let with = |bps: u32| {
+            Compressor::new(
+                Config::builder()
+                    .estimator(Arc::new(ZeroRatesFramed))
+                    .min_saving_bps(bps)
+                    .build(),
+            )
+            .compress(input.as_bytes())
+            .unwrap()
+            .stats
+        };
+
+        // A caller asking for 500% gets the clamp, and the clamped bar is cleared: the
+        // saving equals the whole input estimate. Unclamped, 50 000 bps would demand a
+        // saving larger than the input estimate and no estimator could ever reach it,
+        // so the clamp is what leaves this reachable at all.
+        let clamped = with(50_000);
+        assert_eq!(clamped.min_saving_bps, MAX_SAVING_BPS);
+        assert_eq!(clamped.encoder, EncoderId::E1_MINIFY);
+        assert_eq!(clamped.est_tokens_after, 0);
+
+        // The ceiling asked for directly behaves the same — the estimator admits it,
+        // not the clamp.
+        assert_eq!(with(10_000).encoder, EncoderId::E1_MINIFY);
+
+        // Vacuity guard: the shipped default rates the sentinel above zero, so the same
+        // input at the same margin is passthrough. That contrast is the whole claim.
+        let shipped = Compressor::new(Config::builder().min_saving_bps(10_000).build())
+            .compress(input.as_bytes())
+            .unwrap()
+            .stats;
+        assert_eq!(shipped.encoder, EncoderId::PASSTHROUGH);
+        assert!(shipped.est_tokens_after > 0);
+    }
+
+    /// `min_saving_bps` reports the bar that was applied; this flag reports whether
+    /// anything hit it. The bar reads the same either way, so neither field
+    /// substitutes for the other.
+    #[test]
+    fn stats_report_whether_the_gate_actually_refused_something() {
+        let input = pretty_object(30);
+
+        // Refused: E1 has a ~11% win here, and a 100% bar turns it down.
+        let refused = Compressor::new(Config::builder().min_saving_bps(10_000).build())
+            .compress(input.as_bytes())
+            .unwrap()
+            .stats;
+        assert_eq!(refused.encoder, EncoderId::PASSTHROUGH);
+        assert!(refused.gate_rejected_candidate);
+
+        // Won: same input, no bar. Nothing was refused, so the flag stays down even
+        // though the pass ran every enabled encoder.
+        let won = compressor().compress(input.as_bytes()).unwrap().stats;
+        assert_eq!(won.encoder, EncoderId::E1_MINIFY);
+        assert!(!won.gate_rejected_candidate);
+    }
+
+    /// The flag's `false` case is narrower than it reads, and the field's own doc got
+    /// it wrong first time round: it claimed that an input with no whitespace to strip
+    /// and no array to tabularize reaches passthrough with the flag down. It does not.
+    /// E1 renders such an input anyway, the framed rendering then loses the strict
+    /// comparison by the width of the sentinel, and that refusal is precisely what the
+    /// flag records — at a margin of zero, with nothing configured. Pinned here so the
+    /// doc cannot drift back to the comfortable version.
+    #[test]
+    fn an_already_minimal_document_still_reports_a_refused_candidate() {
+        for input in ["{\"a\":1}", "[1,2,3]", "{}", "\"s\"", "1"] {
+            let stats = compressor().compress(input.as_bytes()).unwrap().stats;
+            assert_eq!(stats.encoder, EncoderId::PASSTHROUGH, "{input:?}");
+            assert_eq!(stats.min_saving_bps, 0, "{input:?}");
+            assert!(
+                stats.gate_rejected_candidate,
+                "nothing to compress in {input:?}, but a candidate was still refused"
+            );
+        }
     }
 
     /// A custom estimator must be the one actually consulted, must have its declared
@@ -1339,11 +1574,26 @@ mod tests {
         );
     }
 
-    /// A payload that does not match the length the header claims is an integrity
-    /// failure, not framing corruption. `decompress_fails_closed_on_corruption` only
-    /// asserts `is_err()`, so the variant was free to change.
+    /// A payload whose length disagrees with the header is **framing**, and the two
+    /// failures have to stay distinguishable.
+    ///
+    /// This test previously pinned the opposite — `ChecksumMismatch` — and its own
+    /// comment argued that a length disagreement "is an integrity failure, not
+    /// framing corruption". That is backwards, and the code agreed with it: the
+    /// branch returns before any digest is computed, so it reported that content
+    /// failed verification that was never verified, and threw away the `byte_offset`
+    /// that would have said which field disagreed. A user truncating a file mid-copy
+    /// was told their data was corrupt rather than their file was short.
+    ///
+    /// Both directions are pinned here, because only one of them can be reached by
+    /// accident: a short or long archive is framing, while a payload of exactly the
+    /// right length that hashes differently is the genuine integrity case and must
+    /// still be `ChecksumMismatch`. Collapsing either into the other loses the
+    /// distinction that makes the diagnostic worth reading.
+    /// `decompress_fails_closed_on_corruption` only asserts `is_err()`, so nothing
+    /// else holds the variant in place.
     #[test]
-    fn a_payload_length_mismatch_is_reported_as_a_checksum_mismatch() {
+    fn a_payload_length_mismatch_is_framing_and_a_bad_digest_is_integrity() {
         let c = compressor();
         let art = c.compress(homogeneous_array(6).as_bytes()).unwrap();
 
@@ -1351,9 +1601,12 @@ mod tests {
         assert!(
             matches!(
                 c.decompress(truncated),
-                Err(DecompressError::ChecksumMismatch)
+                Err(DecompressError::Corrupt {
+                    byte_offset: ORIGINAL_LEN_OFFSET
+                })
             ),
-            "a short payload"
+            "a short payload is framing, and the offset names the length field: {:?}",
+            c.decompress(truncated)
         );
 
         let mut overlong = art.archive.clone();
@@ -1361,9 +1614,80 @@ mod tests {
         assert!(
             matches!(
                 c.decompress(&overlong),
+                Err(DecompressError::Corrupt {
+                    byte_offset: ORIGINAL_LEN_OFFSET
+                })
+            ),
+            "a long payload is framing too: {:?}",
+            c.decompress(&overlong)
+        );
+
+        // Flip one byte of the payload without changing its length. The length gate
+        // passes, the digest does not, and this is the only path that may say so.
+        let mut flipped = art.archive.clone();
+        let last = flipped.len() - 1;
+        flipped[last] ^= 0xFF;
+        assert!(
+            matches!(
+                c.decompress(&flipped),
                 Err(DecompressError::ChecksumMismatch)
             ),
-            "a long payload"
+            "a right-length payload that hashes differently is integrity: {:?}",
+            c.decompress(&flipped)
+        );
+    }
+
+    /// A *well-formed* ten-byte length field is not a varint fault: nine continuation
+    /// bytes and a `0x01` decode to 2^63, and what refuses the archive is the length
+    /// gate in `decompress`, at `ORIGINAL_LEN_OFFSET`. The rustdoc on
+    /// `DecompressError::Corrupt` and the CLI README's section on
+    /// `archive corrupted at byte N` both state that offset, and until this test
+    /// nothing asserted it. `leb128_overflow_rejected` in `format.rs`
+    /// builds the very same field, but it stops at `Header::decode`, which succeeds
+    /// and so never reaches the gate; and
+    /// `a_payload_length_mismatch_is_framing_and_a_bad_digest_is_integrity` reaches
+    /// the same offset by truncating and by appending, neither of which widens the
+    /// length field at all. It was one of several published offsets no test held;
+    /// `format.rs` and the CLI's `expand_names_the_corrupt_offsets_the_readme_quotes`
+    /// hold the others.
+    #[test]
+    fn a_well_formed_ten_byte_length_is_refused_at_the_length_field() {
+        let c = compressor();
+        // Deliberately smaller than the framing test's fixture: under 128 bytes the
+        // ULEB128 length is a single byte, which is what makes the splice below a
+        // one-for-ten replacement with a known payload start. The assertion holds
+        // that property rather than trusting the arithmetic.
+        let art = c.compress(homogeneous_array(2).as_bytes()).unwrap();
+        assert!(
+            art.archive[ORIGINAL_LEN_OFFSET] < 0x80,
+            "fixture's length field is not a single byte"
+        );
+
+        // Nine continuation bytes and a `0x01`: 2^63, the smallest value that needs a
+        // tenth byte, and more payload than any archive could carry.
+        let mut widened = art.archive[..ORIGINAL_LEN_OFFSET].to_vec();
+        widened.extend_from_slice(&[0x80u8; 9]);
+        widened.push(0x01);
+        widened.extend_from_slice(&art.archive[ORIGINAL_LEN_OFFSET + 1..]);
+        assert_eq!(widened.len(), art.archive.len() + 9);
+
+        // The point of the fixture: the varint layer is content with these ten bytes,
+        // so the refusal below cannot be coming from it. Were the tenth byte `0x02`
+        // this would be `Corrupt` at 19 instead, and the test would prove nothing
+        // that `leb128_overflow_rejected` does not already prove.
+        let (header, _) = Header::decode(&widened).unwrap();
+        assert_eq!(header.original_len, 1u64 << 63);
+
+        assert!(
+            matches!(
+                c.decompress(&widened),
+                Err(DecompressError::Corrupt {
+                    byte_offset: ORIGINAL_LEN_OFFSET
+                })
+            ),
+            "a ten-byte length that decodes is framing at the length field, not a \
+             varint fault at the tenth byte: {:?}",
+            c.decompress(&widened)
         );
     }
 
@@ -1380,6 +1704,7 @@ mod tests {
             encoder: EncoderId::PASSTHROUGH,
             tokenizer_id: 0,
             min_saving_bps: 0,
+            gate_rejected_candidate: false,
             fidelity: Fidelity::Lossless,
         };
         // Orientation: after / before, so a real saving reads below 1.

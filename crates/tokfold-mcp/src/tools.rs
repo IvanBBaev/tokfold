@@ -27,10 +27,20 @@
 //! on it.
 //!
 //! Copying the archive into `content` as well is the obvious fix and is deliberately
-//! not taken: it is a third echo of the payload, which lifts the compress path's reply
-//! multiplier to roughly 4.7x of the request and trips the 400% ratchet in
-//! `tests/session.rs`. That is a wire-shape change and an owner decision, not a
-//! documentation one.
+//! not taken: it is a third echo of the payload. On the fixture that
+//! `a_reply_outgrows_its_request_by_a_bounded_multiple_on_both_tool_paths` weighs, it
+//! takes the compress path's reply from 205% of the request to 316% — half again as
+//! large, on every call, to hand a field to clients that already have it. Nothing
+//! stops it from being done, and it is worth being clear about that: the ratchet in
+//! `tests/session.rs` bounds the compress path at 400% because it was set against the
+//! large-call limit of about 3.3x rather than against the fixture, so a third echo
+//! passes it and only an input whose rendering barely shrinks would trip it. That 3.3x
+//! is a limit approached from above, not a ceiling: the reply's fixed envelope outweighs
+//! the call's, so a small call measures more (`{"k":"z"}` answers a 121-byte framed call
+//! with 608 bytes, 5.02x), and the ratchet's fixtures are kilobytes wide so that the
+//! envelope cannot move them. The reason
+//! not to do this is the cost and the wire-shape change, which is an owner decision
+//! and not a documentation one — it is not a guard rail already in place.
 //!
 //! A surfaced decompression failure is reported as a tool result with
 //! `isError: true` rather than as a JSON-RPC error. In MCP a JSON-RPC error means the
@@ -88,8 +98,9 @@ fn compress_tool() -> Value {
          The archive is returned only in `structuredContent.archive`; the `content` \
          block carries the rendering alone, so a client that reads only `content` keeps \
          text it can never decompress. Input that is not valid JSON is returned \
-         unchanged with `compressed` false — the call never fails for that reason and \
-         never loses data.",
+         unchanged with `compressed` false — the call never fails for that reason. A \
+         reply larger than the message limit (32 MiB by default) is an error and \
+         carries no text, so keep your own copy of a large input.",
         Object::new()
             .set("type", Value::string("object"))
             .set(
@@ -229,6 +240,7 @@ pub fn call(name: &str, arguments: Option<&Value>) -> Result<Outcome, ErrorObjec
 /// them would let the numbers the estimate reports drift from what a later
 /// compression actually does.
 fn run_compress(arguments: Option<&Value>, with_payload: bool) -> Result<Outcome, ErrorObject> {
+    let arguments = object_arguments(arguments)?;
     let text = required_str(arguments, "text")?;
     let profile = optional_profile(arguments)?;
     let compressor = Compressor::new(Config::builder().profile(profile).build());
@@ -310,6 +322,7 @@ fn passthrough_outcome(text: &str, error: &CompressError, with_payload: bool) ->
 }
 
 fn run_decompress(arguments: Option<&Value>) -> Result<Outcome, ErrorObject> {
+    let arguments = object_arguments(arguments)?;
     let archive_text = required_str(arguments, "archive")?;
     let archive = match base64::decode(archive_text) {
         Ok(bytes) => bytes,
@@ -317,12 +330,20 @@ fn run_decompress(arguments: Option<&Value>) -> Result<Outcome, ErrorObject> {
             return Ok(failure("invalid_base64", &error.to_string()));
         }
     };
+    if archive.is_empty() {
+        // Zero bytes do fail the magic check, and the code stays `bad_magic` because
+        // callers branch on it. The prose is what changes: "bad magic" sends a reader
+        // hunting for corruption inside an argument that has no content, and the CLI
+        // already names the size for the same input on `expand`.
+        return Ok(failure("bad_magic", "the archive is empty (0 bytes)"));
+    }
     let compressor = Compressor::new(Config::default());
     match compressor.decompress(&archive) {
         Ok(bytes) => Ok(String::from_utf8(bytes).map_or_else(
-            // Unreachable through this server, which only ever compresses `&str`,
-            // but the archive argument is caller-supplied so the case is handled
-            // rather than assumed away.
+            // This server only ever compresses `&str`, so no archive it wrote lands
+            // here, but the archive argument is caller-supplied: one built elsewhere
+            // over bytes that are not UTF-8 decodes cleanly and cannot be returned as
+            // `text`. `tokfold expand` restores the same archive at exit `0`.
             |_| {
                 failure(
                     "not_utf8",
@@ -374,7 +395,7 @@ fn compress_error_code(error: &CompressError) -> &'static str {
         CompressError::InvalidJson { .. } => "invalid_json",
         CompressError::InputTooLarge { .. } => "input_too_large",
         CompressError::DepthExceeded { .. } => "depth_exceeded",
-        CompressError::NotUtf8 => "not_utf8",
+        CompressError::NotUtf8 { .. } => "not_utf8",
         _ => "unrecognized",
     }
 }
@@ -445,16 +466,50 @@ fn summarize(stats: &Stats) -> String {
     )
 }
 
+/// The `INVALID_PARAMS` error for a string parameter that is absent or of the wrong
+/// type.
+///
+/// Both cases used to render as "`name` is required and must be a string". That is
+/// the right sentence for a caller who omitted the key and the wrong one for a caller
+/// who sent `"name": 7`: it tells them a key they can see in their own request is
+/// missing, and says nothing about the type that is actually the problem. Naming
+/// which of the two happened costs one match arm.
+pub(crate) fn expected_string(key: &str, value: Option<&Value>) -> ErrorObject {
+    let detail = value.map_or_else(
+        || "it was not supplied".to_owned(),
+        |other| format!("{} was supplied", other.type_name()),
+    );
+    ErrorObject::new(
+        INVALID_PARAMS,
+        format!("`{key}` must be a string: {detail}"),
+    )
+}
+
+/// `arguments` as given, once it is the object every tool's schema declares — or
+/// absent, or `null`, which leave each required key to report itself as not supplied.
+///
+/// Anything else is refused by its own type. Left to [`required_str`], an array or a
+/// string there was reported as "`text` must be a string: it was not supplied", which
+/// blames a key the caller did not get wrong and says nothing about the shape they
+/// did — the failure [`expected_string`] exists to avoid.
+fn object_arguments(arguments: Option<&Value>) -> Result<Option<&Value>, ErrorObject> {
+    match arguments {
+        Some(value) if value.as_object().is_none() && !value.is_null() => Err(ErrorObject::new(
+            INVALID_PARAMS,
+            format!(
+                "`arguments` must be an object: {} was supplied",
+                value.type_name()
+            ),
+        )),
+        _ => Ok(arguments),
+    }
+}
+
 fn required_str<'a>(arguments: Option<&'a Value>, key: &str) -> Result<&'a str, ErrorObject> {
-    arguments
-        .and_then(|args| args.get(key))
+    let value = arguments.and_then(|args| args.get(key));
+    value
         .and_then(Value::as_str)
-        .ok_or_else(|| {
-            ErrorObject::new(
-                INVALID_PARAMS,
-                format!("`{key}` is required and must be a string"),
-            )
-        })
+        .ok_or_else(|| expected_string(key, value))
 }
 
 fn optional_profile(arguments: Option<&Value>) -> Result<Profile, ErrorObject> {
@@ -479,11 +534,11 @@ fn optional_profile(arguments: Option<&Value>) -> Result<Profile, ErrorObject> {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use tokfold_core::{CompressError, Compressor, Config};
+    use tokfold_core::{CompressError, Compressor, Config, EncoderId, Profile};
 
     use super::{
         COMPRESS, DECOMPRESS, ESTIMATE, NAMES, call, catalogue, compress_error_code,
-        compress_error_reason,
+        compress_error_reason, encoder_name, optional_profile,
     };
     use crate::base64;
     use crate::json::{Object, Value, parse};
@@ -623,6 +678,17 @@ mod tests {
     }
 
     #[test]
+    fn every_encoder_id_this_build_names_maps_to_its_frozen_name() {
+        // The name is written by a comparison chain rather than a `match`, so nothing
+        // checks at compile time that each arm returns the name its id is frozen to.
+        // The `"unknown"` arm cannot be driven from here: `EncoderId` is
+        // `#[non_exhaustive]`, so this crate can build only the three named ids.
+        assert_eq!(encoder_name(EncoderId::PASSTHROUGH), "passthrough");
+        assert_eq!(encoder_name(EncoderId::E1_MINIFY), "minify");
+        assert_eq!(encoder_name(EncoderId::E2_TABULAR), "tabular");
+    }
+
+    #[test]
     fn estimate_reports_stats_without_the_payload() {
         let outcome = call(ESTIMATE, Some(&args(r#"{"text":"{\"a\": 1}"}"#))).unwrap();
         assert!(!outcome.is_error);
@@ -658,6 +724,24 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_archive_keeps_the_bad_magic_code_and_says_it_is_empty() {
+        // The code is contract and stays; the message is what the CLI says for the
+        // same zero bytes on `expand`, so the two front ends do not describe one input
+        // two ways.
+        let arguments = args(r#"{"archive":""}"#);
+        let outcome = call(DECOMPRESS, Some(&arguments)).unwrap();
+        assert!(outcome.is_error);
+        assert_eq!(
+            outcome.structured.get("code").and_then(Value::as_str),
+            Some("bad_magic")
+        );
+        assert_eq!(
+            outcome.structured.get("message").and_then(Value::as_str),
+            Some("the archive is empty (0 bytes)")
+        );
+    }
+
+    #[test]
     fn a_malformed_archive_string_is_a_visible_error() {
         let arguments = args(r#"{"archive":"not base64!!"}"#);
         let outcome = call(DECOMPRESS, Some(&arguments)).unwrap();
@@ -680,16 +764,24 @@ mod tests {
             .and_then(Value::as_str)
             .unwrap()
             .to_owned();
-        let mut bytes = base64::decode(&archive).unwrap();
-        let last = bytes.len() - 1;
-        if let Some(byte) = bytes.get_mut(last) {
-            *byte ^= 0x01;
+        let bytes = base64::decode(&archive).unwrap();
+        // Every bit, not one: a single flip in the checksum reaches one of the
+        // decoder's refusals and says nothing about the others.
+        for bit in 0..bytes.len() * 8 {
+            let mut flipped = bytes.clone();
+            if let Some(byte) = flipped.get_mut(bit / 8) {
+                *byte ^= 1 << (bit % 8);
+            }
+            let tampered = Object::new()
+                .set("archive", Value::string(base64::encode(&flipped)))
+                .build();
+            let outcome = call(DECOMPRESS, Some(&tampered)).unwrap();
+            assert!(outcome.is_error, "bit {bit}: a tampered archive decoded");
+            assert!(
+                outcome.structured.get("text").is_none() && !outcome.text.contains(r#"{"a":1}"#),
+                "bit {bit}: a refusal carried the document"
+            );
         }
-        let tampered = Object::new()
-            .set("archive", Value::string(base64::encode(&bytes)))
-            .build();
-        let outcome = call(DECOMPRESS, Some(&tampered)).unwrap();
-        assert!(outcome.is_error, "a tampered archive must not decode");
     }
 
     #[test]
@@ -703,6 +795,38 @@ mod tests {
         assert!(call(COMPRESS, Some(&args("{}"))).is_err());
         assert!(call(COMPRESS, Some(&args(r#"{"text":5}"#))).is_err());
         assert!(call(DECOMPRESS, Some(&args("{}"))).is_err());
+    }
+
+    #[test]
+    fn arguments_that_are_not_an_object_are_refused_by_their_own_type() {
+        for (tool, arguments, supplied) in [
+            (COMPRESS, "[]", "an array"),
+            (ESTIMATE, r#""{}""#, "a string"),
+            (DECOMPRESS, "7", "a number"),
+            (COMPRESS, "true", "a boolean"),
+        ] {
+            let error = call(tool, Some(&args(arguments)))
+                .map(drop)
+                .expect_err("arguments that are not an object are refused");
+            assert_eq!(
+                error.code,
+                crate::protocol::error_code::INVALID_PARAMS,
+                "{tool} {arguments}"
+            );
+            assert_eq!(
+                error.message,
+                format!("`arguments` must be an object: {supplied} was supplied"),
+                "{tool} {arguments}"
+            );
+        }
+        // `null` is read as absent, so the missing key names itself.
+        let error = call(COMPRESS, Some(&args("null")))
+            .map(drop)
+            .expect_err("null arguments carry no `text`");
+        assert_eq!(
+            error.message,
+            "`text` must be a string: it was not supplied"
+        );
     }
 
     #[test]
@@ -745,24 +869,74 @@ mod tests {
         assert!(call(COMPRESS, Some(&bad)).is_err());
     }
 
+    /// The test above proves each advertised string is accepted, not what it selects:
+    /// mapping every string to one profile kept it green. The parser is checked
+    /// directly for all three, because `aggressive` offers the same encoders as
+    /// `balanced` in this release and no output can tell them apart. The call is then
+    /// checked end to end: a compact homogeneous array is a tabular win and nothing a
+    /// minifier can shorten, so the profiles that admit the tabular encoder and the one
+    /// that does not name different encoders.
+    #[test]
+    fn each_profile_string_selects_its_own_profile() {
+        for (name, profile) in [
+            ("conservative", Profile::Conservative),
+            ("balanced", Profile::Balanced),
+            ("aggressive", Profile::Aggressive),
+        ] {
+            let arguments = Object::new().set("profile", Value::string(name)).build();
+            assert_eq!(
+                optional_profile(Some(&arguments)).ok(),
+                Some(profile),
+                "{name}"
+            );
+        }
+        let text = r#"[{"id":0,"name":"item0","active":true},{"id":1,"name":"item1","active":true},{"id":2,"name":"item2","active":true},{"id":3,"name":"item3","active":true}]"#;
+        let encoder = |profile: &str| {
+            let arguments = Object::new()
+                .set("text", Value::string(text))
+                .set("profile", Value::string(profile))
+                .build();
+            let outcome = call(ESTIMATE, Some(&arguments)).unwrap();
+            outcome
+                .structured
+                .get("stats")
+                .and_then(|stats| stats.get("encoder"))
+                .and_then(Value::as_str)
+                .unwrap()
+                .to_owned()
+        };
+        assert_eq!(encoder("conservative"), "passthrough");
+        assert_eq!(encoder("balanced"), "tabular");
+        assert_eq!(encoder("aggressive"), "tabular");
+    }
+
+    /// A client that serializes an unset option as `null` must get the same
+    /// compression a client that omitted the key gets — not merely "no error" — and
+    /// the fallback is the *default* profile, not an arbitrary one. The parser is
+    /// checked directly because no output separates `balanced` from `aggressive`; the
+    /// call is then checked on an input `conservative` compresses differently.
     #[test]
     fn an_absent_or_null_profile_falls_back_to_the_default() {
-        // A client that serializes an unset option as `null` must get the same
-        // compression a client that omitted the key gets — not merely "no error".
-        let absent = call(COMPRESS, Some(&args(r#"{"text":"{\"a\":1}"}"#))).unwrap();
-        let explicit_null = call(
-            COMPRESS,
-            Some(&args(r#"{"text":"{\"a\":1}","profile":null}"#)),
-        )
-        .unwrap();
-        assert_eq!(absent.structured, explicit_null.structured);
-        // And the fallback is the *default* profile, not an arbitrary one.
-        let named_default = call(
-            COMPRESS,
-            Some(&args(r#"{"text":"{\"a\":1}","profile":"balanced"}"#)),
-        )
-        .unwrap();
-        assert_eq!(absent.structured, named_default.structured);
+        for arguments in [None, Some(args("{}")), Some(args(r#"{"profile":null}"#))] {
+            assert_eq!(
+                optional_profile(arguments.as_ref()).ok(),
+                Some(Profile::default()),
+                "{arguments:?}"
+            );
+        }
+        let text = r#"[{\"id\":0,\"name\":\"item0\"},{\"id\":1,\"name\":\"item1\"},{\"id\":2,\"name\":\"item2\"},{\"id\":3,\"name\":\"item3\"}]"#;
+        let compress = |profile: &str| {
+            call(
+                COMPRESS,
+                Some(&args(&format!(r#"{{"text":"{text}"{profile}}}"#))),
+            )
+            .unwrap()
+            .structured
+        };
+        let absent = compress("");
+        assert_eq!(absent, compress(r#","profile":null"#));
+        assert_eq!(absent, compress(r#","profile":"balanced""#));
+        assert_ne!(absent, compress(r#","profile":"conservative""#));
     }
 
     #[test]
@@ -871,6 +1045,40 @@ mod tests {
         assert_eq!(
             compress_error_code(&engine_error(Config::default(), &[0xFF, 0xFE])),
             "not_utf8"
+        );
+    }
+
+    #[test]
+    fn an_archive_of_non_utf8_bytes_is_refused_as_not_utf8() {
+        // Reachable, unlike the compress arm: a valid archive over bytes that are not
+        // UTF-8, built the way any other producer of the format would build one.
+        let real = Compressor::new(Config::default())
+            .compress(br#"{"a":1}"#)
+            .unwrap()
+            .archive;
+        let payload = [0xFF_u8, 0xFE];
+        let mut archive = real.get(..10).unwrap().to_vec();
+        archive.push(2);
+        archive.extend_from_slice(&tokfold_core::format::sha256(&payload));
+        archive.extend_from_slice(&payload);
+        assert_eq!(
+            Compressor::new(Config::default())
+                .decompress(&archive)
+                .unwrap(),
+            payload
+        );
+        let arguments = Object::new()
+            .set("archive", Value::string(base64::encode(&archive)))
+            .build();
+        let outcome = call(DECOMPRESS, Some(&arguments)).unwrap();
+        assert!(outcome.is_error);
+        assert_eq!(
+            outcome.structured.get("code").and_then(Value::as_str),
+            Some("not_utf8")
+        );
+        assert_eq!(
+            outcome.structured.get("message").and_then(Value::as_str),
+            Some("the archive restores bytes that are not valid UTF-8")
         );
     }
 

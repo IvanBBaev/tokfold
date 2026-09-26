@@ -22,12 +22,21 @@
 //!   path here takes an `&s[a..b]` that could panic. The workspace sets
 //!   `clippy::indexing_slicing` to `warn` — not `deny` or `forbid`, the level
 //!   `unsafe_code` gets — so it is CI's `-D warnings` that makes a violation fatal,
-//!   and a local `#[allow]` still overrides it. Four test modules (this one included)
-//!   take that `#[allow]`, where a panicking index is an acceptable assertion.
+//!   and a local `#[allow]` still overrides it. Test code takes that `#[allow]` — this
+//!   module included — because there a panicking index is an acceptable assertion.
+//!   No count is given: the one that used to be here was written when `tokfold-core`
+//!   was the whole workspace and was wrong by seven the day `tokfold-mcp` arrived.
 //!
-//! Because [`Node::depth`] is a `u16`, depths beyond `u16::MAX` saturate. That is
-//! only reachable when `max_depth` is configured above `u16::MAX`, an atypical
-//! setting; the default limit (512) keeps every depth exact.
+//! [`Node::depth`] is a `u32`, the same width as a [`Span`] offset. Depth is bounded
+//! by the number of open containers, and every container costs at least one input
+//! byte, so a depth that does not fit `u32` needs an input that does not fit `u32`
+//! either — which [`parse`] rejects up front. Every depth this parser reports is
+//! therefore exact, at any `max_depth`. It was a `u16` before this change, where
+//! anything past `u16::MAX` saturated; the `0.0.1` already published on npm still has
+//! the `u16` and will until a release goes out. No encoder, estimator or rendering
+//! path reads the field, so the widening changed no output — but it is still a public
+//! API change, because `tape` is a public module and [`Node`] a public struct with
+//! public fields.
 
 use crate::error::CompressError;
 
@@ -84,8 +93,9 @@ pub struct Node {
     pub kind: NodeKind,
     /// The node's byte span into the original input.
     pub span: Span,
-    /// Number of enclosing containers. The top-level value is depth `0`.
-    pub depth: u16,
+    /// Number of enclosing containers. The top-level value is depth `0`. Exact at
+    /// any `max_depth`: see the module docs for why the value always fits.
+    pub depth: u32,
 }
 
 /// Flat, arena-backed tape. One `Vec`, no per-node boxing, no recursion.
@@ -155,6 +165,21 @@ enum State {
 /// - Lone-surrogate `\uXXXX` escapes survive as raw lexemes.
 /// - Iterative, explicit depth counter -> [`CompressError::DepthExceeded`]. MUST
 ///   NOT stack-overflow.
+///
+/// # Errors
+///
+/// Three variants, all recoverable — forward the original bytes:
+///
+/// - [`CompressError::InvalidJson`] for anything the grammar rejects, carrying the
+///   byte offset of the rejection. Every rejection in this file is built by one private
+///   helper, so that offset is always a byte position and never a token or line
+///   number. It is the offending byte itself except for a malformed `true`, `false` or
+///   `null`, which is reported at the literal's first byte: `[trux]` and `[nul` are
+///   both rejected at byte 1.
+/// - [`CompressError::DepthExceeded`] when nesting passes `max_depth`.
+/// - [`CompressError::InputTooLarge`] when the input cannot be addressed by the `u32`
+///   offsets a [`Span`] holds. Its `limit` is then `u32::MAX` — a structural ceiling of
+///   this parser, not anything the caller configured.
 // The single-function state machine is intentionally flat: each arm is one token
 // transition, and splitting it would scatter the control flow without simplifying it.
 #[allow(clippy::too_many_lines)]
@@ -208,7 +233,12 @@ pub fn parse(input: &str, max_depth: usize) -> Result<Tape, CompressError> {
                 }
                 Some(b'n') => {
                     if !lit_matches(bytes, pos, b"null") {
-                        return Err(invalid(pos, "invalid literal, expected 'null'"));
+                        return Err(literal_error(
+                            bytes,
+                            pos,
+                            b"null",
+                            "invalid literal, expected 'null'",
+                        ));
                     }
                     push(&mut nodes, NodeKind::Null, pos, pos + 4, stack.len());
                     pos += 4;
@@ -216,7 +246,12 @@ pub fn parse(input: &str, max_depth: usize) -> Result<Tape, CompressError> {
                 }
                 Some(b't') => {
                     if !lit_matches(bytes, pos, b"true") {
-                        return Err(invalid(pos, "invalid literal, expected 'true'"));
+                        return Err(literal_error(
+                            bytes,
+                            pos,
+                            b"true",
+                            "invalid literal, expected 'true'",
+                        ));
                     }
                     push(&mut nodes, NodeKind::Bool(true), pos, pos + 4, stack.len());
                     pos += 4;
@@ -224,7 +259,12 @@ pub fn parse(input: &str, max_depth: usize) -> Result<Tape, CompressError> {
                 }
                 Some(b'f') => {
                     if !lit_matches(bytes, pos, b"false") {
-                        return Err(invalid(pos, "invalid literal, expected 'false'"));
+                        return Err(literal_error(
+                            bytes,
+                            pos,
+                            b"false",
+                            "invalid literal, expected 'false'",
+                        ));
                     }
                     push(&mut nodes, NodeKind::Bool(false), pos, pos + 5, stack.len());
                     pos += 5;
@@ -543,6 +583,41 @@ fn skip_ws(bytes: &[u8], mut i: usize) -> usize {
     i
 }
 
+/// The error for a literal arm whose literal did not match.
+///
+/// Dispatch is on the first byte alone, so a single `n` is enough to send the parser
+/// down the `null` arm. Reporting "expected 'null'" for `nonsense` describes the
+/// parser's own state rather than the input: nothing there was an attempt at a
+/// literal, and the reader is left looking for a typo in a word they never wrote.
+/// Naming the literal is only informative once the input has committed to it, which
+/// is either matching past the dispatch byte or running out inside it -- the shape a
+/// truncated document has. Everything else gets the same message any other stray
+/// byte in value position gets.
+fn literal_error(bytes: &[u8], start: usize, lit: &[u8], specific: &str) -> CompressError {
+    if committed_to_literal(bytes, start, lit) {
+        invalid(start, specific)
+    } else {
+        invalid(start, "expected a JSON value")
+    }
+}
+
+/// Whether the bytes at `start` look like an attempt at `lit` rather than a stray
+/// byte that merely happens to share its first character.
+fn committed_to_literal(bytes: &[u8], start: usize, lit: &[u8]) -> bool {
+    let mut matched = 0;
+    for expected in lit {
+        match bytes.get(start + matched) {
+            Some(b) if b == expected => matched += 1,
+            // The input ended inside the literal. A truncated document is exactly
+            // the case where naming the literal is the useful thing to say, however
+            // little of it got written.
+            None => return true,
+            Some(_) => break,
+        }
+    }
+    matched >= 2
+}
+
 /// Whether `lit` occurs at `start` in `bytes`.
 fn lit_matches(bytes: &[u8], start: usize, lit: &[u8]) -> bool {
     for (k, expected) in lit.iter().enumerate() {
@@ -562,20 +637,15 @@ fn push(nodes: &mut Vec<Node>, kind: NodeKind, start: usize, end: usize, depth: 
             start: to_u32(start),
             end: to_u32(end),
         },
-        depth: to_u16(depth),
+        depth: to_u32(depth),
     });
 }
 
-/// Narrow a byte offset to `u32`. The caller guarantees the input fits `u32`, so
-/// the saturating fallback is unreachable on the parse path.
+/// Narrow a byte offset or a depth to `u32`. [`parse`] rejects any input longer than
+/// `u32::MAX`, and a depth is bounded by that length, so the saturating fallback is
+/// unreachable on the parse path for either.
 fn to_u32(x: usize) -> u32 {
     u32::try_from(x).unwrap_or(u32::MAX)
-}
-
-/// Narrow a depth to `u16`, saturating (only reachable with `max_depth` above
-/// `u16::MAX`).
-fn to_u16(x: usize) -> u16 {
-    u16::try_from(x).unwrap_or(u16::MAX)
 }
 
 /// `u32::MAX` as a `usize`, for the input-size limit report.
@@ -969,6 +1039,34 @@ mod tests {
         assert_eq!(t.nodes()[0].kind, NodeKind::ArrayStart { elements: 1 });
     }
 
+    #[test]
+    fn depth_past_u16_max_is_reported_exactly_not_saturated() {
+        // The field was a `u16` until this change -- and still is in the `0.0.1` on
+        // npm -- so everything from 65 535 down-nested reported 65 535. The test
+        // above would have passed unchanged throughout: it asserts the node *count*,
+        // which saturation never touched. Assert the depth values themselves, on both
+        // sides of the old ceiling.
+        let depth = 70_000;
+        let input = format!("{}{}", "[".repeat(depth), "]".repeat(depth));
+        let t = parse(&input, depth).unwrap();
+        let nodes = t.nodes();
+        assert_eq!(nodes.len(), depth * 2);
+
+        // The `[` at index i opens a container nested inside i others.
+        assert_eq!(nodes[65_534].depth, 65_534);
+        assert_eq!(nodes[65_535].depth, 65_535);
+        assert_eq!(
+            nodes[65_536].depth, 65_536,
+            "the old u16 reported 65 535 here"
+        );
+        assert_eq!(nodes[depth - 1].depth, u32::try_from(depth).unwrap() - 1);
+
+        // ... and its matching `]` carries the same enclosing depth.
+        assert_eq!(nodes[depth].depth, u32::try_from(depth).unwrap() - 1);
+        assert_eq!(nodes[2 * depth - 65_537].depth, 65_536);
+        assert_eq!(nodes[2 * depth - 1].depth, 0);
+    }
+
     // ---- rejections ----
 
     #[test]
@@ -1078,6 +1176,10 @@ mod tests {
         assert_invalid_at("nxll", 0);
         assert_invalid_at("[nuxl]", 1);
         assert_invalid_at("{\"a\":truX}", 5);
+        // The two examples the `parse` docs quote: a malformed or truncated literal
+        // is reported at its first byte, not at the byte that broke it.
+        assert_invalid_at("[trux]", 1);
+        assert_invalid_at("[nul", 1);
     }
 
     // ---- exact error offsets inside string escapes ----
@@ -1125,8 +1227,9 @@ mod tests {
 
     #[test]
     fn u32_max_as_usize_reports_the_input_size_limit() {
-        // The `InputTooLarge` path needs an input larger than 4 GiB, which a test
-        // cannot allocate, so the reported limit is checked directly. It must be
+        // The `InputTooLarge` path needs an input of 4 GiB (2^32 bytes) or more —
+        // an input of exactly `u32::MAX` bytes is still addressed — which a test
+        // should not allocate, so the reported limit is checked directly. It must be
         // the largest offset a `u32` span can address.
         assert_eq!(u32_max_as_usize(), 4_294_967_295_usize);
     }

@@ -357,14 +357,17 @@ pub fn rules() -> &'static [NeverCompressRule] {
     RULES
 }
 
-/// The rule protecting `line`, or `None` if the line is compressible.
+/// The rule protecting `text`, or `None` if `text` is compressible.
 ///
-/// Callers pass a single line (no trailing newline required). On a match the line
-/// must be preserved verbatim with its position; see the module contract. When a
-/// line matches several rules the first in table order wins, so the result is
-/// deterministic.
-pub fn is_protected(line: &str) -> Option<&'static NeverCompressRule> {
-    RULES.iter().find(|rule| rule.matches_line(line))
+/// The test is a literal-substring search with no line semantics: `text` is whatever
+/// unit the caller wants protected, and a trailing newline is neither required nor
+/// stripped. The one caller in this crate is E1, which passes a whole JSON *string
+/// lexeme* — quotes and escapes included — so the unit that survives a hit is a lexeme,
+/// not a line; the module contract says so and this signature must not say otherwise.
+/// On a match that unit must be preserved verbatim with its position. When several
+/// rules match, the first in table order wins, so the result is deterministic.
+pub fn is_protected(text: &str) -> Option<&'static NeverCompressRule> {
+    RULES.iter().find(|rule| rule.matches_line(text))
 }
 
 /// ASCII-case-insensitive substring test.
@@ -526,6 +529,23 @@ mod tests {
             let NeverCompressRule { class, literal, .. } = rule;
             assert!(!literal.is_empty(), "empty literal in class {class:?}");
             assert!(!class.is_empty(), "empty class for literal {literal:?}");
+        }
+    }
+
+    /// Every literal is ASCII. The module doc rests its "ASCII-only case folding is
+    /// sufficient" argument on exactly this premise, and nothing else checked it: a
+    /// non-ASCII literal would still compile, still be matched byte-for-byte by
+    /// `eq_ignore_ascii_case`, and silently stop being case-insensitive in the letters
+    /// that are not ASCII.
+    #[test]
+    fn every_literal_is_ascii() {
+        for rule in rules() {
+            let NeverCompressRule { class, literal, .. } = rule;
+            assert!(
+                literal.is_ascii(),
+                "literal {literal:?} in class {class:?} is not ASCII; the case-folding \
+                 argument in the module doc no longer holds"
+            );
         }
     }
 

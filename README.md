@@ -36,8 +36,9 @@ for the command line.
   integration (`tokfold-mcp`) serves the engine as tools over stdio and is
   **experimental and unhardened** — it sees everything passed through it.
 - **A recovery archive is not a protective wrapper.** At v0.0.1 every archive is a
-  passthrough blob: a ~43-byte `TKFD` header followed by **the original bytes
-  verbatim** — not encrypted, not encoded, not obfuscated. An archive is exactly as
+  passthrough blob: a `TKFD` header of 43 to 46 bytes (47 for an original of
+  2^28 bytes or more, which needs a raised `max_input_bytes`) followed by **the original
+  bytes verbatim** — not encrypted, not encoded, not obfuscated. An archive is exactly as
   sensitive as its plaintext; store it with the same care.
 
 This README describes what the project *is* and what it *refuses to claim*. It
@@ -66,13 +67,25 @@ Canonicalized (deliberately **not** preserved):
 - **Insignificant whitespace.** Reproducing the exact whitespace would mean
   preserving the very bytes we are paid to delete.
 - **String escape style.** Strings are compared *after* unescaping, so `"é"` and
-  `"é"` are the same string; decompression emits one canonical escaping.
+  `"\u00e9"` are the same string; decompression emits one canonical escaping.
   Lone-surrogate `\uXXXX` escapes are retained as raw lexemes so they survive a
   round trip even though they cannot be unescaped to valid UTF-8.
 
 That is the whole reversibility contract. It is enough to feed the reconstructed
 bytes to anything that consumes JSON as data; it is *not* a promise that the
 formatting matches.
+
+**What v0.0.1 actually does is stronger than that, and you must not depend on it.**
+Every recovery archive this version writes is a passthrough blob — a `TKFD` header of
+43 to 46 bytes (47 for an original of 2^28 bytes or more, which needs a raised
+`max_input_bytes`) followed by the original bytes verbatim — so `tokfold expand` returns
+the input byte-for-byte today, whitespace and escape style included, and
+`expand --help` says so.
+The list above is the *floor*: the part of that behaviour a future encoder is not
+allowed to take away. An encoder that stores structure instead of bytes would still
+have to return the same value tree, and would be free to return different whitespace.
+Code that diffs the reconstruction against the original will pass on 0.0.1 and is
+still wrong; compare it as a value tree.
 
 ## Why this is not called "lossless"
 
@@ -95,6 +108,12 @@ The honest claim is therefore two-part:
 "Lossless" would collapse those two into a single word that only covers the first.
 We will not do that.
 
+One place does print the word, and it is scoped to the first claim only: the
+`fidelity` field in the MCP server's `stats` reads `lossless` (and the library's
+`Fidelity::Lossless` behind it), which is the name of the recovery path's
+class — the archive reconstructs the value tree — and says nothing about how well
+a model reads the rendering.
+
 ---
 
 ## Guarantees
@@ -106,8 +125,12 @@ We will not do that.
   learned model — no weights to download, no inference to run, no megabytes of BPE
   data at rest in the default build. (The opt-in, non-default `tiktoken` feature
   embeds exact GPT BPE tables; see [What is in v0.0.1](#what-is-in-v001--and-what-is-not).)
-- **Deterministic output.** The same logical input produces byte-identical output,
-  every time, on every machine.
+- **Deterministic output.** The same input bytes under the same configuration produce
+  byte-identical output, every time, from one build. Across 32- and 64-bit targets
+  that is not established: E2 counts array shapes by an `FxHasher` value, which
+  differs between them (see the `tokfold-core` `Compressor` rustdoc). Bytes, not the same JSON value:
+  the archive keeps the input as written, so reformatting a document changes its
+  archive.
 
 ### Why determinism is load-bearing, not a nicety
 
@@ -213,14 +236,20 @@ store(&artifact.archive);                        // versioned recovery blob
 let original = engine.decompress(&artifact.archive)?; // Result<Vec<u8>, DecompressError>
 ```
 
-`compress` is **total on valid JSON**: if no encoder reduces the estimated token
-count, it returns a passthrough artifact with ratio `1.0`. "Couldn't compress" is a
-statistic, never an error. That `1.0` is a floor rather than a measurement: a
-passthrough rendering still carries the 18-byte `raw` sentinel, which costs about
-10 estimated (11 real `cl100k`) tokens more than the bare input, and on that path
-the `*_after` fields are *set* equal to their `*_before` counterparts instead of
-being measured. If you need to account for every token, measure
-`Artifact::rendering` directly. Invalid input (including `NaN`/`Infinity`, truncated
+`compress` is **total on valid JSON within the configured limits** — 16 MiB of input
+and 512 levels of nesting by default, both raised through `ConfigBuilder` (the input
+limit no further than 4 GiB less one byte, the most the parser's `u32` offsets can
+address), and past either one `compress` returns a `CompressError` like any invalid input. If no
+encoder reduces the estimated token count, it returns a passthrough artifact with
+ratio `1.0`. "Couldn't compress" is a statistic, never an error. That `1.0` is a floor rather than a measurement: a
+passthrough rendering still carries the 18-byte `raw` sentinel, which costs 10
+estimated (11 real `cl100k`, 13 real `o200k`) tokens more than a bare input that
+opens with a non-whitespace byte — leading whitespace merges with the sentinel's
+newline and moves each figure by at most one token (10–11, 10–12 and 12–13, measured
+over every prefix of up to six spaces, tabs, CRs and LFs before `{}`),
+and on that path the `*_after` fields are *set* equal to their `*_before`
+counterparts instead of being measured. If you need to account for every token,
+measure `Artifact::rendering` directly. Invalid input (including `NaN`/`Infinity`, truncated
 documents, or trailing garbage) returns a `CompressError`; the caller then forwards
 the original bytes unmodified. The engine never repairs input.
 
@@ -232,7 +261,9 @@ re-encoding). An opt-in, non-default `tiktoken` feature adds exact GPT tokenizer
 estimators (`cl100k_base`, `o200k_base`) for the do-no-harm gate; it embeds megabytes
 of BPE tables and is off by default, so it never changes the archive format. An
 experimental MCP server (`tokfold mcp`) exposes compress, decompress, and estimate as
-tools over stdio; it is unhardened and unaudited, and hardening it gates any launch.
+tools over stdio; it is unhardened and unaudited. It shipped in `0.0.1` in that
+state, labelled rather than held back — hardening is a milestone still owed, not one
+this release passed.
 Reserved but **not implemented**: legend folding, Hugging Face tokenizer backends,
 language bindings, and the MCP *proxy* shape — an upstream connection and a
 content-addressed archive store, which needs its own threat model. This is a skeleton;

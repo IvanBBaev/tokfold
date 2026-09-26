@@ -63,14 +63,18 @@ pub const MAX_DEPTH: usize = 128;
 ///   four, an `initialize` handshake about a dozen. The margin over real traffic is
 ///   five orders of magnitude, and it does not shrink as payloads grow, because payload
 ///   size and node count are independent here.
-/// * **Not even the densest *legal* line reaches it.** The one shape that scales with
-///   node count rather than payload size is a batch. A minimal well-formed member,
-///   `{"jsonrpc":"2.0","method":"a"}`, is 30 bytes and 3 values, so 31 bytes with its
-///   separator; a batch filling the byte cap holds about 1,082,000 of them, or about
-///   3,247,000 values. That is 23% below the budget. Every well-formed message
-///   therefore still parses, and the shapes that trip the limit — an array of bare
-///   digits at 2 bytes per value, an array of tiny objects at about 6 — are ones no
-///   request grammar produces.
+/// * **No envelope the protocol defines reaches it.** The one request shape that
+///   scales with node count rather than payload size is a batch. A minimal well-formed
+///   member, `{"jsonrpc":"2.0","method":"a"}`, is 30 bytes and 3 values, so 31 bytes
+///   with its separator; a batch filling the byte cap holds about 1,082,000 of them, or
+///   about 3,247,000 values. That is 23% below the budget. A well-formed message *can*
+///   still reach it, but only through a value the protocol leaves open: `_meta`, or a
+///   tool argument key the tools ignore, may hold an array of bare digits at 2 bytes
+///   per value. Under a `ping` envelope of 7 values that trips the limit at 4,194,298
+///   zeroes, a line of about 8 MiB; such a request is refused with `-32700` and no id,
+///   although it is valid JSON-RPC, and its caller cannot correlate the refusal. The
+///   limit trades that for a tree whose size is bounded; nothing the server reads is in
+///   such an array.
 ///
 /// At the budget the tree is capped at 128 MiB of `Value` (192 MiB across the last
 /// doubling: the budget is 2^22, so the reallocation that reaches it happens at element
@@ -107,6 +111,20 @@ pub enum Value {
 }
 
 impl Value {
+    /// The JSON type name, as a noun phrase, for diagnostics that have to say what
+    /// arrived rather than only what was wanted.
+    #[must_use]
+    pub const fn type_name(&self) -> &'static str {
+        match self {
+            Self::Null => "null",
+            Self::Bool(_) => "a boolean",
+            Self::Int(_) | Self::Float(_) => "a number",
+            Self::Str(_) => "a string",
+            Self::Array(_) => "an array",
+            Self::Object(_) => "an object",
+        }
+    }
+
     /// Builds a string value from anything that converts into a `String`.
     #[must_use]
     pub fn string(value: impl Into<String>) -> Self {
@@ -239,10 +257,14 @@ impl fmt::Display for Value {
 /// infinity — so this is a guard on values built in code, not on anything that
 /// arrives over the wire.
 ///
-/// An integral float keeps a `.0` suffix. `Display for f64` renders `1.0` as `1`,
-/// which this crate's own parser would read back as [`Value::Int`]; a ratio field
-/// that changes JSON type depending on whether it happens to land on a whole number
-/// is a needless differential for a client validating against a schema.
+/// An integral float keeps a `.0` suffix below a magnitude of `1e16`. `Display for f64`
+/// renders `1.0` as `1`, which this crate's own parser would read back as
+/// [`Value::Int`]; a ratio field that changes JSON type depending on whether it happens
+/// to land on a whole number is a needless differential for a client validating against
+/// a schema. The bound is there because the suffix is bought with one-decimal fixed
+/// notation, which spells a float out in full — at `1e300` that is 303 characters of
+/// binary-expansion noise in a message framed one per line — so above it the value is
+/// written plainly and may read back as an `Int` after all.
 fn write_float(f: &mut fmt::Formatter<'_>, value: f64) -> fmt::Result {
     if !value.is_finite() {
         return f.write_str("null");
@@ -581,8 +603,11 @@ impl Parser<'_> {
             self.finite_float(text)
         } else {
             // An integer literal too large for `i64` is still valid JSON. Widening it
-            // to `f64` keeps the message parseable; the only field this server reads
-            // as an integer is the request id, which it echoes back unchanged.
+            // to `f64` keeps the message parseable up to `f64`'s range — past it (about
+            // 309 digits) the literal overflows to infinity and the whole line is
+            // `-32700`, like any float that does. A widened value is no longer an
+            // integer, so as a request id it is refused `-32600` with no id: the
+            // server echoes only a string or an `i64` id back.
             text.parse::<i64>()
                 .map_or_else(|_| self.finite_float(text), |n| Ok(Value::Int(n)))
         }
@@ -1115,7 +1140,7 @@ mod tests {
         assert_eq!(MAX_NODES, crate::MAX_MESSAGE_BYTES / 8);
         assert_eq!(MAX_NODES, 4_194_304);
 
-        // The claim that no legal message reaches the budget rests on the densest one
+        // The claim that no protocol envelope reaches the budget rests on the densest one
         // being a batch of minimal members. Derive that count rather than quoting it.
         let member = r#"{"jsonrpc":"2.0","method":"a"}"#;
         assert_eq!(member.len(), 30);

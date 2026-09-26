@@ -28,6 +28,7 @@ use crate::MAX_MESSAGE_BYTES;
 use crate::json::{Object, Value, parse};
 use crate::jsonrpc::{
     ErrorObject, Request, Response, decode_request, echo, oversize_error, render_bounded,
+    render_member,
 };
 use crate::protocol::{
     CACHE_SCOPE_PUBLIC, CACHE_TTL_MS, LATEST_LEGACY_VERSION, LATEST_PROTOCOL_VERSION,
@@ -46,7 +47,11 @@ for JSON-shaped payloads — tool results, API responses, logs — where repeate
 and whitespace dominate. Embed the returned `rendering` in context and keep the \
 `archive`; `tokfold_decompress` recovers the original bytes exactly. Call \
 `tokfold_estimate` first when you want to know whether compressing is worth it. \
-Input that does not compress is returned unchanged, never dropped.";
+Input is never dropped silently: input the engine declines (not JSON, nested too \
+deep, too large) comes back unchanged with `compressed: false` and a `reasonCode`, \
+JSON with nothing to save comes back verbatim after a \
+`⟦tkfd:v1:raw⟧` marker line, and a reply too large for the message limit (32 MiB by \
+default) is an error rather than a truncated answer.";
 
 /// The protocol state machine.
 ///
@@ -92,8 +97,35 @@ impl Server {
     ///
     /// Nothing else in the server reads this: it changes which answers are refused for
     /// being too large and nothing about how any answer is computed. That is what makes
-    /// it usable in a test as the cheap way to cross the bound — a 64-byte limit
-    /// exercises exactly the code a 32 MiB one does, without allocating 32 MiB.
+    /// it usable in a test as the cheap way to cross the bound without allocating 32 MiB.
+    ///
+    /// There is a floor, and it is not zero. A refusal is itself a frame — the message
+    /// is `the reply exceeds the N byte frame limit` inside a `-32602` envelope — and
+    /// [`crate::jsonrpc::render_bounded`] emits its last resort whether or not that
+    /// fits, because sending nothing would hang the client. Four regimes follow. The
+    /// boundaries are for a `ping` carrying a one-character id, and
+    /// `a_limit_below_a_real_answer_refuses_in_three_measurably_different_ways` in
+    /// `tests/properties.rs` pins them:
+    ///
+    /// * Below 95, [`Server::handle_line`] returns a line wider than the limit just
+    ///   set — at `max` 64 the frame is 95 bytes, 31 over. 95 is the smallest value
+    ///   this server never exceeds.
+    /// * 95 to 102: the refusal fits, but only in its id-less form, so a client is told
+    ///   that some reply was too large without being told which call it answered.
+    /// * 103 to 142: the refusal fits with the id, so the call fails instead of hanging.
+    /// * 143 and up: a `ping` is answered for real.
+    ///
+    /// A limit under 143 therefore refuses every answer at least as wide as a `ping`'s,
+    /// which is what a test of the refusal path wants and useless to a test that wants
+    /// such an answer. It does not refuse everything: an answer narrower than a `ping`'s
+    /// still goes out — at `max` 142 an unknown method is answered with its real
+    /// `-32601` (78 bytes), a line that is not JSON with `-32700` (94), and `[]` or a
+    /// request with no `method` with `-32600` (79 and 86). The three
+    /// boundaries are derived, not chosen: the id-less frame is 93 bytes plus the
+    /// decimal digits of `max`, the addressed one adds the seven bytes of an `"id":1,`
+    /// field, and 143 is the `ping` result once its `_meta` envelope is counted. A wider
+    /// id moves the second and third boundaries up by its extra width: the addressed
+    /// refusal and the real answer both carry it, the id-less refusal does not.
     #[must_use]
     pub fn with_max_message_bytes(mut self, max: usize) -> Self {
         self.max_message_bytes = max;
@@ -130,15 +162,30 @@ impl Server {
     /// the answers come back as one array.
     ///
     /// The returned string never contains a newline, so the caller can frame it by
-    /// appending one, and never exceeds [`Server::max_message_bytes`], so a caller that
-    /// writes it to a transport with the same limit cannot emit a frame its own peer
-    /// would refuse. A request whose answer does not fit is refused with an error
-    /// addressed to that request's id; [`crate::jsonrpc::render_bounded`] states the
-    /// rule and the reasoning.
+    /// appending one. A request whose answer does not fit [`Server::max_message_bytes`]
+    /// is refused with an error addressed to that request's id, so a caller writing to
+    /// a transport with the same limit cannot emit a frame its own peer would refuse —
+    /// with one exception: the refusal is a frame too, and its last-resort form goes out
+    /// even when it does not fit either. That form is 93 bytes plus the digits of the
+    /// limit, so the bound holds at any [`Server::max_message_bytes`] of 95 or more and
+    /// is exceeded below it — and the id survives the refusal only from 103 up, for a
+    /// one-character id. The id is carried only while the addressed refusal itself fits,
+    /// so an id too wide for the addressed refusal gets the id-less form instead: at the
+    /// default, a string id of 33,554,289 characters on a `ping` is refused addressed in
+    /// 33,554,398 bytes, while one whose request is exactly 32 MiB is refused id-less in
+    /// 101. Such a call is not correlated and its client waits; the frame stays bounded.
+    /// [`Server::with_max_message_bytes`] derives all three numbers;
+    /// [`crate::jsonrpc::render_bounded`] states the rule and the reasoning.
     pub fn handle_line(&mut self, line: &str) -> Option<String> {
         // Blank lines are tolerated rather than answered. They are not valid JSON, but
-        // a stray newline from a client's writer is not worth an error frame.
-        if line.trim().is_empty() {
+        // a stray newline from a client's writer is not worth an error frame. "Blank"
+        // means JSON whitespace only — space, tab, CR, LF: `str::trim` would also drop a
+        // line of vertical tabs or no-break spaces, which is not JSON of any kind and is
+        // answered with `-32700` like any other line that fails to parse.
+        if line
+            .trim_matches(|c| matches!(c, ' ' | '\t' | '\r' | '\n'))
+            .is_empty()
+        {
             return None;
         }
 
@@ -174,24 +221,62 @@ impl Server {
     ///
     /// A batch reply is one frame, so the limit applies to the array and not to its
     /// members — a thousand members that are each unremarkable can still add up past it.
-    /// The array is therefore filled against a running budget, and the answer degrades
-    /// in two steps, each losing exactly one more thing than the last:
+    /// The array is therefore filled against a running budget, member by member, and a
+    /// member that does not fit is handled in one of two ways:
     ///
     /// 1. A member whose real answer no longer fits the remaining space is replaced by
-    ///    the oversize error **addressed to that member's own id**. Every other member
-    ///    keeps its real answer. This is what makes the common case survivable: one
-    ///    outsized call in a batch of otherwise small ones fails alone, and the client
-    ///    does not have to reissue the calls that succeeded.
-    /// 2. If not even that small refusal fits — the batch is long enough that the
-    ///    per-member errors alone overflow — the whole array is dropped for a single
-    ///    id-less error. Correlation is lost, which is the cost of a frame that cannot
-    ///    hold one answer per call, and it is still an answer rather than a truncated
-    ///    frame or silence.
+    ///    the oversize error **addressed to that member's own id** — or id-less, when the
+    ///    id alone is too wide for the addressed error to fit. Every other member
+    ///    keeps its real answer — as long as the members after it still fit. That is
+    ///    what usually lets one outsized call in a batch of otherwise small ones fail
+    ///    alone, so the client does not reissue the calls that succeeded. That error names the
+    ///    bytes the array had left *and* the limit, because the member was measured
+    ///    against the former and the client can only act on the latter: a
+    ///    `tools/list` answer refused after 225 942 `ping` answers is not over 32 MiB,
+    ///    and reporting the 177 bytes it did not fit as "the frame limit" — which is
+    ///    what this did — told the client the limit was 177. (A `ping` in that place is
+    ///    answered: its answer fits the 177 bytes.)
+    /// 2. If a member's answer or refusal leaves too little room for what follows it,
+    ///    the whole array is dropped for a single id-less error. Correlation is lost,
+    ///    and it is still an answer rather than a truncated frame or silence.
     ///
-    /// Members are handled before it is known whether the frame will fit, so a batch
-    /// refused at step 2 may have had effects — a handshake in an earlier member stands.
-    /// That is a property of batching itself, not of the limit: JSON-RPC gives a batch
-    /// no atomicity, and the same is true of a batch whose reply is lost in transit.
+    /// The two are not ordered by the limit. Each member's refusal is chosen as the
+    /// widest form that fits the room left *at that member* — addressed when its id fits,
+    /// id-less otherwise — and nothing is reserved for the members after it. So a larger
+    /// limit can collapse a batch that a smaller one answered: for `[ping, tools/list
+    /// with a 300-byte string id, ping]`, a limit of 576 answers both pings and refuses
+    /// the middle member id-less (143 + 123 + 143 + 4 framing bytes = 413 needed), while
+    /// 577 through 700 collapse the whole batch, because at 577 the 431-byte addressed
+    /// refusal first fits the remainder (143 + 431 + 3) and then starves the last member.
+    /// At 701 (143 + 431 + 123 + 4) the last ping's own id-less refusal fits again, so
+    /// one ping is answered, and from 721 (143 + 431 + 143 + 4) both are. The same step
+    /// happens a second time when the middle member's *real* answer first fits: this
+    /// build collapses again at every limit from 2 968 through 3 092, answers the
+    /// middle member and the first ping from 3 093 (the last ping refused id-less), and
+    /// all three from 3 112 (the published 0.0.1 binary, with its shorter tool
+    /// catalogue, collapses at 2 858 through 2 953). The same three members with the wide one last never
+    /// collapse above 412 (swept to 8 000). At the default 32 MiB
+    /// limit the same shape is reached through the id's width rather than the limit:
+    /// around the later window each step is taken exactly where the reply would exceed
+    /// the limit by one byte, so a wider middle id first costs the last ping its answer, then collapses
+    /// the batch, and then, once the addressed refusal no longer fits on its own, gets
+    /// both pings answered again beside the id-less refusal. Measured on macOS arm64
+    /// with ids of `x`, and twice over for the same reason as at small limits: this
+    /// build collapses for a middle id 33 551 636 to 33 551 764 bytes wide (the real
+    /// catalogue answer starving the last ping) and again for 33 554 017 to 33 554 145
+    /// (the addressed refusal doing so); the published 0.0.1 binary, which renders
+    /// members without this running budget, has the same shape at 33 551 779 to
+    /// 33 551 874 and at 33 554 082 to 33 554 177. Reserving room
+    /// for the tail would change what reaches the wire, so it is an open contract
+    /// question, not a fix made here. The test
+    /// `a_larger_limit_can_collapse_a_batch_that_a_smaller_one_answered` pins both
+    /// small-limit windows at every limit up to 3 200; the 32 MiB widths are a measurement no test holds.
+    ///
+    /// Each member is handled before it is known whether its answer will fit, and the
+    /// batch is abandoned at the first member whose answer does not: a batch refused at
+    /// step 2 has run every member up to and including that one — a handshake among
+    /// them stands — and has never handled the members after it. JSON-RPC gives a
+    /// batch no atomicity, so neither half is undone or completed.
     fn handle_batch(&mut self, items: Vec<Value>) -> Option<String> {
         let max = self.max_message_bytes;
         if items.is_empty() {
@@ -211,7 +296,7 @@ impl Server {
             // is not the first, and the closing bracket.
             let overhead = usize::from(answered) + 1;
             let budget = max.saturating_sub(frame.len() + overhead);
-            let Some(member) = Self::fit_member(response, budget) else {
+            let Some(member) = Self::fit_member(response, budget, max) else {
                 return Some(Self::refuse_batch(max));
             };
             if answered {
@@ -227,14 +312,15 @@ impl Server {
         Some(frame)
     }
 
-    /// Renders one batch member into `budget` bytes, or `None` if nothing fits.
+    /// Renders one batch member into `budget` bytes of a `max` byte frame, or `None` if
+    /// nothing fits.
     ///
-    /// The ladder inside [`render_bounded`] does the work — the real answer, else the
+    /// The ladder inside [`render_member`] does the work — the real answer, else the
     /// refusal addressed to this member's id, else an id-less one. `None` means even the
     /// last of those is too big for what is left, which is the signal to abandon the
     /// array rather than write a member that overruns the frame.
-    fn fit_member(response: Response, budget: usize) -> Option<String> {
-        let member = render_bounded(response, budget);
+    fn fit_member(response: Response, budget: usize, max: usize) -> Option<String> {
+        let member = render_member(response, budget, max);
         (member.len() <= budget).then_some(member)
     }
 
@@ -281,7 +367,10 @@ impl Server {
         })
     }
 
-    /// Serializes a response as a single line of at most [`Server::max_message_bytes`].
+    /// Serializes a response as a single line, held to [`Server::max_message_bytes`]
+    /// wherever that bound can be honoured at all: the last-resort refusal frame goes
+    /// out even when it is wider, which is why a limit under 95 is not a limit. See
+    /// [`Server::with_max_message_bytes`].
     ///
     /// Takes the response by value so a tool result — which can be the whole
     /// compressed payload — is moved into the envelope rather than deep-cloned. Every
@@ -426,15 +515,10 @@ impl Server {
     /// is reserved for a call that was malformed — no name, an unknown name, or
     /// arguments of the wrong shape.
     fn tools_call(request: &Request) -> Result<Value, ErrorObject> {
-        let name = request
-            .param("name")
+        let name_param = request.param("name");
+        let name = name_param
             .and_then(Value::as_str)
-            .ok_or_else(|| {
-                ErrorObject::new(
-                    error_code::INVALID_PARAMS,
-                    "`name` is required and must be a string",
-                )
-            })?;
+            .ok_or_else(|| tools::expected_string("name", name_param))?;
         let arguments = request.param("arguments");
         let outcome = tools::call(name, arguments)?;
 
@@ -546,12 +630,17 @@ const KEY_META: &str = "_meta";
 /// to overwrite the protocol metadata of the response carrying it.
 ///
 /// **This is currently unreachable, and the assertion below is not evidence of a past
-/// bug.** Every key a result can hold is compiled in and the whole set was enumerated:
-/// `compressed`, `stats`, `rendering`, `archive`, `reason`, `reasonCode`, `text`,
-/// `code`, and `message` from [`crate::tools`], plus `content`, `structuredContent`, and
-/// `isError` added on the `tools/call` path. None collides. What the assertion buys is
-/// that the day someone adds a tool field named `_meta`, a debug build says so instead
-/// of a release build shipping a response whose metadata came from the wrong layer.
+/// bug.** Every key a result can hold is compiled in and the whole set was enumerated.
+/// From [`crate::tools`]: `compressed`, `stats`, `rendering`, `archive`, `reason`,
+/// `reasonCode`, `text`, `code`, and `message`, plus `content`, `structuredContent`, and
+/// `isError` added on the `tools/call` path. This wraps every result and not only a
+/// tool's, so the other three answers count as well: `supportedVersions`, `capabilities`,
+/// `serverInfo`, `instructions`, `ttlMs` and `cacheScope` from `discover`,
+/// `protocolVersion`, `capabilities`, `serverInfo` and `instructions` from `initialize`,
+/// and `tools`, `ttlMs` and `cacheScope` from `tools/list`. None collides. What the
+/// assertion buys is that the day someone adds a tool field named `_meta`, a debug build
+/// says so instead of a release build shipping a response whose metadata came from the
+/// wrong layer.
 fn with_envelope(result: Value) -> Value {
     let mut object = Object::new();
     if let Value::Object(members) = result {
@@ -615,8 +704,17 @@ mod tests {
         clippy::indexing_slicing
     )]
 
-    use super::{KEY_META, KEY_RESULT_TYPE, MAX_MESSAGE_BYTES, Server, with_envelope};
-    use crate::json::{Object, Value, parse};
+    use super::{KEY_META, KEY_RESULT_TYPE, MAX_MESSAGE_BYTES, Server};
+    use crate::json::{Value, parse};
+
+    // Nothing but the two `#[cfg(debug_assertions)]` assertions at the end of this module
+    // reaches these two, so importing them unconditionally warns on a release test build.
+    // That leg runs without `-D warnings`, so the warning would sit in the log rather than
+    // fail anything, which is how it survived: the clippy gate compiles debug only.
+    #[cfg(debug_assertions)]
+    use super::with_envelope;
+    #[cfg(debug_assertions)]
+    use crate::json::Object;
     use crate::jsonrpc::{ECHO_ELLIPSIS, MAX_ECHO_BYTES};
     use crate::protocol::{
         CACHE_SCOPE_PUBLIC, CACHE_TTL_MS, LATEST_LEGACY_VERSION, LATEST_PROTOCOL_VERSION,
@@ -641,6 +739,22 @@ mod tests {
         reply.get("result").cloned().expect("no result member")
     }
 
+    /// A `tools/list` result that actually carries the catalogue.
+    ///
+    /// "Served" is not the same claim as "not an error": a `tools/list` answered with
+    /// an empty `tools` array is a successful reply and an empty catalogue, and two
+    /// tests whose names promised the first only ever asserted the second.
+    fn assert_the_catalogue_came_back(listed: &Value) {
+        assert_eq!(
+            listed
+                .get("tools")
+                .and_then(Value::as_array)
+                .map_or(0, <[Value]>::len),
+            3,
+            "a served tools/list must carry all three tools: {listed}"
+        );
+    }
+
     fn error_code_of(server: &mut Server, line: &str) -> i64 {
         exchange(server, line)
             .get("error")
@@ -655,6 +769,41 @@ mod tests {
         assert!(server.handle_line("").is_none());
         assert!(server.handle_line("   ").is_none());
         assert!(server.handle_line("\t").is_none());
+        assert!(server.handle_line(" \r\t ").is_none());
+        assert!(server.handle_line("\n").is_none());
+        assert!(server.handle_line(" \r\n\t\n ").is_none());
+    }
+
+    #[test]
+    fn a_line_of_non_json_whitespace_is_a_parse_error_not_a_blank_line() {
+        // The offset is the first byte JSON does not accept, so JSON whitespace ahead
+        // of it moves it: the message is pinned per line, not assumed to say byte 0.
+        for (line, at) in [
+            ("\u{b}", 0),
+            ("\u{c}", 0),
+            ("\u{a0}", 0),
+            ("\u{85}", 0),
+            ("\u{2028}", 0),
+            ("\u{3000}", 0),
+            (" \u{b} ", 1),
+            ("\t \u{a0}", 2),
+        ] {
+            let mut server = Server::new();
+            let reply = exchange(&mut server, line);
+            assert_eq!(
+                reply.get("error").and_then(|e| e.get("code")),
+                Some(&Value::Int(i64::from(error_code::PARSE_ERROR))),
+                "{line:?}"
+            );
+            assert_eq!(
+                reply.get("error").and_then(|e| e.get("message")),
+                Some(&Value::Str(format!(
+                    "invalid JSON at byte {at}: expected a value"
+                ))),
+                "{line:?}"
+            );
+            assert_eq!(reply.get("id"), None, "{line:?}");
+        }
     }
 
     #[test]
@@ -857,11 +1006,18 @@ mod tests {
 
     #[test]
     fn every_result_carries_the_modern_envelope() {
+        // Every handler that answers with a result wraps it in `with_envelope` on its
+        // own, so each one is listed here — a handler missing from this list is a
+        // handler whose envelope nothing checks. `tools/call` appears twice because a
+        // tool error is still a result and has to carry the envelope too.
         let mut server = Server::new();
         for line in [
-            r#"{"jsonrpc":"2.0","id":1,"method":"server/discover"}"#,
-            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
-            r#"{"jsonrpc":"2.0","id":3,"method":"ping"}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{}}}"#,
+            r#"{"jsonrpc":"2.0","id":2,"method":"server/discover"}"#,
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/list"}"#,
+            r#"{"jsonrpc":"2.0","id":4,"method":"ping"}"#,
+            r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"tokfold_compress","arguments":{"text":"{\"a\": 1}"}}}"#,
+            r#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"tokfold_decompress","arguments":{"archive":"AAAA"}}}"#,
         ] {
             let result = result_of(&mut server, line);
             assert_eq!(
@@ -977,7 +1133,7 @@ mod tests {
             &mut server,
             r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
         );
-        assert_eq!(listed.get("tools").unwrap().as_array().unwrap().len(), 3);
+        assert_the_catalogue_came_back(&listed);
     }
 
     #[test]
@@ -989,7 +1145,7 @@ mod tests {
             LATEST_PROTOCOL_VERSION,
             meta::CLIENT_CAPABILITIES
         );
-        assert!(exchange(&mut server, &line).get("error").is_none());
+        assert_the_catalogue_came_back(&result_of(&mut server, &line));
     }
 
     #[test]
@@ -1082,7 +1238,7 @@ mod tests {
             r#"{{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{{"_meta":{{"{}":"2025-06-18"}}}}}}"#,
             meta::PROTOCOL_VERSION
         );
-        assert!(exchange(&mut server, &line).get("error").is_none());
+        assert_the_catalogue_came_back(&result_of(&mut server, &line));
     }
 
     #[test]
@@ -1226,6 +1382,21 @@ mod tests {
             exchange(&mut server, r#"{"jsonrpc":"2.0","id":42,"method":"ping"}"#).get("id"),
             Some(&Value::Int(42))
         );
+        // Not only `ping`: a tool call, and a request answered with an error.
+        assert_eq!(
+            exchange(
+                &mut server,
+                r#"{"jsonrpc":"2.0","id":"call-7","method":"tools/call","params":{"name":"tokfold_compress","arguments":{"text":"{\"a\":1}"}}}"#
+            )
+            .get("id"),
+            Some(&Value::string("call-7"))
+        );
+        let refused = exchange(
+            &mut server,
+            r#"{"jsonrpc":"2.0","id":-3,"method":"no/such/method"}"#,
+        );
+        assert!(refused.get("error").is_some(), "{refused}");
+        assert_eq!(refused.get("id"), Some(&Value::Int(-3)));
     }
 
     /// A default server is bounded by the transport's own limit.
@@ -1285,8 +1456,14 @@ mod tests {
     /// member was the expensive one.
     #[test]
     fn one_oversized_member_of_a_batch_is_refused_without_taking_the_others_down() {
-        // Enough for two `ping` results and a refusal, not enough for the tool catalogue.
-        let mut server = Server::new().with_max_message_bytes(400);
+        // Enough for two `ping` results and a refusal, not enough for the tool catalogue
+        // (2 521 bytes as a batch member, pinned by
+        // `a_larger_limit_can_collapse_a_batch_that_a_smaller_one_answered`). Two
+        // 143-byte answers, a 130-byte refusal and the framing make 420; at 400 the
+        // refusal for member 2 still fit, but it left member 3 too little room for its
+        // answer.
+        const MAX: usize = 480;
+        let mut server = Server::new().with_max_message_bytes(MAX);
         let batch = concat!(
             r#"[{"jsonrpc":"2.0","id":1,"method":"ping"},"#,
             r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"},"#,
@@ -1296,7 +1473,7 @@ mod tests {
             .handle_line(batch)
             .expect("a batch of requests is answered");
         assert!(
-            frame.len() <= 400,
+            frame.len() <= MAX,
             "the aggregate must fit: {} bytes",
             frame.len()
         );
@@ -1329,12 +1506,79 @@ mod tests {
         );
     }
 
+    /// A member's refusal names what the array had left and the limit, not one as the
+    /// other.
+    ///
+    /// A member is measured against the remainder of the frame, and the remainder used
+    /// to be the number the refusal called "the frame limit": a one-member batch under
+    /// the default limit reported 33 554 430, and a `tools/list` refused after 225 942
+    /// `ping` answers reported 177 — a client reading either would have believed the server's limit was
+    /// that. No test asserted the number, so the message was wrong in every batch ever
+    /// answered and nothing failed. This pins both numbers by deriving the remainder the
+    /// same way `handle_batch` does, and pins the single-request message beside it so
+    /// the two forms cannot drift into each other unnoticed.
+    #[test]
+    fn a_batch_member_refused_for_size_names_the_bytes_left_and_the_limit() {
+        const PING: &str = r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#;
+        const MAX: usize = 480;
+        let ping_len = Server::new()
+            .handle_line(PING)
+            .expect("a ping is answered")
+            .len();
+
+        // The opening bracket, the first answer, its comma, and the closing bracket
+        // are what the second member has to leave room for.
+        let left = MAX - (1 + ping_len + 1 + 1);
+        let batch = concat!(
+            r#"[{"jsonrpc":"2.0","id":1,"method":"ping"},"#,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}]"#
+        );
+        let frame = Server::new()
+            .with_max_message_bytes(MAX)
+            .handle_line(batch)
+            .expect("a batch of requests is answered");
+        let replies = parse(&frame).unwrap();
+        let message = replies.as_array().expect("an array")[1]
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(Value::as_str)
+            .expect("member 2 is refused")
+            .to_owned();
+        assert_eq!(
+            message,
+            format!("the reply does not fit the {left} bytes left of the {MAX} byte frame limit"),
+            "the member's refusal names the remainder and the limit: {frame}"
+        );
+
+        // The same call alone is refused against the limit itself, in the words the
+        // regimes in `with_max_message_bytes` are measured on.
+        let alone = Server::new()
+            .with_max_message_bytes(MAX)
+            .handle_line(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#)
+            .expect("a request is answered");
+        let message = parse(&alone)
+            .unwrap()
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(Value::as_str)
+            .expect("the request is refused")
+            .to_owned();
+        assert_eq!(
+            message,
+            format!("the reply exceeds the {MAX} byte frame limit"),
+            "a single request's refusal is unchanged: {alone}"
+        );
+    }
+
     /// A batch whose per-member refusals cannot fit collapses to one id-less error.
     ///
-    /// The last rung of the ladder, and the only place correlation is lost. It is
-    /// reachable in principle at any limit — a batch of hundreds of thousands of
-    /// notifications-with-ids is a legal 32 MiB line — so it is a real branch rather
-    /// than a defensive one, and it must still produce a well-formed answer.
+    /// This drives one of the two routes to the collapse: the members' refusals alone
+    /// overflow the limit. It is reachable in principle at any limit — a batch of
+    /// hundreds of thousands of requests is a legal 32 MiB line — so it is a real branch
+    /// rather than a defensive one, and it must still produce a well-formed answer. The
+    /// other route, an addressed refusal that fits its own remainder and starves the
+    /// member after it, is pinned by
+    /// `a_larger_limit_can_collapse_a_batch_that_a_smaller_one_answered`.
     #[test]
     fn a_batch_that_cannot_fit_even_as_errors_collapses_to_a_single_refusal() {
         let mut server = Server::new().with_max_message_bytes(100);
@@ -1361,6 +1605,85 @@ mod tests {
                 .and_then(|e| e.get("code"))
                 .and_then(Value::as_i64),
             Some(i64::from(error_code::INVALID_PARAMS))
+        );
+    }
+
+    /// The batch degradation is not monotonic in the limit, and this pins the two
+    /// windows the `handle_batch` doc derives: one byte more collapses a batch whose two
+    /// small members were answered, because the wider addressed refusal — and later the
+    /// wider real answer — starves the member after it. It also pins the tool catalogue's width as a batch member, which the
+    /// test above quotes.
+    #[test]
+    fn a_larger_limit_can_collapse_a_batch_that_a_smaller_one_answered() {
+        let wide = "x".repeat(300);
+        let ping = |id: &str| format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"ping"}}"#);
+        let list = format!(r#"{{"jsonrpc":"2.0","id":"{wide}","method":"tools/list"}}"#);
+        let middle = format!("[{},{list},{}]", ping("1"), ping("3"));
+        let at_end = format!("[{},{},{list}]", ping("1"), ping("3"));
+
+        // (results, id of the refused member) for an array reply; None for a collapse.
+        let shape = |line: &str, max: usize| {
+            let frame = Server::new()
+                .with_max_message_bytes(max)
+                .handle_line(line)
+                .expect("a batch of requests is answered");
+            assert!(frame.len() <= max, "{max}: {} bytes", frame.len());
+            let reply = parse(&frame).unwrap();
+            reply.as_array().map(|members| {
+                let results = members.iter().filter(|m| m.get("result").is_some()).count();
+                let refused = members
+                    .iter()
+                    .find(|m| m.get("error").is_some())
+                    .map(|m| m.get("id").cloned());
+                (members.len(), results, refused)
+            })
+        };
+        let idless: Option<Option<Value>> = Some(None);
+        let addressed = Some(Some(Value::Str(wide)));
+
+        assert_eq!(shape(&middle, 392), None);
+        assert_eq!(shape(&middle, 393), Some((3, 1, idless.clone())));
+        assert_eq!(shape(&middle, 413), Some((3, 2, idless.clone())));
+        assert_eq!(shape(&middle, 576), Some((3, 2, idless.clone())));
+        assert_eq!(
+            shape(&middle, 577),
+            None,
+            "one byte more collapses the batch"
+        );
+        assert_eq!(shape(&middle, 700), None);
+        assert_eq!(shape(&middle, 701), Some((3, 1, addressed.clone())));
+        assert_eq!(shape(&middle, 721), Some((3, 2, addressed.clone())));
+        // The same step a second time, once the middle member's real answer first
+        // fits and starves the last ping in turn.
+        assert_eq!(shape(&middle, 2_967), Some((3, 2, addressed.clone())));
+        assert_eq!(shape(&middle, 2_968), None);
+        assert_eq!(shape(&middle, 3_092), None);
+        assert_eq!(shape(&middle, 3_093), Some((3, 2, idless.clone())));
+        assert_eq!(shape(&middle, 3_112), Some((3, 3, None)));
+        // Every limit, not a sample: within 393..=3 200 the batch collapses at exactly
+        // 577..=700 and 2 968..=3 092, and with the wide member last it never does.
+        for max in 393..=3_200 {
+            assert_eq!(
+                shape(&middle, max).is_none(),
+                (577..=700).contains(&max) || (2_968..=3_092).contains(&max),
+                "{max}"
+            );
+        }
+        for max in 413..=1_000 {
+            let refused = if max < 721 { &idless } else { &addressed };
+            assert_eq!(shape(&at_end, max), Some((3, 2, refused.clone())), "{max}");
+        }
+        for max in 1_001..=3_200 {
+            assert!(shape(&at_end, max).is_some(), "{max}");
+        }
+
+        let catalogue = Server::new()
+            .handle_line(r#"[{"jsonrpc":"2.0","id":2,"method":"tools/list"}]"#)
+            .expect("answered");
+        assert_eq!(
+            catalogue.len() - 2,
+            2_521,
+            "the tool catalogue as a batch member"
         );
     }
 
@@ -1524,8 +1847,11 @@ mod tests {
         assert!(requested.ends_with(ECHO_ELLIPSIS));
     }
 
+    /// Ping only: that the envelope sits under the keys the constants name. Which
+    /// handlers carry it is `every_result_carries_the_modern_envelope`, which lists
+    /// every one.
     #[test]
-    fn every_result_carries_the_envelope_the_server_owns() {
+    fn a_ping_result_carries_the_envelope_under_its_named_keys() {
         let mut server = Server::new();
         let result = result_of(&mut server, r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#);
         assert_eq!(

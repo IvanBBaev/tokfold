@@ -188,8 +188,9 @@ fn a_refused_envelope_is_answered_with_the_id_the_client_sent() {
     //
     // Three of the grounds for refusing an envelope leave the id perfectly readable —
     // the `jsonrpc` member is wrong, the `method` is missing or not a string, the
-    // `params` is neither object nor array — and each is exercised here with both id
-    // shapes JSON-RPC allows, because recovering an id is a match on its type.
+    // `params` is not an object (an array included, which the specification permits
+    // and this server does not) — and each is exercised here with both id shapes
+    // JSON-RPC allows, because recovering an id is a match on its type.
     let cases: &[(&str, &str, &str)] = &[
         (
             r#"{"jsonrpc":"1.0","id":42,"method":"ping"}"#,
@@ -702,7 +703,27 @@ fn each_kind_of_archive_damage_is_named_by_its_own_code() {
             refused.get("text").is_none(),
             "{expected}: a refusal must not also hand back bytes: {refused}"
         );
+        // The message is the engine's own, numbers included: a constant in its place
+        // would keep every code above correct and drop the offset a caller reports.
+        let engine = tokfold_core::Compressor::new(tokfold_core::Config::default())
+            .decompress(&bytes)
+            .expect_err("the engine refuses the same bytes")
+            .to_string();
+        assert_eq!(
+            refused.get("message").and_then(json::Value::as_str),
+            Some(engine.as_str()),
+            "{expected}: {refused}"
+        );
     }
+    let mut cut = good;
+    cut.truncate(ORIGINAL_LEN_OFFSET + 1);
+    assert_eq!(
+        decompress(&base64::encode(&cut))
+            .get("message")
+            .and_then(json::Value::as_str),
+        Some("archive corrupted at byte 11"),
+        "a header cut after its length field stops at the first missing checksum byte"
+    );
 
     // And the undamaged archive still restores the input, so the four cases above are
     // failing for the reason claimed and not because the fixture was broken to begin
@@ -720,17 +741,25 @@ fn each_kind_of_archive_damage_is_named_by_its_own_code() {
 fn the_transport_line_limit_is_the_one_the_documentation_promises() {
     // The limit stays above the engine's own 16 MiB input ceiling, which is what makes a
     // maximum-size *request* readable. It does not follow that the reply to one fits, and
-    // measurement through `stdio::serve` says it does not. A reply is 2.00x the request
-    // on the passthrough path — the input comes back twice, once as `content` and once as
-    // `structuredContent.rendering` — and 3.33x when the input is compressed but does not
-    // shrink: the same two copies plus a base64 archive, which is a third larger than the
-    // bytes it carries.
+    // measurement through `stdio::serve` says it does not. A large reply tends to 2.00x
+    // the request on the passthrough path — the input comes back twice, once as `content`
+    // and once as `structuredContent.rendering` — and to 3.33x when the input is
+    // compressed but does not shrink: the same two copies plus a base64 archive, which
+    // is a third larger than the bytes it carries. Both are approached from above: the
+    // reply's fixed envelope outweighs the call's, so a small call measures more (5.02x
+    // for `{"k":"z"}`). Escaping inflates the call and both copies in the reply together,
+    // so it can only pull the payload's share of the ratio down. The fixture that nears
+    // 3.33x is named here so the number can be re-derived: `{"k":"z"×n}`, which has
+    // nothing in it to escape and nothing for the engine to remove, measures 3.3334x at
+    // the boundary below and 3.35x at a 10,000-byte value.
     //
     // Both ratios cross the cap from underneath it. A `tokfold_compress` call whose
     // `text` is one byte past core's ceiling is a 16,777,324-byte request; it passes
     // through, and the reply would be 33,554,773 bytes — 341 over the limit. The compress
-    // path is not close: a 10,485,871-byte request of high-entropy JSON would be answered
-    // with 34,953,143 bytes, 1,398,711 over.
+    // path is nowhere near that size: with the fixture above, the largest call that still
+    // fits is 10,066,259 bytes — under a third of what this reader admits — answered with
+    // 33,554,431 bytes against the 33,554,432 cap, and one further byte of payload comes
+    // back as `-32602` rather than as a frame.
     //
     // Neither of those frames is emitted any more. The same number bounds what is written
     // as well as what is read, so a request whose answer would cross it is refused by id
@@ -772,21 +801,25 @@ fn the_encoder_name_and_its_wire_id_never_disagree() {
     // — an id may be added, but an existing one may never be renumbered.
     let pairs: &[(&str, i64)] = &[("passthrough", 0), ("minify", 1), ("tabular", 2)];
 
-    // Three inputs chosen to reach three different encoders: uniform rows are what the
-    // tabular encoder exists for, an irregular object can only be minified, and text
-    // that is not JSON at all cannot be encoded.
+    // Three inputs chosen to reach all three encoders: uniform rows are what the
+    // tabular encoder exists for, a whitespace-heavy object with no repeated shape can
+    // only be minified, and a short object — spaced, but too short for removing the
+    // spaces to be worth selecting — passes through. Text that is not JSON is declined and reports no stats at all, so it
+    // cannot stand in for the passthrough encoder. Until this test asserted the set it
+    // observed, its "irregular object" was compact enough to pass through, and the
+    // minifier's pairing was never checked.
     let inputs = [
         r#"{"rows":[{"id":1,"name":"ada","ok":true},{"id":2,"name":"grace","ok":false},{"id":3,"name":"alan","ok":true}]}"#,
+        "{\n    \"service\"     : \"gateway\",\n    \"version\"     : \"1.4.2\",\n    \"healthy\"     : true,\n    \"replicas\"    : 3,\n    \"endpoints\"   : [\n        \"https://example.invalid/a\",\n        \"https://example.invalid/b\"\n    ]\n}",
         r#"{ "a" : { "b" : [ 1 , 2 , 3 ] } , "c" : "some text that is long enough to matter" }"#,
-        "plain prose that is not JSON",
     ];
 
     let mut seen = Vec::new();
     for input in inputs {
         let outcome = compress(input);
-        let Some(stats) = outcome.get("stats") else {
-            continue; // A declined input reports no stats; that path is tested above.
-        };
+        let stats = outcome
+            .get("stats")
+            .expect("every input here is JSON, so every outcome reports stats");
         let name = stats.get("encoder").and_then(json::Value::as_str).unwrap();
         let id = stats
             .get("encoderId")
@@ -796,11 +829,13 @@ fn the_encoder_name_and_its_wire_id_never_disagree() {
             pairs.contains(&(name, id)),
             "encoder {name:?} was reported with id {id}, which is not the frozen pairing"
         );
-        seen.push(name.to_owned());
+        seen.push((name.to_owned(), id));
     }
-    assert!(
-        !seen.is_empty(),
-        "no input reached an encoder, so nothing was actually checked"
+    seen.sort_by_key(|&(_, id)| id);
+    let expected: Vec<(String, i64)> = pairs.iter().map(|&(n, i)| (n.to_owned(), i)).collect();
+    assert_eq!(
+        seen, expected,
+        "the three inputs must reach all three encoders, or a pairing goes unchecked"
     );
 }
 
@@ -868,11 +903,16 @@ fn a_batch_of_nothing_but_notifications_is_answered_with_silence() {
 
 #[test]
 fn the_instructions_promise_is_kept_for_input_that_does_not_compress() {
-    // The tool instructions handed to the model end with "Input that does not compress
-    // is returned unchanged, never dropped." A model acts on that sentence: it embeds
-    // whatever comes back without re-checking. If the declined path ever returned an
-    // empty rendering, or an error, the model would silently lose the tool output it
-    // asked to compress — and no test that only checks `isError` would notice.
+    // The tool instructions handed to the model end with the promise that input is
+    // never dropped silently, and say what comes back on each of the two paths that
+    // save nothing and on a reply too large to send. A model acts on that sentence:
+    // it embeds whatever comes back without re-checking. Until 0.0.1's wording was
+    // corrected it said such input came back "unchanged", which only the decline path
+    // below keeps; the raw-marker path is held by
+    // `json_with_nothing_to_save_comes_back_verbatim_behind_the_raw_marker`, and the
+    // oversized reply by the refusal tests in `server.rs` and `tests/session.rs`. If the
+    // declined path ever returned an empty rendering, or an error, the model would
+    // silently lose the tool output it asked to compress — and no test that only checks `isError` would notice.
     let text = "plain prose, no JSON here at all";
     let arguments = format!(r#"{{"text":{}}}"#, json::Value::string(text));
     let message = reply(&call_line(1, "tokfold_compress", &arguments));
@@ -910,6 +950,56 @@ fn the_instructions_promise_is_kept_for_input_that_does_not_compress() {
             .and_then(json::Value::as_str)
             .is_some_and(|reason| !reason.is_empty()),
         "a decline explains itself in words too: {structured}"
+    );
+}
+
+#[test]
+fn json_with_nothing_to_save_comes_back_verbatim_behind_the_raw_marker() {
+    // The second half of the instructions' promise. Valid JSON that no encoder
+    // shortens is not a decline: it is a successful compress through the passthrough
+    // encoder, so `compressed` is `true` and the rendering is the input behind the
+    // marker line -- not the input unchanged, which is what the instructions said
+    // until their wording was corrected.
+    let text = r#"{"a":1}"#;
+    let arguments = format!(r#"{{"text":{}}}"#, json::Value::string(text));
+    let message = reply(&call_line(1, "tokfold_compress", &arguments));
+    let structured = message
+        .get("result")
+        .and_then(|result| result.get("structuredContent"))
+        .expect("a passthrough is a result");
+    assert_eq!(
+        structured.get("compressed").and_then(json::Value::as_bool),
+        Some(true),
+        "{structured}"
+    );
+    assert_eq!(
+        structured.get("rendering").and_then(json::Value::as_str),
+        Some(format!("\u{27E6}tkfd:v1:raw\u{27E7}\n{text}").as_str()),
+        "{structured}"
+    );
+
+    let init = reply(
+        r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"x","version":"1"}}}"#,
+    );
+    let instructions = init
+        .get("result")
+        .and_then(|result| result.get("instructions"))
+        .and_then(json::Value::as_str)
+        .expect("initialize carries the instructions");
+    assert!(
+        instructions.contains("`\u{27E6}tkfd:v1:raw\u{27E7}` marker line"),
+        "the instructions must describe the marker the rendering carries: {instructions}"
+    );
+    assert!(
+        !instructions.contains("returned unchanged"),
+        "{instructions}"
+    );
+    // The decline half names every reason a valid call is declined, not only prose:
+    // `a_decline_distinguishes_unreadable_input_from_input_it_will_not_go_deeper_into`
+    // returns a too-deep document whole with `compressed: false` too.
+    assert!(
+        instructions.contains("(not JSON, nested too deep, too large) comes back unchanged"),
+        "{instructions}"
     );
 }
 

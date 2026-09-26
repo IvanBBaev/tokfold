@@ -18,23 +18,35 @@ impact classes below.
 
 ## Supported Versions
 
-**There is no supported released version today.** Nothing has been published to a
-package registry and no release has been tagged, so there is no version anyone can
-be running other than a build from this repository. Security fixes land on `main`,
-and a report is assessed against the current `main`.
+| Version | Distributed on | Supported |
+|---|---|---|
+| `0.0.1` | npm (`tokfold` and its five platform packages) | Yes — the only supported version |
+| anything else | — | No |
 
-Once the first release exists, this section becomes: only the latest published `0.y`
-line receives security fixes, and older `0.y` lines get nothing. At 1.0 that becomes
-"latest `x.y` minor only".
+`0.0.1` is published on **npm only**. Nothing has been published to crates.io or
+PyPI, and no git tag has been created for it, so a build from this repository is
+identified by its commit rather than by a tag.
+
+Only the latest published `0.y` line receives security fixes; older `0.y` lines get
+nothing. At 1.0 that becomes "latest `x.y` minor only". Fixes land on `main` first,
+and a report is assessed against the current `main` as well as against the published
+version.
 
 ## Reporting a Vulnerability
 
-Report privately through **GitHub Private Vulnerability Reporting**:
-the repository's **Security** tab → **Advisories** → **Report a vulnerability**.
+Report privately through **GitHub Private Vulnerability Reporting**: the
+repository's **Security** tab → **Advisories** → **Report a vulnerability**.
 
-Do **not** open a public issue, discussion, or pull request for a suspected
-vulnerability, and do not disclose it elsewhere until the coordinated-disclosure
-window has closed.
+**If that button is not there, private reporting has not been switched on yet.** It
+is a repository setting, not something a reporter can work around. In that case open
+a public issue containing *only* the sentence "security report, requesting a private
+channel" — no details, no reproduction, no input — and a private channel will be
+opened for you. Disclosing nothing but the existence of a report is what keeps that
+fallback safe.
+
+Otherwise, do **not** open a public issue, discussion, or pull request for a
+suspected vulnerability, and do not disclose it elsewhere until the
+coordinated-disclosure window has closed.
 
 Please include the following. The **semantic-integrity impact class** is required —
 it determines severity and triage order:
@@ -60,11 +72,13 @@ it determines severity and triage order:
   enormously; a failing property-test case is ideal.
 
 **Scope note on `tokfold-mcp`.** That crate is EXPERIMENTAL and explicitly not
-hardened or audited — see its README and the notice it prints on startup; hardening
-it is a separate milestone that gates any public launch. Reports against it are
-welcome and will be recorded, and the impact classes above still apply to it, but
-"unhardened" is the crate's declared state rather than a vulnerability: a report that
-only restates the missing hardening will be closed as known.
+hardened or audited — see its README and the notice it prints on startup. It shipped
+in `0.0.1` in that state, labelled, rather than being held back until hardening
+landed; hardening is a milestone this project still owes, not a gate the release
+passed. Reports against it are welcome and will be recorded, and the impact classes
+above still apply to it, but "unhardened" is the crate's declared state rather than a
+vulnerability: a report that only restates the missing hardening will be closed as
+known.
 
 ## Coordinated Disclosure
 
@@ -72,17 +86,17 @@ only restates the missing hardening will be closed as known.
   assessment within **7 days**.
 - We follow a **90-day coordinated-disclosure** window: the issue is disclosed
   publicly once a fix has landed on `main` or 90 days have elapsed, whichever comes
-  first, via a **GitHub Security Advisory** on this repository. A RUSTSEC entry
-  becomes possible only after the affected crate is published to crates.io —
-  advisories in that database are keyed to a published package name, so until then
-  there is nothing for it to key an advisory to. If a fix needs more time we will
-  say so and agree a revised date with you.
+  first, via a **GitHub Security Advisory** on this repository. Because `0.0.1` is
+  published on npm, an advisory can be keyed to the npm package name and reach
+  `npm audit`. A **RUSTSEC** entry cannot: that database keys advisories to a
+  crates.io package name, and nothing has been published to crates.io. If a fix
+  needs more time we will say so and agree a revised date with you.
 - Please keep the report private until that window closes.
 
 ## Acknowledgments
 
 Reporters who follow this policy are credited in the **GitHub Security Advisory** and
 in the `CHANGELOG.md` entry for the version that carries the fix, unless you ask to
-remain anonymous. Those two are the whole record: there are no release notes to be
-credited in, because nothing has been released. There is **no bug-bounty program**
-and no monetary reward — thanks and credit only.
+remain anonymous. Those two are the whole record: this project publishes no separate
+release notes, and an npm package page carries none of its own. There is **no
+bug-bounty program** and no monetary reward — thanks and credit only.

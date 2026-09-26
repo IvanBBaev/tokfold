@@ -32,8 +32,7 @@
 //! occurring among those hoisted *keys* is therefore written once, at the header,
 //! rather than at each element's position; deviating rows are self-describing and
 //! still spell out their own keys. Whether the verbatim-with-position rule ought to
-//! forbid
-//! that is an open, format-affecting question recorded in
+//! forbid that is an open, format-affecting question recorded in
 //! [`never_compress`](crate::never_compress) and deliberately not settled here.
 //!
 //! # Body grammar (what [`render`] returns; the caller adds the `tbl` sentinel)
@@ -44,9 +43,22 @@
 //! bytes in strings — so a newline unambiguously marks a block/row boundary. Within
 //! a block the fields are separated by JSON's own punctuation (`,` and `:`), not a
 //! tab: a real BPE tokenizer (cl100k/o200k) merges `,"` and `":"` into single tokens
-//! but never merges a `\t"` boundary, so a tab layout spends most of the key-dedup
-//! saving straight back at the tokenizer. Emitting each row as minified JSON reuses
-//! the punctuation the tokenizer already prices cheaply.
+//! but never merges a `\t"` boundary, so a tab layout can never be the cheaper of the
+//! two spellings. How much dearer it is deserves saying exactly, because the intuition
+//! overshoots and this paragraph used to overshoot with it — it claimed a tab spent
+//! *most* of the key-dedup saving straight back at the tokenizer. It does not, for the
+//! ordinary table. Over the 288 shapes surveyed by
+//! `the_tab_layout_is_priced_the_way_the_e2_docs_say_it_is` in
+//! [`estimator`](crate::estimator) — six value families, two to twenty fields, four to
+//! a hundred rows, both tokenizers — the median give-back is 20% of the saving, and on
+//! 96 of them it is nothing at all. It exceeds half on 90, and those are tables whose
+//! every value is a string — dates and short runs of one letter at each surveyed width
+//! from three fields up, one-letter strings from five, each at some of the four heights
+//! rather than all of them — not only wide ones; no table with a number or
+//! a boolean in its rows gets there. The peak is 86%, at twenty date-like fields. So the tab layout
+//! is a steady loss but usually a modest one, and the case for JSON punctuation is
+//! that it is free rather than that a tab would be ruinous. Emitting each row as
+//! minified JSON reuses the punctuation the tokenizer already prices cheaply.
 //!
 //! A table block replacing an `N`-element array is:
 //!
@@ -86,18 +98,38 @@
 //! # Determinism
 //!
 //! Shapes are interned in an `FxHashMap<u64, ShapeId>` keyed by a hash of the
-//! ordered key list; the header is the most frequent shape, ties broken by first
-//! appearance. `std::collections::HashMap` is avoided on purpose: its per-process
-//! random seed would make iteration order — and thus output — vary between runs and
-//! silently kill the provider's prompt cache. Selection and emission iterate `Vec`s
-//! in source order; a map is never iterated to produce output, so identical input
-//! yields byte-identical output.
+//! ordered key list; the header is the most frequent *hash*, ties broken by first
+//! appearance, and its keys are those of the first element that produced it. The
+//! lookup compares only the hash, never the keys, so two key lists that collide are
+//! counted as one shape. That is not hypothetical: `FxHasher` is a polynomial hash
+//! built for speed, not collision resistance, and a generalized-birthday search
+//! finds colliding pairs of two-key lists in under a minute on a laptop. On such an
+//! input the header can be a shape that occurs once while every other row deviates
+//! from it — the output still round-trips, because rows are matched against the
+//! header by exact key text, but the table is not the one "most frequent shape"
+//! describes. `a_shape_hash_collision_merges_two_shapes_into_one_count` pins one.
+//!
+//! `std::collections::HashMap` is avoided on purpose: its per-process random seed
+//! would make iteration order — and thus output — vary between runs and silently
+//! kill the provider's prompt cache. Selection and emission iterate `Vec`s in source
+//! order; a map is never iterated to produce output, so identical input yields
+//! byte-identical output from one build. Across targets that is not established:
+//! `FxHasher` computes a different value on a 32-bit target — where its state is a
+//! 32-bit `usize` and the upper half of the `u64` is always zero, so by the birthday
+//! bound (derived, not measured) one array of about 77 000 distinct shapes has an
+//! even chance of an accidental collision — and through a different multiply on
+//! `sparc64` and `wasm64`,
+//! so an input whose key lists collide on one target and not on another is rendered
+//! differently by the two. Only 64-bit `aarch64` has been measured.
 //!
 //! # When it declines (returns `None`)
 //!
 //! The expected case is that no array qualifies: an array needs ≥ 2 elements, all
-//! objects, with a shared shape — the dominant key set must occur ≥ 2 times and be
-//! non-empty. Scalar arrays and single-element arrays never qualify.
+//! objects, with a shared shape — the dominant shape hash must occur ≥ 2 times and
+//! its key list be non-empty. Scalar arrays and single-element arrays never qualify.
+//! That is a count of hashes, not of key lists: two elements whose different key
+//! lists collide qualify, with the first one's keys as the header (see the
+//! determinism note).
 //!
 //! `None` is not limited to that case, though. The render walk also returns it from
 //! its defensive guards: a span that does not resolve to source text, an index step
@@ -117,8 +149,8 @@ use crate::tape::{Node, NodeKind, Span, Tape};
 
 /// Table block/row boundary. A newline cannot occur inside minified JSON, which is
 /// what makes the block boundaries unambiguous. Fields within a row are separated by
-/// JSON's own `,`/`:` punctuation rather than a tab, because that tokenizes far
-/// cheaper (see the module docs).
+/// JSON's own `,`/`:` punctuation rather than a tab, which never tokenizes dearer and
+/// is usually cheaper by a modest margin (the module docs give the measured spread).
 const BLOCK: char = '\n';
 /// Row-position markers: header, plain row, deviating row.
 const HEADER: char = '#';
@@ -216,8 +248,9 @@ struct TablePlan {
 #[derive(Copy, Clone)]
 struct ShapeId(usize);
 
-/// Accumulated data for one distinct shape: how often it occurs and an exemplar's
-/// ordered key spans (the header candidate if this shape wins).
+/// Accumulated data for one distinct shape hash: how often it occurs and the first
+/// element's ordered key spans (the header candidate if this hash wins). Two key
+/// lists that collide share one accumulator — see the module determinism note.
 struct ShapeAcc {
     count: u32,
     header_keys: Vec<Span>,
@@ -353,7 +386,8 @@ fn finish_array(frame: &AnalyzeFrame, end_index: usize) -> Option<TablePlan> {
     }
     let best = best?;
 
-    // Require real sharing (≥ 2 elements of one shape) and something to hoist.
+    // Require sharing (≥ 2 elements of one shape hash — not necessarily of one key
+    // list, see the module determinism note) and something to hoist.
     if best.count < 2 || best.header_keys.is_empty() {
         return None;
     }
@@ -641,7 +675,7 @@ fn span_str(input: &str, span: Span) -> Option<&str> {
 ///
 /// This *does* allocate — `to_string` builds a `String` — but it has no panic path,
 /// unlike `write!`, whose `fmt::Result` would have to be unwrapped or discarded. The
-/// crate's no-panic contract is what picks that trade.
+/// workspace's `unwrap_used` and `expect_used` denies are what pick that trade.
 fn push_usize(out: &mut String, n: usize) {
     out.push_str(&n.to_string());
 }
@@ -895,6 +929,54 @@ mod tests {
         assert_eq!(e2(input), None);
     }
 
+    /// Pins what the module determinism note says about a shape-hash collision.
+    /// `["a03c67ad","b03bbddf"]` and `["c004d13f","d009908a"]` are two key lists with
+    /// the same 64-bit `shape_hash` under rustc-hash 2.1.3 on a 64-bit target — found
+    /// by a four-list generalized-birthday search over 2^22 keys per list, which the
+    /// polynomial structure of `FxHasher` makes a matter of seconds. The control
+    /// changes one hex digit of one key. With the collision, the one element of the
+    /// first shape and the six of the second are counted as one shape of seven, and
+    /// the header is the *minority* shape, so every majority row deviates; without it,
+    /// the majority shape heads the table. Both round-trip. The gate is the hasher's:
+    /// `FxHasher` computes a different value on a 32-bit target and through a
+    /// different multiply on `sparc64`/`wasm64`, where these two lists need not
+    /// collide and other lists do.
+    #[cfg(all(
+        target_pointer_width = "64",
+        not(any(target_arch = "sparc64", target_arch = "wasm64"))
+    ))]
+    #[test]
+    fn a_shape_hash_collision_merges_two_shapes_into_one_count() {
+        let doc = |first: &str| {
+            let rows: Vec<String> = (0..6)
+                .map(|i| format!(r#"{{"c004d13f":{i},"d009908a":{i}}}"#))
+                .collect();
+            format!(r#"[{{"{first}":1,"b03bbddf":2}},{}]"#, rows.join(","))
+        };
+        let colliding = doc("a03c67ad");
+        let control = doc("a03c67ae");
+
+        let header = |input: &str| {
+            let body = assert_roundtrip(input);
+            body.lines().nth(1).unwrap().to_owned()
+        };
+        assert_eq!(header(&colliding), r#"#7["a03c67ad","b03bbddf"]"#);
+        assert_eq!(header(&control), r#"#7["c004d13f","d009908a"]"#);
+        assert_eq!(e2(&colliding).unwrap().matches("\n*{").count(), 6);
+        assert_eq!(e2(&control).unwrap().matches("\n*{").count(), 1);
+
+        // Two elements, no key list repeated: the control declines, as "the dominant
+        // shape must occur twice" says, and the colliding pair qualifies.
+        let pair = |first: &str| {
+            format!(r#"[{{"{first}":1,"b03bbddf":2}},{{"c004d13f":0,"d009908a":0}}]"#)
+        };
+        assert_eq!(e2(&pair("a03c67ae")), None);
+        assert_eq!(
+            assert_roundtrip(&pair("a03c67ad")),
+            "\n#2[\"a03c67ad\",\"b03bbddf\"]\n+[1,2]\n*{\"c004d13f\":0,\"d009908a\":0}\n"
+        );
+    }
+
     #[test]
     fn number_lexemes_survive_verbatim() {
         // 1.0 stays 1.0, 1e3 stays 1e3 — never round-tripped through f64.
@@ -1010,7 +1092,8 @@ mod tests {
         // header even though a rarer shape opened the array. Here `{a}` is seen first
         // but occurs once, so hoisting it would leave one plain row and three deviating
         // ones — and would in fact decline the array outright, since a header shape must
-        // occur at least twice.
+        // occur at least twice (its hash must, to be exact: see
+        // `a_shape_hash_collision_merges_two_shapes_into_one_count`).
         let input = r#"[{"a":1},{"b":1},{"b":2},{"b":3}]"#;
         let body = assert_roundtrip(input);
         assert_eq!(body, "\n#4[\"b\"]\n*{\"a\":1}\n+[1]\n+[2]\n+[3]\n");

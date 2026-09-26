@@ -4,10 +4,13 @@
 //! holds no protocol knowledge at all. Everything it enforces is a transport rule:
 //!
 //! * Exactly one JSON-RPC message per line, and a message never contains a newline.
-//! * One size limit in both directions: [`MAX_LINE_BYTES`] is what a line may be to be
-//!   read *and* what an answer may be to be written, so this server never emits a frame
-//!   it would refuse as input. Enforcing the write side is [`Server::handle_line`]'s
-//!   job, not this module's — see [`MAX_LINE_BYTES`].
+//! * One size limit in both directions: [`MAX_LINE_BYTES`] is what a message may be to
+//!   be read *and* what an answer may be to be written, so this server never emits a
+//!   frame it would refuse as input. The terminator is not counted on either side — a
+//!   line on the wire is one byte more than its message, two under CRLF — and the read
+//!   side once counted it, which refused a message of exactly the limit as exceeding
+//!   it. Enforcing the write side is [`Server::handle_line`]'s job, not this module's —
+//!   see [`MAX_LINE_BYTES`].
 //! * **Nothing reaches stdout that is not an MCP message.** A stray `println!` in a
 //!   stdio server corrupts the stream and the client sees a protocol fault rather
 //!   than the log line someone meant to leave. Diagnostics go to stderr.
@@ -35,11 +38,15 @@ use crate::server::Server;
 ///
 /// # Both directions, enforced elsewhere
 ///
-/// A reply is always bigger than the call it answers, so the write side needs enforcing
-/// and not merely documenting. That happens in [`Server::handle_line`] rather than here:
+/// A reply can be several times the call it answers — a large `tokfold_compress` call
+/// tends to 3.33x — so the write side needs enforcing and not merely documenting. (Not
+/// every reply is bigger: a client that escapes its payload as `\uXXXX` is answered in
+/// raw UTF-8, and [`crate::MAX_MESSAGE_BYTES`] records ratios down to 0.27x.) That happens in [`Server::handle_line`] rather than here:
 /// the crate is sans-io, and a bound that lived in this module would protect only the
 /// embedders that happen to use this module. What is left for the transport is to refuse
-/// an oversized *line*, below.
+/// an oversized *message*, below. The name says "line" because a message arrives as one;
+/// the newline that ends it is framing and is not charged against this number, on
+/// either side.
 ///
 /// # Bytes are only half the bound
 ///
@@ -55,9 +62,12 @@ pub const MAX_LINE_BYTES: usize = crate::MAX_MESSAGE_BYTES;
 ///
 /// # Frames are bounded in both directions
 ///
-/// A line longer than [`MAX_LINE_BYTES`] is refused and skipped, and an answer that
+/// A message longer than [`MAX_LINE_BYTES`] is refused and skipped, and an answer that
 /// would be longer is refused by [`Server::handle_line`] before it reaches this loop, so
-/// nothing written here is a frame this same loop would reject on the way in. The one
+/// nothing written here is a frame this same loop would reject on the way in. Both
+/// comparisons are inclusive and both leave the newline out, which is what makes the
+/// second sentence true to the byte: `tests` below pin a message of exactly the limit
+/// as read and one byte more as refused. The one
 /// way to break that is to hand in a server built with
 /// [`Server::with_max_message_bytes`] set above [`MAX_LINE_BYTES`], which is a deliberate
 /// act by the embedder and documented there.
@@ -72,11 +82,15 @@ pub const MAX_LINE_BYTES: usize = crate::MAX_MESSAGE_BYTES;
 ///
 /// A client that instead writes a burst of requests and only then starts reading will
 /// deadlock, and it takes no giant payload to get there: once the accumulated replies
-/// fill the OS pipe buffer (64 KiB on macOS) the server blocks in `write_all` and stops
-/// draining stdin, and a client with more than a pipe buffer of requests still to write
-/// blocks in its own write. Neither side moves again. Measured against a spawned
-/// process, 100 pipelined `ping` calls are fine and 2,000 are not — the threshold is
-/// one pipe buffer, not one large message.
+/// fill the stdout pipe the server blocks in `write_all` and stops draining stdin, and
+/// the client then blocks in its own write once the stdin pipe and this loop's 8 KiB
+/// read buffer are full as well. Neither side moves again. The threshold is therefore
+/// what those buffers hold together — the replies in one pipe plus the requests in the
+/// other and in the reader — not one large message. Measured on macOS against
+/// [`serve_stdio`] in a spawned process, with an unbuffered writer sending
+/// `{"jsonrpc":"2.0","id":1,"method":"ping"}` (41 bytes framed, answered with 144):
+/// 2,195 pipelined calls completed and 2,200 deadlocked, three runs each. A different
+/// request or reply size, or a different platform's pipe capacity, moves the number.
 ///
 /// Reading and writing concurrently here would mean a second thread or an async
 /// runtime in a crate that is deliberately sans-io and dependency-free, so the loop is
@@ -84,9 +98,12 @@ pub const MAX_LINE_BYTES: usize = crate::MAX_MESSAGE_BYTES;
 ///
 /// # Errors
 ///
-/// Returns an [`io::Error`] if reading stdin fails. A write failure is *not* an
-/// error: a client that closes the pipe while the server is answering is shutting
-/// down, which is a normal end to a session and not something to report as a fault.
+/// Returns an [`io::Error`] if reading stdin fails, and if writing a reply fails for
+/// any reason other than the client having gone away. That one exception is narrow
+/// and deliberate: a peer that closes the pipe while the server is answering is
+/// shutting down, which is a normal end to a session and ends the loop with `Ok`.
+/// Every other write failure — a full disk, an I/O fault on the redirect target — is
+/// returned, because it means a reply was lost and the caller has to know.
 pub fn serve<R: BufRead, W: Write>(
     mut reader: R,
     mut writer: W,
@@ -112,6 +129,16 @@ pub fn serve<R: BufRead, W: Write>(
                 }
             }
             Line::TooLong => {
+                // `INVALID_REQUEST` is an approximation, and not a good one: its own
+                // definition is "valid JSON but not a valid JSON-RPC request object",
+                // and an oversize line is never parsed, so it was never a request
+                // object that turned out to be invalid. The near neighbour is
+                // inconsistent with it too — the parser's node budget also abandons a
+                // message part-way, and that surfaces as `PARSE_ERROR`. JSON-RPC has
+                // no code for "too large" and the `-32000` range is closed to this
+                // server, so either refusal has to borrow one. Which to borrow is a
+                // wire-contract question and is open; until it is settled the message
+                // names the real limit, so a client is not left reading the code alone.
                 let error = ErrorObject::new(
                     error_code::INVALID_REQUEST,
                     format!("message exceeds the {MAX_LINE_BYTES} byte limit"),
@@ -126,13 +153,36 @@ pub fn serve<R: BufRead, W: Write>(
 
 /// Serves a client on the process's own stdin and stdout.
 ///
+/// On Unix both streams are duplicates of descriptors 0 and 1 rather than the standard
+/// handles. `io::stdin()` and `io::stdout()` treat `EBADF` as end of input and as a
+/// successful write, which is how they tolerate a closed descriptor, and it made an
+/// unusable stream look like a normal session: a stdin open but not readable ended the
+/// session at once with `Ok`, and a stdout open but not writable dropped every reply
+/// and still ended with `Ok`. Through the duplicates both are the `io::Error` the
+/// kernel returns. Elsewhere the standard handles are used.
+///
 /// # Errors
 ///
-/// Returns an [`io::Error`] if reading stdin fails.
+/// Whatever [`serve`] returns: a read failure on stdin, or a write failure on stdout
+/// that is not the client going away. On Unix, also a failure to duplicate either
+/// descriptor.
 pub fn serve_stdio(server: &mut Server) -> io::Result<()> {
-    let stdin = io::stdin();
-    let stdout = io::stdout();
-    serve(stdin.lock(), stdout.lock(), server)
+    #[cfg(unix)]
+    {
+        use std::fs::File;
+        use std::io::{BufReader, BufWriter};
+        use std::os::fd::AsFd as _;
+        let input = File::from(io::stdin().as_fd().try_clone_to_owned()?);
+        let output = File::from(io::stdout().as_fd().try_clone_to_owned()?);
+        // Buffered so each reply leaves in one write; `write_line` flushes per line.
+        serve(BufReader::new(input), BufWriter::new(output), server)
+    }
+    #[cfg(not(unix))]
+    {
+        let stdin = io::stdin();
+        let stdout = io::stdout();
+        serve(stdin.lock(), stdout.lock(), server)
+    }
 }
 
 /// Runs one request through the server, containing a panic rather than dying.
@@ -182,32 +232,36 @@ enum Line {
     Eof,
     /// The line was not valid UTF-8.
     NotUtf8,
-    /// The line exceeded [`MAX_LINE_BYTES`] and was discarded.
+    /// The message exceeded [`MAX_LINE_BYTES`] and was discarded.
     TooLong,
 }
 
-/// Reads one newline-terminated line, bounded by [`MAX_LINE_BYTES`].
+/// Reads one newline-terminated line whose message is bounded by [`MAX_LINE_BYTES`].
+///
+/// The bound is on the message, not the line: the terminator and a CR before it are
+/// framing, stripped here, and not charged. That is the same comparison
+/// [`crate::jsonrpc::render_bounded`] makes on the way out — inclusive, newline
+/// excluded — and the two have to agree or a message of exactly the limit is legal in
+/// one direction and refused in the other. It once was: the read cap charged the
+/// newline, so the largest message this accepted was one byte under what the same
+/// server would emit.
 fn read_line<R: BufRead>(reader: &mut R, buffer: &mut Vec<u8>) -> io::Result<Line> {
     buffer.clear();
     // Reading through `take` is what makes the bound real: `read_until` on its own
     // would allocate as far as the client cares to write before anyone could object.
-    let limit = u64::try_from(MAX_LINE_BYTES).unwrap_or(u64::MAX);
+    // The cap leaves room for the framing — a CR and the LF — so a message of exactly
+    // the limit is read whole under either line ending; anything past it is judged on
+    // the stripped length below.
+    let framing = 2;
+    let limit = u64::try_from(MAX_LINE_BYTES)
+        .unwrap_or(u64::MAX)
+        .saturating_add(framing);
     let read = Read::by_ref(reader).take(limit).read_until(b'\n', buffer)?;
     if read == 0 {
         return Ok(Line::Eof);
     }
 
     let terminated = buffer.last() == Some(&b'\n');
-    if !terminated {
-        // Either the stream ended without a terminator, or the line hit the cap. Only
-        // the second case needs recovery, and it needs the rest of the line thrown
-        // away so the next read starts on a message boundary.
-        if read >= MAX_LINE_BYTES {
-            skip_to_newline(reader)?;
-            return Ok(Line::TooLong);
-        }
-    }
-
     let mut bytes = std::mem::take(buffer);
     if terminated {
         bytes.pop();
@@ -215,6 +269,18 @@ fn read_line<R: BufRead>(reader: &mut R, buffer: &mut Vec<u8>) -> io::Result<Lin
         if bytes.last() == Some(&b'\r') {
             bytes.pop();
         }
+    }
+
+    if bytes.len() > MAX_LINE_BYTES {
+        // A terminated line was consumed whole, terminator included. An unterminated one
+        // either hit the cap or is a final line one or two bytes over the limit (the cap
+        // leaves room for framing an unterminated line does not have); whatever is left
+        // of it has to be thrown away so the next read starts on a message boundary, and
+        // at the end of the stream that is nothing.
+        if !terminated {
+            skip_to_newline(reader)?;
+        }
+        return Ok(Line::TooLong);
     }
     Ok(String::from_utf8(bytes).map_or(Line::NotUtf8, Line::Text))
 }
@@ -294,7 +360,7 @@ mod tests {
 
     use std::io::{self, Cursor, Write};
 
-    use super::{MAX_LINE_BYTES, recover_id, serve};
+    use super::{Line, MAX_LINE_BYTES, read_line, recover_id, serve};
     use crate::jsonrpc::Id;
     use crate::server::Server;
 
@@ -364,6 +430,9 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"tokfold_compress","arguments":{"text":"{\"a\":\"line\\nbreak\"}"}}}"#,
             "\n",
         ));
+        // One request, one reply: without the count, an output with no lines at all
+        // passes the loop below.
+        assert_eq!(lines(&output).len(), 1, "{output}");
         for line in lines(&output) {
             // A rendering containing a newline would break framing if it were not
             // escaped on the way out; this is the regression that would cause it.
@@ -426,6 +495,66 @@ mod tests {
         let written = lines(&output);
         assert_eq!(written.len(), 2);
         assert!(written[0].contains("-32600"));
+        assert!(
+            written[1].contains(r#""id":2"#),
+            "the stream did not resynchronize"
+        );
+    }
+
+    #[test]
+    fn the_read_bound_is_the_message_and_the_newline_is_not_charged_against_it() {
+        // Both directions claim one number. The write side is inclusive and appends its
+        // newline afterwards, so this side has to be inclusive on the stripped message or
+        // a reply of exactly the limit is a frame the same server refuses as input — and
+        // it was: the cap used to charge the terminator, so the largest message that
+        // could be read was one byte under the largest that could be written, while the
+        // refusal named the larger number as the one exceeded.
+        fn read(line: &[u8]) -> Option<usize> {
+            let mut reader = Cursor::new(line.to_vec());
+            let mut buffer = Vec::new();
+            match read_line(&mut reader, &mut buffer).unwrap() {
+                Line::Text(text) => Some(text.len()),
+                Line::TooLong => None,
+                Line::Eof | Line::NotUtf8 => panic!("neither outcome is under test"),
+            }
+        }
+        fn message(len: usize, ending: &str) -> Vec<u8> {
+            let mut line = vec![b'a'; len];
+            line.extend_from_slice(ending.as_bytes());
+            line
+        }
+
+        for ending in ["\n", "\r\n"] {
+            assert_eq!(
+                read(&message(MAX_LINE_BYTES, ending)),
+                Some(MAX_LINE_BYTES),
+                "a message of exactly the limit is legal, ending {ending:?}"
+            );
+            assert_eq!(
+                read(&message(MAX_LINE_BYTES + 1, ending)),
+                None,
+                "one byte over is refused, ending {ending:?}"
+            );
+        }
+        // An unterminated final message is judged by the same rule.
+        assert_eq!(read(&message(MAX_LINE_BYTES, "")), Some(MAX_LINE_BYTES));
+        assert_eq!(read(&message(MAX_LINE_BYTES + 1, "")), None);
+
+        // The refusal names the number that was exceeded, and it is this number: the
+        // assertions above are what make the text true rather than off by one.
+        let mut input = message(MAX_LINE_BYTES + 1, "\n");
+        input.extend_from_slice(b"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}\n");
+        let mut output = Vec::new();
+        let mut server = Server::new();
+        serve(Cursor::new(input), &mut output, &mut server).unwrap();
+        let output = String::from_utf8(output).unwrap();
+        let written = lines(&output);
+        assert_eq!(written.len(), 2);
+        assert!(
+            written[0].contains(&format!("message exceeds the {MAX_LINE_BYTES} byte limit")),
+            "{}",
+            written[0]
+        );
         assert!(
             written[1].contains(r#""id":2"#),
             "the stream did not resynchronize"

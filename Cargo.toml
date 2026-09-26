@@ -8,7 +8,30 @@ edition = "2024"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
 authors = ["Ivan Baev <ivanbbaev@gmail.com>"]
-description = "Reversible, structure-aware context compression for LLM agents"
+# crates.io publication is on hold, and this manifest deliberately does NOT
+# enforce that with `publish = false`, because cargo will not let it. Measured on
+# 1.97.0: `cargo package --workspace` substitutes a sibling member for a registry
+# dependency only while that sibling is publishable, so marking `tokfold-core`
+# unpublishable makes `tokfold-mcp` look for `tokfold-core = "0.0.1"` on the real
+# index and fail -- and that command is a CI gate step (`ci.yml`). A restriction
+# in list form (`publish = ["..."]`) fails identically. Only `tokfold-cli`, which
+# nothing depends on, could carry the key for free, and a guard on one crate of
+# three is worse than none: `cargo publish --workspace` would then register
+# `tokfold-core` and `tokfold-mcp` -- the irreversible half -- and merely error on
+# the third.
+#
+# What actually holds the line: no workflow contains `cargo publish` (only
+# comments asserting its absence), and this machine has no `~/.cargo/credentials`
+# at all, so an accidental invocation fails at authentication.
+#
+# Lifting the hold is a documentation change before it is a command. The "not on
+# crates.io" paragraphs in `crates/tokfold-{core,cli,mcp}/README.md` ship *inside*
+# the tarballs and become the crates.io front pages; the `documentation` URLs 404
+# until the first publish; and the `tokfold` name itself is still unregistered.
+# No `description` here on purpose. All three crates describe genuinely different
+# things and each sets its own, so a workspace-level default would never be
+# inherited -- and a key that looks live while shipping nowhere is exactly the
+# kind of edit that reads as done and is not.
 keywords = ["llm", "compression", "tokens", "agent", "mcp"]
 categories = ["compression", "text-processing"]
 repository = "https://github.com/IvanBBaev/tokfold"

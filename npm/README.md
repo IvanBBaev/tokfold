@@ -36,24 +36,36 @@ cd npm/tests && node --test
 `npm/tests/` covers `bin/tokfold` and `lib/resolve.js`: the platform table against
 the directories in `platforms/`, the musl refusal, the missing-package path, the
 launcher's exit-code and signal contract, and what each of the six packages would
-actually publish. `.github/workflows/ci.yml` runs it on every push and pull
-request: Node 18 and 22 on Linux, and Node 22 on Windows and macOS.
+actually publish. `.github/workflows/ci.yml` runs it on every pull request and on
+every push to `main` — pushes to other branches run nothing — across Node 18 and
+22 on Linux, and Node 22 on Windows and macOS.
 
 The three operating systems are not redundancy. Windows is the only host where
 `lib/resolve.js` takes its `.exe` branch for real, and the only one where the
 packaging test has to go through a shell to reach `npm.cmd`; macOS is the only
 non-Linux host that runs the process-level suite, and signals, orphan reaping and
 inherited descriptors are kernel behaviour rather than something Linux can vouch
-for on macOS's behalf.
+for on macOS's behalf. The same holds between Node versions, and the matrix has no
+macOS leg on Node 18: an intermittent hang of the launcher measured only on macOS
+with Node v18.20.8 is therefore invisible to CI. `npm/tokfold/README.md` has the
+measurement under "Known issue"; no fix has been chosen.
 
-What Windows skips is narrower than it looks. Only the tests that need the
-launcher to *succeed* are skipped there, because the stand-in binary is a
-`#!/bin/sh` script Windows cannot exec — so the exit-code and signal contract is
-verified on Linux and macOS. Every test in which the launcher is supposed to
-fail runs on all three, because none of them reaches the stand-in: an
-unsupported platform, a platform package that is not installed, and a binary
-that cannot be started all end before there is a child process, and those are
-the paths a user is most likely to hit.
+What Windows skips is narrower than it looks. The tests that need the launcher
+to *succeed* are skipped there, because the stand-in binary is a `#!/bin/sh`
+script Windows cannot exec — so the exit-code and signal contract is verified on
+Linux and macOS. Nearly every test in which the launcher is supposed to fail
+runs on all three, because those paths do not reach the stand-in: an unsupported
+platform, a platform package that is not installed, and a binary that cannot be
+started all end before there is a child process, and those are the paths a user
+is most likely to hit.
+
+Two of them are exceptions, and both are named in the suite rather than left to
+be inferred. A binary whose execute bits are cleared is skipped on Windows,
+which does not decide execution by mode bits at all, so staging an EACCES there
+would be testing the fixture rather than the launcher — the aggregate
+"no launcher-level failure exits anything but 1" test therefore pins six
+fixtures on Linux and macOS and five on Windows. A truncated binary is skipped
+wherever the host starts it anyway, for the reason in the next paragraph.
 
 Two of those deserve naming, because they are the reason the `spawn` call is
 wrapped in a `try`. Node reports most start-up failures on the asynchronous
@@ -81,9 +93,15 @@ different in CI from what a checkout produces. It also asserts the launcher tarb
 still contains the two files it exists to ship, since an allow list on its own is
 satisfied by an empty package.
 
-Run it with no path argument, from inside the directory. `node --test <dir>` only
-accepts a directory from Node 22 onwards — on the Node 18 floor the package
-declares, a positional is read as a module path and the run fails outright.
+Run it with **no path argument, from inside the directory**: `cd npm/tests &&
+node --test`, or pass a glob: `node --test npm/tests/*.test.js`. Both ran all 76
+tests on Node v18.20.8, v20.20.2 and v22.23.2 (measured on macOS). Naming the
+directory is not portable, because whether it works depends on the Node version:
+from the repository root, `node --test npm/tests` (with or without the trailing
+slash) ran all 76 on Node v18.20.8 and v20.20.2, and on v22.23.0 and v22.23.2
+handed the directory to the module loader instead and died with `Cannot find
+module .../npm/tests` before a single test ran (all measured on macOS). The
+release in between where it changed was not bisected.
 
 The launcher is spawned as a real process against a stand-in binary
 (`fake-tokfold.sh`), because exit codes, signals and inherited descriptors are not
@@ -92,10 +110,10 @@ observable from inside the module. Non-host platforms are simulated by redefinin
 in-process for the resolver tests, via `node --require` for the process-level ones.
 Nothing in `tokfold/` has a hook, flag or export that exists for the tests.
 
-## The launcher outlives the binary, never the other way round
+## The launcher relays shutdown signals to the binary
 
 `bin/tokfold` spawns the binary **asynchronously** and forwards `SIGINT`,
-`SIGTERM`, `SIGHUP` and `SIGQUIT` to it. `spawnSync` would be shorter and is
+`SIGTERM`, `SIGHUP`, `SIGQUIT` and `SIGUSR1` to it. `spawnSync` would be shorter and is
 wrong: it blocks the event loop for the whole life of the child, so no signal
 handler can run while the child is alive — and with no handler installed, a signal
 sent to the launcher alone gets its default disposition and kills the launcher on
@@ -109,9 +127,29 @@ it killed the session. `Ctrl-C` never showed it, which is why it went unnoticed:
 a terminal interrupt goes to the whole foreground process group, so the binary was
 signalled directly and died on its own.
 
-`SIGKILL` is the exception no launcher can cover. Everything else is tested —
-`launcher.test.js` signals the launcher's pid alone and asserts the binary is gone
-afterwards, and those tests fail against the previous `spawnSync` version.
+The relay covers five signals, not every signal, so the launcher can still end
+before the binary. `SIGKILL` cannot be caught by any launcher. Other signals sent
+to the launcher's pid alone get Node's disposition, not the kernel's: `SIGUSR2`
+and `SIGALRM` were measured to kill it and leave the binary running, while
+`SIGPIPE` and `SIGXFSZ` are ignored by Node, so both keep running. `SIGUSR1` is
+relayed for a reason of its own: with no listener, Node does not die of it but
+opens its inspector on `127.0.0.1:9229` — the published `0.0.1` launcher does
+that, measured on Node 20 and 22 — and a listener suppresses it, from the point the
+launcher's script installs it: a `SIGUSR1` landing while Node is still booting opens
+the inspector anyway, or kills the launcher by the kernel default if it lands earlier
+still, in both cases before any binary exists (an inspector opened then stays open
+while the launcher goes on to start the binary). Everything in this paragraph
+assumes the caller left each signal at its default: a signal the caller ignores is
+not ignored through the launcher, so `nohup tokfold mcp &` dies on a hangup the
+binary run directly survives — `npm/tokfold/README.md` has the measurement, and the
+`0.0.1` launcher does the same. Each of the five
+is tested — `launcher.test.js` signals the launcher's pid alone and asserts the
+binary is gone afterwards. The four shutdown-signal tests would fail against the
+`spawnSync` launcher of commit `81c7681`, which was never published: signalled that
+way with the binary held, it left the binary running for `SIGTERM`, `SIGINT`,
+`SIGHUP` and `SIGQUIT` alike (measured on macOS, Node v22.23.2). The published
+`0.0.1` launcher (commit `87fb332`) already relays those four, and in the same
+measurement took the binary with it for each; it has no listener for `SIGUSR1`.
 
 Two smaller things in the same file, for the same reason of being frozen once
 published. Its own error messages go through `fs.writeSync(2, …)` rather than
@@ -162,8 +200,13 @@ on whether the runner image has the handlers registered.
 
 That is the workflow as it stands, and it is not retroactive. The four platform
 packages that went out in the first release run were built before the aarch64
-smoke test existed, when the step was gated on `if: matrix.native` — so the published
-`tokfold-linux-arm64-gnu` binary has never been executed by anyone, anywhere. Later
+smoke test existed, when the step was gated on `if: matrix.native` — so CI has
+never executed the published `tokfold-linux-arm64-gnu` binary. It has been run once
+by hand: on 2026-09-26 the registry tarball (`dist.shasum`
+`08af891b2e7a02bd822eb7b12b7c1fee5b30d4ae`, matched locally) printed `tokfold 0.0.1`
+for `--version` in a Linux aarch64 VM (glibc 2.39), and a `compress --archive` then
+`expand` round trip exited `0` both times and reproduced the input byte for byte.
+That is one manual run, not a gate. Later
 release runs rebuild and smoke-test that target, which verifies the *source* at
 that commit, but the skip means they do not republish it: the bytes a user
 downloads stay the ones from the first run. Replacing them would cost a version
@@ -220,10 +263,13 @@ out of a partial release would have been to burn a version number.
 
 The publisher half of that condition is load-bearing, not paranoia. "Already there"
 and "already ours" are different questions, and only the second one is safe to skip
-on: these names are public, some of them are still unclaimed, and the design
-publishes the most valuable one — `tokfold` itself — last. A bare existence check
-would turn a squatter's upload into a workflow that reports success having uploaded
-nothing, while `npm i -g tokfold` runs their code. So the step compares
+on. All six names carry a `0.0.1` now, though not from one run and not on one day:
+four went out on 2026-08-27 and the last two, including `tokfold` itself, on
+2026-08-29. That settles `0.0.1` and nothing else: every version after it is still
+an unclaimed coordinate on a public name, and the design publishes the most
+valuable one — `tokfold` itself — last. A bare existence check would turn a
+squatter's upload into a workflow that reports success having uploaded nothing,
+while `npm i -g tokfold` runs their code. So the step compares
 `_npmUser.name` against `npm whoami` and stops the entire release on any other
 answer, including a registry that will not say. A lookup that fails for any other
 reason falls through to publishing, where npm itself rejects a duplicate version —
@@ -266,11 +312,20 @@ move beyond the block") and unblocked the name by creating a placeholder and
 transferring write access to the maintainer. That is why `git-cliff-win32-x64` is
 a `0.0.1-security` stub held by an npm staff account and `git-cliff-windows-x64`
 is the live one: the stub is a fossil of the block, not the remains of a
-withdrawn package. esbuild and turbo ship `-windows-` names too.
+withdrawn package.
+
+esbuild and turbo are usually named alongside it as ecosystem confirmation of the
+`-windows-` shape. They are not confirmation of it. esbuild publishes the scoped
+`@esbuild/win32-x64` — Node's own spelling, kept — and turbo publishes the scoped
+`@turbo/windows-64`. Neither is an unscoped rename, and a scoped name never meets
+this classifier in the first place. `git-cliff` is the only unscoped precedent
+found. Worth saying plainly rather than filing under "the ecosystem agrees": both
+of the projects cited above avoid this problem by scoping, not by renaming, so
+what they really evidence is the option this release did not take.
 
 `win32` is not categorically banned — recent unscoped `*-win32-x64` packages do
 exist — but it is the token this name was rejected on, and `windows-x64` is the
-ecosystem's own answer to the same problem. Two other reflexes are worth ruling
+name the one documented unscoped precedent moved to. Two other reflexes are worth ruling
 out in writing, because both look obvious and neither works: retrying the same
 name does not clear the flag (no publicly documented case of it doing so, and
 this project's own three attempts across two days are three more), and appending
@@ -285,9 +340,11 @@ that is what `process.platform` reports and the key is not negotiable; only the
 registry name changed. `lib/resolve.js` was built to allow exactly this — its keys
 are Node's names and its values are npm's, and they already disagree for Linux.
 
-This was free to do only because the launcher had not been published. The set of
-package *names* stops being free the moment `tokfold` itself goes out with those
-five names frozen into its `optionalDependencies`.
+Renaming was free only because the launcher had not been published yet. That
+window is closed: `tokfold` went out on 2026-08-29 with those five names frozen
+into its `optionalDependencies`, so changing any of them now means publishing a
+new launcher version and leaving every already-installed copy pointing at a
+package that no longer receives updates.
 
 Publishing the launcher **last** is what keeps this from being a user-visible
 failure, and the ordering matters more than it first looks. Under npm and pnpm, a

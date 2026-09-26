@@ -12,10 +12,27 @@
 //! # Why this is a candidate, not a guarantee (CRITICAL)
 //!
 //! Minification is **not** uniformly a token win, even though it always removes
-//! bytes. cl100k/o200k tokenize a multi-space indentation run as a single
-//! indentation token, and a post-key `": "` as a single token, so stripping them
-//! can leave the token count flat while the byte count drops. A byte objective
-//! would therefore over-reward this encoder. That is exactly why
+//! bytes, because bytes and tokens are priced very differently — and the pricing is
+//! a lookup table, not a rule, so it cannot be reasoned about, only measured.
+//!
+//! cl100k and o200k carry a dedicated token for many indentation widths, so a run
+//! of spaces costs **1** token whatever its byte length: 4, 8, 16 and even 128
+//! spaces are one token each. At the depths real documents reach, a line therefore
+//! sheds many bytes and exactly two tokens — the newline and the run — and a byte
+//! objective over-rewards this encoder. But the table is finite and **not
+//! monotonic**: of the run lengths `1..=400`, cl100k spends one token on 86 of them
+//! and o200k on 84; the longest single-token run is 128 for both, while the first
+//! length that costs more is 82 under cl100k and 80 under o200k. A 512-space run —
+//! reachable, since [`Config`](crate::Config)'s default `max_depth` is 512 — is 4
+//! tokens, and 2048 spaces is 16. Past the table, stripping a run is worth
+//! progressively more, so the same byte objective *under*-rewards the encoder
+//! there. It misprices in both directions, which is the point.
+//!
+//! Stripping the space in a post-key `": "` pays, and pays predictably: `": "` is 2
+//! tokens where `":"` is 1, so that is one token per key. It is the smaller half of
+//! the saving, and it is not a guarantee either — an input already free of
+//! insignificant whitespace has nothing to strip, and the rendering still carries
+//! the sentinel line. That is exactly why
 //! [`select`](super::select) applies the candidate rule against a *token* estimate
 //! and falls back to passthrough when minification does not actually pay — this
 //! module renders, it never decides.

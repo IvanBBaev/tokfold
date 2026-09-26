@@ -85,6 +85,12 @@ process.on("exit", () => {
  *   should be, so the path the launcher builds cannot resolve. Contrived on its
  *   own; kept because it is the one unstartable state every platform reports
  *   the same way, and `unrunnable` is not (see the launcher suite)
+ * @param {string[]} [options.notExecutable] which get a perfectly good binary
+ *   with its execute bits cleared -- what a `tar` extracted under a restrictive
+ *   umask, or a package copied by a tool that drops modes, leaves behind. This
+ *   is the EACCES path, and it is the *other* errno `spawn` defers to the
+ *   `error` event rather than throwing, so it exercises the asynchronous half
+ *   of the launcher's start-failure handling with a real errno
  * @returns {{root: string, launcher: string, resolveModule: string,
  *            packageDir: (name: string) => string,
  *            binaryPath: (name: string) => string}}
@@ -94,6 +100,7 @@ function createInstall({
   withBinary = [],
   unrunnable = [],
   binIsFile = [],
+  notExecutable = [],
 } = {}) {
   // `realpathSync` matters on macOS, where `os.tmpdir()` is `/var/folders/...`
   // but `require.resolve` returns the `/private/var/...` it really lives at.
@@ -139,6 +146,9 @@ function createInstall({
     if (withBinary.includes(name)) {
       fs.copyFileSync(FAKE_BINARY, target);
       fs.chmodSync(target, 0o755);
+    } else if (notExecutable.includes(name)) {
+      fs.copyFileSync(FAKE_BINARY, target);
+      fs.chmodSync(target, 0o644);
     } else if (unrunnable.includes(name)) {
       // Shaped like a truncated ELF rather than filled with noise, because that
       // is what the state actually looks like in the field: an interrupted

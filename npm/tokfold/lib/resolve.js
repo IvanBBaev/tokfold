@@ -25,14 +25,24 @@ const path = require("node:path");
  * resolving a glibc binary.
  *
  * Windows diverges for a duller reason: npm's registry refused `tokfold-win32-x64`
- * at publish time with "Package name triggered spam detection", twice, two days
- * apart, while the four sibling names in the same run went through. Unscoped
- * `<tool>-win32-x64` is the shape a wave of dependency-confusion squats took, and
- * the classifier appears to have learnt it. `windows-x64` is what the ecosystem
- * settled on for the same reason -- esbuild, turbo and git-cliff all publish
- * `-windows-` names, and git-cliff's own `git-cliff-win32-x64` is a tombstoned
- * `0.0.1-security` held by npm staff. The key stays `win32-x64` because that is
- * what Node reports; only the name on the registry changed.
+ * at publish time with "Package name triggered spam detection" -- three times
+ * over two days, two of those refusals 1h38m apart on the first day, while the
+ * four sibling names published from the same token in the same run went through.
+ * Unscoped `<tool>-win32-x64` is the shape a wave of dependency-confusion squats
+ * took, and the classifier appears to have learnt it.
+ *
+ * `git-cliff` is the one real precedent for renaming rather than scoping: it hit
+ * the identical "spam detection" refusal in 2023 and renamed the same day, and
+ * its own `git-cliff-win32-x64` is now a tombstoned `0.0.1-security` held by npm
+ * staff. Two names usually cited alongside it are not precedents for this fix at
+ * all: esbuild publishes the *scoped* `@esbuild/win32-x64` and turbo the *scoped*
+ * `@turbo/windows-64`, and a scoped name never meets this classifier. Stated
+ * honestly: both of those projects solved the problem by scoping, and scoping is
+ * the only measure observed to sidestep the classifier outright. Renaming the
+ * unscoped name is the narrower fix, and the one taken here.
+ *
+ * The key stays `win32-x64` because that is what Node reports; only the name on
+ * the registry changed.
  *
  * Adding a target means: a new entry here, a new directory under
  * `npm/platforms/`, a new entry in this package's `optionalDependencies`, and a
@@ -87,22 +97,35 @@ function isMusl() {
  */
 function resolveBinaryPath() {
   const key = `${process.platform}-${process.arch}`;
+  const pkg = PACKAGES[key];
+  const musl = isMusl();
 
-  if (isMusl()) {
+  // A musl host whose architecture has no build at all fails for two independent
+  // reasons, and reporting either one alone costs the reader a round trip: the libc
+  // message sends them to swap their base image, after which the arch is still
+  // unsupported, and the arch message alone lets them go build a glibc target they
+  // could not have run. So this branch names both and the remedy that answers both,
+  // and an architecture that does have a build still falls through to the libc check
+  // below with its own message unchanged.
+  if (pkg === undefined) {
+    throw new Error(
+      `tokfold: no prebuilt binary for ${key}.\n` +
+        `Supported: ${Object.keys(PACKAGES).sort().join(", ")}.\n` +
+        (musl
+          ? "This build of Node also links musl libc (Alpine or an -alpine image), and " +
+            "tokfold ships glibc binaries only, so a supported architecture would still " +
+            "need a glibc image.\n"
+          : "") +
+        "Build from source instead: cargo install --git https://github.com/IvanBBaev/tokfold tokfold-cli",
+    );
+  }
+
+  if (musl) {
     throw new Error(
       "tokfold: this build of Node links musl libc (Alpine or an -alpine image), " +
         "and tokfold currently ships glibc binaries only.\n" +
         "Use a glibc-based image (for example node:22-slim instead of node:22-alpine), " +
         "or build from source: cargo install --git https://github.com/IvanBBaev/tokfold tokfold-cli",
-    );
-  }
-
-  const pkg = PACKAGES[key];
-  if (pkg === undefined) {
-    throw new Error(
-      `tokfold: no prebuilt binary for ${key}.\n` +
-        `Supported: ${Object.keys(PACKAGES).sort().join(", ")}.\n` +
-        "Build from source instead: cargo install --git https://github.com/IvanBBaev/tokfold tokfold-cli",
     );
   }
 
@@ -121,7 +144,12 @@ function resolveBinaryPath() {
         "This usually means the install ran with optional dependencies disabled " +
         "(npm ci --omit=optional, or NPM_CONFIG_OPTIONAL=false), or a lockfile built " +
         "on a different platform was reused without re-resolving.\n" +
-        `Fix it with: npm install ${pkg}@${require("../package.json").version}`,
+        "Fix it by reinstalling the launcher with optional dependencies enabled: " +
+        `npm install -g tokfold@${require("../package.json").version}, or re-run ` +
+        "your project's install without --omit=optional.\n" +
+        `Installing ${pkg} by itself is not the fix: the launcher finds it only ` +
+        "beside its own install, not in the current directory, and the newest " +
+        "version of it need not be the launcher's.",
       { cause },
     );
   }

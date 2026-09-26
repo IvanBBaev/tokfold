@@ -14,16 +14,27 @@
 // `stdio: "inherit"` hands the child fds 0/1/2 directly instead of piping them
 // through this process. That is load-bearing for three separate reasons:
 //
-//   * tokfold streams. `tokfold compress --input big.json` and the `mcp`
-//     subcommand both read and write incrementally; piping through Node would
-//     add a buffering layer between the two, and `mcp` in particular is a
-//     line-framed protocol server where an extra buffer can stall a session.
+//   * `mcp` streams. It is a line-framed protocol server that reads and
+//     answers one message at a time, and piping it through Node would add a
+//     buffering layer where an extra buffer can stall a session. (`compress`
+//     and `expand` do not stream -- each reads its whole input and writes its
+//     output in one call -- so for them this reason does not apply.)
 //   * Broken pipes stay broken in the right place. `tokfold compress | head`
 //     closes the pipe early, and the CLI treats that as a clean exit
 //     (crates/tokfold-cli/src/main.rs). With a relay in the middle, the EPIPE
 //     would land on Node instead, where the default is an unhandled error.
 //   * Terminal detection keeps working. The child sees a tty when the user has
 //     one, rather than always seeing a pipe.
+//
+// Only those three. On macOS Node starts the child with every other descriptor
+// closed, so `--input /dev/fd/3` reaches the binary as a closed descriptor and
+// fails with EBADF. Measured through a shell parent, `--input /dev/fd/3`
+// with fd 3 open on a file: macOS, Node v22.23.2, both this launcher and the
+// published 0.0.1 one (exit 2, "Bad file descriptor"; the binary run directly
+// exits 0); Linux aarch64, glibc 2.39, Node v22.23.2 and v18.20.8, this
+// launcher (fds 3 and 4 closed in the child). Listing more entries in `stdio` would not fix that safely: this
+// process cannot tell a descriptor its caller passed from one Node opened for
+// itself, and handing the binary Node's own would be worse than handing it none.
 //
 // ---------------------------------------------------------------------------
 // Why the spawn is asynchronous
@@ -46,24 +57,100 @@
 // alone produces the orphan.
 //
 // Spawning asynchronously keeps the event loop free, so the handlers below can
-// forward the signal to the child and then wait for it to die -- the child
-// always outlives nothing, and this process always outlives the child.
+// forward the signal to the child and then wait for it to die. That holds for
+// the signals in `FORWARDED`; see there for what happens with the others.
 //
 // ---------------------------------------------------------------------------
 // Exit codes
 // ---------------------------------------------------------------------------
 // tokfold's exit codes are normative and documented: 0 success, 2 bad input,
-// 3 a corrupt or unrecoverable archive. Scripts branch on them, so this launcher
+// 3 a corrupt, empty, or otherwise unrecoverable archive. Scripts branch on
+// them, so this launcher
 // must never invent, remap or swallow one.
 //
 // When the launcher itself fails — unsupported platform, missing binary, a spawn
 // that never got off the ground — it exits **1**, which is deliberately *not* one
-// of tokfold's codes. A `1` from this command therefore means exactly one thing:
-// tokfold never ran. It cannot be confused with "your input was bad" (2) or
+// of tokfold's codes. It cannot be confused with "your input was bad" (2) or
 // "that archive is corrupt" (3), and a script that already distinguishes 2 from 3
 // does not silently treat an installation problem as a data problem.
+//
+// A child killed by a signal is reproduced by re-raising that signal on this
+// process, so the calling shell sees a signal death rather than a number. The
+// case where that cannot work — a signal the runtime ignores — falls back to
+// the shell's own `128 + N` encoding, which keeps the signal identifiable and
+// stays clear of 0, 1, 2 and 3. Node ignores SIGPIPE and SIGXFSZ; the binary can
+// die of the second (a write past `ulimit -f`: 153 on macOS, as a shell reports
+// for the binary run directly) but not of the first, because a Rust program
+// starts with SIGPIPE ignored.
+//
+// All of this assumes the caller left each signal at its default disposition.
+// A signal the caller *ignores* is not ignored through this launcher: the
+// listeners below replace the inherited ignore, removing them restores the
+// default rather than the ignore, and Node starts the child with every signal at
+// its default. So `nohup tokfold mcp &` dies on a hangup that the binary run
+// directly survives, and so does a background job whose shell started it with
+// SIGINT ignored (measured on macOS, Node 22; the 0.0.1 launcher does the
+// same). Node offers no way to read an inherited disposition, so this is
+// documented rather than fixed.
+//
+// So `1` means "tokfold never ran" in every case production was measured to
+// reach. The signal path has a `1` of its own, but it needs Node to hand this
+// process a signal *name* that its own `os.constants.signals` table cannot map
+// back to a number. The name is produced in Node's C++ layer, not read from
+// that table, so the two could in principle disagree. Measured, they do not:
+// on macOS with Node 22 for any of signals 1-31, and on Linux aarch64 (glibc
+// 2.39, Node v22.23.2) for any of signals 1-64 -- every name Node reported
+// maps back, and the signals it cannot name arrive unnamed, below. Only a test
+// that empties the table reaches this `1`. It is
+// still handled, and it is the one launcher exit that writes a line saying so,
+// which is what would let a caller tell it apart from a launcher that really
+// never started anything.
+//
+// That table is not the only place a name can go missing, and the other place
+// is worse. Node turns the child's signal number into a name before the `exit`
+// event fires, and a signal it has no name for -- SIGEMT on macOS; on Linux
+// aarch64 (glibc 2.39, Node v22.23.2) every signal from 32 to 64, which is the
+// 31 realtime signals from SIGRTMIN = 34 plus the two glibc reserves below
+// them; all measured -- does not arrive as a signal at all: it arrives as
+// `exit(0, null)`, exactly what a successful run looks like. The launcher then exits **0** for a binary
+// that was killed. No public API tells the two apart, so this is documented
+// rather than fixed; the published 0.0.1 launcher does the same. Nothing in
+// tokfold raises such a signal, so it takes an outside `kill` to reach it.
+//
+// The alternative — `128 + undefined`, i.e. `NaN` — is worse than ambiguous,
+// and how much worse depends on the runtime. On Node 18, the `engines` floor,
+// `process.exit(NaN)` is accepted silently and reports **0**: a killed run
+// becomes a success. Node 20 added range validation and throws
+// `ERR_OUT_OF_RANGE` there instead. So the guard below reads as superstition on
+// a modern Node and is load-bearing on the oldest one this package supports.
+// The Node 18 CI leg runs on Linux only (the matrix is linux-node18,
+// linux-node22, macos-node22, windows-node22), so no leg runs this file on
+// Node 18 under macOS -- see "Known issue" in this header.
+//
+// ---------------------------------------------------------------------------
+// Known issue, not fixed: an intermittent hang on Node 18 under macOS
+// ---------------------------------------------------------------------------
+// One measurement (macOS arm64, Node v18.20.8, the fake binary in `hold`
+// mode, a signal from FORWARDED, 60 runs per signal, a harness that kills the
+// launcher after 8 s) found 32 of 300 runs in which the binary was already
+// dead and reaped and the `exit` event below never fired, so the launcher sat
+// until the harness killed it, with nothing on stderr. The same session
+// reproduced it without tokfold, with a minimal script spawning /bin/sleep
+// (5 of 60; 12 of 60 with these listeners installed), which points at Node 18's
+// child_process on macOS rather than at this file. It saw no hang on macOS
+// with Node v20.20.2, v22.23.2 or v26.7.0, nor on Linux with v18.20.8 or
+// v22.23.2. A second attempt on the same host and Node version, 60 runs per
+// signal, reproduced none; under CPU load (four `yes` processes) the npm
+// suite on Node v18.20.8 then lost 1 to 3 of its 76 tests to the 30 s bound
+// in 2 of 3 runs, and v20.20.2 and v22.23.2 passed all 76 under the same
+// load. The published 0.0.1 launcher uses the same
+// asynchronous `spawn` (its FORWARDED lacks only SIGUSR1), and whether it hangs
+// the same way was not measured. CI cannot see it (no macos-node18 leg). The
+// remedy -- a CI leg, a higher `engines` floor, or a watchdog here -- is an
+// owner decision and none has been taken.
 
 const fs = require("node:fs");
+const os = require("node:os");
 const { spawn } = require("node:child_process");
 const { resolveBinaryPath } = require("../lib/resolve.js");
 
@@ -73,7 +160,32 @@ const LAUNCHER_FAILED = 1;
 /**
  * Signals worth relaying to the child before this process goes away.
  *
- * These are the ones a supervisor actually sends to ask for a clean shutdown.
+ * The first four are the ones a supervisor actually sends to ask for a clean
+ * shutdown. SIGUSR1 is relayed for a different reason: with no listener, Node
+ * does not die of it but opens its inspector on 127.0.0.1:9229 and prints
+ * "Debugger listening" on stderr, so a SIGUSR1 sent to the launcher alone
+ * started a debugger in it while the binary kept running. A listener suppresses
+ * that (measured on Node 20 and 22), and relaying it gives the binary the death
+ * it would have died run directly, which the exit handler then re-raises.
+ *
+ * A listener cannot cover the launcher's whole life. Node installs its own
+ * SIGUSR1 handler while it boots, before this file runs, so a SIGUSR1 that lands
+ * in that stretch still opens the inspector; one that lands earlier still, before
+ * Node's handler exists, kills the launcher by the kernel default. Neither can
+ * orphan anything -- there is no binary yet, though an inspector opened then
+ * stays open while the launcher goes on to start one -- and the listeners below are
+ * installed before the binary is looked up, which leaves only Node's boot and
+ * this file's own `require`s in the stretch. `--disable-sigusr1` would close
+ * it, and the launcher does not pass it: Node v18.20.8 and v20.20.2 refuse the
+ * flag with exit 9, on the command line and in `NODE_OPTIONS` alike, while
+ * v22.23.x and v26.7.0 accept it in both places (measured on macOS), so it
+ * cannot go on the `#!` line of a package whose floor is Node 18. A caller on
+ * Node 22 or later can set it through `NODE_OPTIONS` without touching that line.
+ *
+ * Nothing else is relayed, and what the launcher does with anything else is
+ * Node's default, not the kernel's. SIGUSR2 and SIGALRM were measured to kill
+ * it and leave the binary running; SIGPIPE and SIGXFSZ are ignored by Node, so
+ * the launcher lives on and so does the binary.
  * SIGKILL is absent because it cannot be caught, so a `kill -9` on the launcher
  * still orphans the child -- that is a property of SIGKILL and no launcher can
  * fix it.
@@ -86,11 +198,14 @@ const LAUNCHER_FAILED = 1;
  * one that matters is the second: a throw out of a signal handler is an
  * uncaught exception that kills the launcher and leaves the binary running.
  */
-const FORWARDED = ["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"];
+const FORWARDED = ["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT", "SIGUSR1"];
 
 /**
  * How many EAGAINs in a row `writeStderr` will sit through before giving up,
- * and how long it pauses between them. Together: about a second of patience.
+ * and how long it pauses between them. A chosen budget, not a measured
+ * duration: no test reaches the retry (it needs a full non-blocking pipe on
+ * fd 2). At the nominal pause the two multiply to about a second; how long
+ * the retry really lasts was never measured.
  */
 const EAGAIN_ATTEMPTS = 1000;
 const EAGAIN_PAUSE_MS = 1;
@@ -126,12 +241,17 @@ function pause(ms) {
  * reporting -- there is nowhere left to report it to.
  *
  * The EAGAIN retry is both paused and bounded. A reader that never drains is a
- * real state -- a pipe whose far end is alive but stopped, a terminal under
- * flow control -- and an unpaused, unbounded retry answers it by pinning a core
+ * real state -- a non-blocking pipe whose far end is alive but stopped -- and
+ * an unpaused, unbounded retry answers it by pinning a core
  * for as long as it lasts, turning a diagnostic message into a hang. The
- * message is worth waiting about a second for; it is not worth the command
+ * message is worth a bounded wait -- the budget is `EAGAIN_ATTEMPTS` pauses
+ * of `EAGAIN_PAUSE_MS`, chosen and not measured; it is not worth the command
  * never returning. Progress resets the count, so a reader draining slowly is
- * waited out however long it takes.
+ * waited out however long it takes. None of this reaches a *blocking* fd 2 --
+ * the ordinary pipe, or a terminal stopped with Ctrl-S once its buffer fills --
+ * because there
+ * `fs.writeSync` never sees EAGAIN: it waits in the kernel, and nothing here
+ * bounds that wait.
  *
  * @param {string} message
  */
@@ -161,6 +281,63 @@ function writeStderr(message) {
   }
 }
 
+/** The child, once there is one. Null until the spawn call returns. */
+let child = null;
+
+/**
+ * Relays one signal to the child.
+ *
+ * `child` is never null here, although the handlers are installed before the
+ * binary is even looked up. Node runs a signal listener on the event loop, never
+ * inside a synchronous call, and everything from here to the end of `spawn` is
+ * synchronous: a signal the kernel delivers meanwhile is queued and dispatched
+ * after `spawn` returns, by which point `child` is set -- or the lookup or the
+ * spawn has already failed and exited `1`, and the queued signal never runs.
+ * An earlier version kept a `pending` slot for that signal and replayed it after
+ * the spawn; the slot could never be filled, and it is gone.
+ *
+ * @param {NodeJS.Signals} signal
+ */
+function forward(signal) {
+  try {
+    // Best effort by design. The child may have exited already, in which case
+    // this is a no-op and its `exit` event is what ends us.
+    child.kill(signal);
+  } catch {
+    try {
+      // The name is not deliverable on this platform -- Windows, where only
+      // SIGTERM/SIGKILL/SIGINT survive the trip. Ask for termination in the
+      // way this platform can express instead, because the promise being kept
+      // is that the binary does not outlive the launcher, not that a
+      // particular signal number reaches it.
+      child.kill();
+    } catch {
+      // Already gone, or not signallable at all. Either way the `exit` handler
+      // below is what ends this process, and a throw escaping a signal handler
+      // here would be the very orphan this file exists to prevent.
+    }
+  }
+}
+
+// Installed *before* the spawn, not after, and before the binary is looked up.
+// Signals are delivered by the kernel whenever they like, and between forking a
+// child and registering a handler the default disposition still applies -- a
+// SIGTERM landing in that window would kill the launcher outright and leave the
+// binary running on the caller's descriptors. Handlers first closes the window,
+// and a signal that lands during the lookup or the spawn is dispatched once
+// `spawn` returns -- see `forward`. Ahead of the lookup, because that shortens
+// the stretch in which a SIGUSR1 opens Node's inspector -- see `FORWARDED`.
+const installed = [];
+for (const signal of FORWARDED) {
+  try {
+    process.on(signal, () => forward(signal));
+    installed.push(signal);
+  } catch {
+    // This platform does not support listening for that signal. Nothing to
+    // relay, and nothing that needs saying about it.
+  }
+}
+
 let binary;
 try {
   binary = resolveBinaryPath();
@@ -187,68 +364,6 @@ function failedToRun(error) {
   process.exit(LAUNCHER_FAILED);
 }
 
-/** The child, once there is one. Null for the length of the spawn call. */
-let child = null;
-
-/**
- * A signal that arrived before the child existed, held for replay.
- *
- * Only the last one is kept. Two different shutdown requests racing the spawn
- * is not a distinction worth preserving: both mean stop, and the child gets
- * told to stop either way.
- *
- * @type {NodeJS.Signals | null}
- */
-let pending = null;
-
-/**
- * Relays one signal to the child, or remembers it if there is not one yet.
- *
- * @param {NodeJS.Signals} signal
- */
-function forward(signal) {
-  if (child === null) {
-    pending = signal;
-    return;
-  }
-
-  try {
-    // Best effort by design. The child may have exited already, in which case
-    // this is a no-op and its `exit` event is what ends us.
-    child.kill(signal);
-  } catch {
-    try {
-      // The name is not deliverable on this platform -- Windows, where only
-      // SIGTERM/SIGKILL/SIGINT survive the trip. Ask for termination in the
-      // way this platform can express instead, because the promise being kept
-      // is that the binary does not outlive the launcher, not that a
-      // particular signal number reaches it.
-      child.kill();
-    } catch {
-      // Already gone, or not signallable at all. Either way the `exit` handler
-      // below is what ends this process, and a throw escaping a signal handler
-      // here would be the very orphan this file exists to prevent.
-    }
-  }
-}
-
-// Installed *before* the spawn, not after. Signals are delivered by the kernel
-// whenever they like, and between forking a child and registering a handler the
-// default disposition still applies -- a SIGTERM landing in that window would
-// kill the launcher outright and leave the binary running on the caller's
-// descriptors. Handlers first closes the window; `pending` covers the signal
-// that arrives while the window is closed but there is nothing to forward to.
-const installed = [];
-for (const signal of FORWARDED) {
-  try {
-    process.on(signal, () => forward(signal));
-    installed.push(signal);
-  } catch {
-    // This platform does not support listening for that signal. Nothing to
-    // relay, and nothing that needs saying about it.
-  }
-}
-
 try {
   child = spawn(binary, process.argv.slice(2), { stdio: "inherit" });
 } catch (error) {
@@ -264,13 +379,18 @@ try {
   failedToRun(error);
 }
 
-child.on("error", failedToRun);
-
-if (pending !== null) {
-  // A signal arrived while the spawn was in flight. Deliver it now, so a
-  // `timeout` that fires during start-up still takes the binary with it.
-  forward(pending);
-}
+child.on("error", (error) => {
+  // Once the child has a pid it was started, and the only `error` left for
+  // this file to see is a relayed signal that could not be delivered:
+  // `child.kill` reports EPERM on this event instead of throwing it. Treating
+  // that as a failure to start exited `1` for a binary that was running, and
+  // left it running with the caller's descriptors -- the orphan `forward`
+  // exists to prevent. Its `exit` event still ends this process.
+  if (child.pid !== undefined) {
+    return;
+  }
+  failedToRun(error);
+});
 
 child.on("exit", (code, signal) => {
   // The child was killed by a signal rather than exiting. Re-raising the same
@@ -284,15 +404,54 @@ child.on("exit", (code, signal) => {
     // cover, and a signal with a listener attached does not kill anything.
     // Dropping them restores the default, which is what makes the re-raise
     // below fatal instead of a no-op that loops straight back into `kill`.
+    //
+    // That holds for SIGUSR1 too, though it looks as if it should not. Node's
+    // inspector handler is not something a listener stacks on top of: adding
+    // the listener replaced it, and removing the listener leaves the kernel
+    // default behind, not the inspector. So the re-raise kills this process by
+    // SIGUSR1 like any other signal (measured on macOS with Node 20, 22 and 26),
+    // and a SIGUSR1 arriving from outside after this point ends it the same way.
+    // The `0.0.1` launcher re-raised SIGUSR1 while Node's handler was still
+    // installed, which is what opened the inspector.
     for (const name of installed) {
       process.removeAllListeners(name);
     }
 
     process.kill(process.pid, signal);
 
-    // Reached only for a signal that is ignored or cannot be delivered --
-    // Node ignores SIGPIPE process-wide, for instance.
-    process.exit(LAUNCHER_FAILED);
+    // Reached for a signal that is ignored or cannot be delivered -- Node
+    // ignores SIGPIPE and SIGXFSZ process-wide, for instance. Exiting `1` here would
+    // say "the launcher failed", which is the one thing that did not happen:
+    // the binary ran and was killed. `128 + N` is the shell's own encoding of
+    // "died by signal N", so a caller that cannot observe the signal itself
+    // still learns which signal it was, and still gets a code outside
+    // tokfold's own 0/2/3.
+    //
+    // The number comes from Node's table rather than a literal, and the lookup
+    // is guarded -- but not for the reason it is tempting to give. The name
+    // was produced by Node's C++ layer, which keeps its own list rather than
+    // reading this table; every name that list produced maps back here
+    // (measured on macOS with Node 22 for signals 1-31, and on Linux aarch64,
+    // glibc 2.39, Node v22.23.2, for signals 1-64), and Windows carrying a much
+    // smaller table than POSIX does not by itself change that. The
+    // guard is there because the cost of a miss is out of all proportion to how
+    // likely it is, and because the miss is silent: an unmapped name produces
+    // `128 + undefined`, which is `NaN`. `process.exit(NaN)`
+    // is accepted on Node 18 -- this package's `engines` floor -- and reports
+    // **0**, turning a killed run into a success; Node 20 and later throw
+    // `ERR_OUT_OF_RANGE` instead. Both outcomes are wrong, and neither is what
+    // the caller should see, so the miss is handled explicitly.
+    const number = os.constants.signals[signal];
+    if (!Number.isInteger(number)) {
+      // The one launcher-level exit that did not fail to launch anything. Say
+      // so, or `1` is indistinguishable from "the binary was never found" and
+      // the operator debugs the wrong half of the system.
+      writeStderr(
+        `tokfold: the binary was killed by ${signal}, which this runtime cannot map to a signal number\n`,
+      );
+      process.exit(LAUNCHER_FAILED);
+    }
+    process.exit(128 + number);
   }
 
   // Normal termination: hand back the child's own code, untouched. `code` is

@@ -254,19 +254,25 @@ fn a_reply_outgrows_its_request_by_a_bounded_multiple_on_both_tool_paths() {
     // Nothing else weighs a reply — `every_reply_occupies_exactly_one_line` counts
     // lines, not bytes — and the weight is what the transport is asymmetric about.
     //
-    // A reply is always larger than the call that produced it, by construction: the
-    // payload comes back twice, once as `content` for the model and once as
-    // `structuredContent` for the program, and the compress path adds a base64 archive
-    // that inflates its bytes by a third. So the structural ceiling is about 2x when
-    // the engine declines and about 3.3x when it compresses but the archive barely
-    // shrinks. The bounds below sit just above those two figures. They are a ratchet:
-    // a change that adds a third echo of the payload, or that stops compressing the
-    // archive, trips here rather than in a client's memory.
+    // A reply carries its payload more than once, by construction: once as `content` for
+    // the model and once as `structuredContent` for the program, and the compress path
+    // adds a base64 archive that inflates its bytes by a third. So for a large call the
+    // reply tends to about 2x the call when the engine declines and to about 3.3x when it
+    // compresses but the rendering barely shrinks -- at v0.0.1 the archive is always the
+    // input behind a header, so it never shrinks at all. Those are limits approached from
+    // above, not ceilings: the reply's fixed envelope outweighs the call's, so a small
+    // call measures more (5.02x framed for `{"k":"z"}`, 3.13x for a one-byte
+    // passthrough). The bounds below sit above those two large-call figures, on fixtures
+    // wide enough that the envelope cannot lift them. They are a ratchet:
+    // a change that adds a third echo of the payload, or that grows the archive beyond
+    // the input and its header, trips here rather than in a client's memory.
     //
-    // Kilobytes are deliberate. The envelope is a few hundred fixed bytes, so on both
-    // paths the ratio is flat in the input size — it held within 2% across a 16x span
-    // when this was written — and a multi-megabyte case would only make the suite slow
-    // to say the same thing.
+    // Kilobytes are deliberate. The envelope is a few hundred fixed bytes, so from this
+    // size up the ratio of *these two fixtures* is flat in the input size — scaled from
+    // 120 to 1,920 repetitions (16x), framed, the compress fixture measured 2.055x to
+    // 2.075x and the passthrough one 2.022x to 2.001x — and a multi-megabyte case would
+    // only make the suite slow to say the same thing. Below kilobytes it is not flat:
+    // the envelope dominates, as the small-call figures above show.
     //
     // The second assertion is the one that matters beyond regression, and it is the
     // reason the frame limit applies to what is written as well as what is read. At the
@@ -288,6 +294,13 @@ fn a_reply_outgrows_its_request_by_a_bounded_multiple_on_both_tool_paths() {
     // Not JSON, so core declines it and the tool echoes it back unchanged. No newlines
     // in it: they would be escaped identically on both sides and only add noise.
     let declined = "2026-08-12T00:00:00Z INFO request served in 12ms; ".repeat(120);
+    // Both fixtures are ASCII, so the request is the payload plus a fixed envelope and
+    // the multiple above is also the direction. That is a property of the fixtures, not
+    // of the transport: a client that escapes non-ASCII as `\uXXXX` pays six bytes per
+    // character on the way in and is answered in raw UTF-8, and its replies come back
+    // smaller than its calls. This test bounds the large-call multiple, which is what the
+    // frame limit is sized against; it does not pin that a reply always outgrows a
+    // request.
 
     let compressed = measure(&call_line("tokfold_compress", &compressible));
     let passthrough = measure(&call_line("tokfold_compress", &declined));
@@ -338,6 +351,56 @@ fn a_reply_outgrows_its_request_by_a_bounded_multiple_on_both_tool_paths() {
              no longer produce an unwritable answer and this test is obsolete"
         );
     }
+}
+
+#[test]
+fn the_documented_large_call_reply_limit_is_reached_by_the_fixture_the_docs_name() {
+    // The ratchet above bounds two ordinary shapes loosely. This one pins the number the
+    // documentation gives for a large call, with the fixture the documentation names.
+    // That number is a limit approached from above, not a ceiling: the fixed envelope
+    // lifts a small call's ratio (5.02x framed for `{"k":"z"}`, 3.53x at a 1,000-byte
+    // value, 3.35x at 10,000), so the fixture has to be large for the figure to hold. The
+    // previous attempt at that number was wrong in both directions: it published 3.2x as
+    // the ceiling against the call — under the real large-call figure, so the frame limit
+    // looked safer than it is — and 3.6x against the payload, where there is no bound of
+    // that kind at all.
+    //
+    // Why this fixture and not a prettier one: the payload's share of the ratio is
+    // 2 + 4/(3e), where e is how much the client's escaping inflated the call. Both copies of the payload in the reply are
+    // escaped and so is the call, so escaping cancels out of the first term and divides
+    // the second — every payload with something to escape measures *lower*. The maximum is
+    // therefore at e = 1: a payload with no quote, no backslash and no control character,
+    // and nothing for the engine to remove either, so the rendering does not shrink.
+    // `{"k":"zzz…"}` is the shortest thing that is all three.
+    //
+    // The size is chosen so the fixed envelope — a few hundred bytes — cannot move the
+    // integer percent (400,000 `z` measures 3.3339x). The same fixture, measured on the
+    // message with the newline left out as the frame limit is, gives a largest call that
+    // still fits of 10,066,259 bytes (a 10,066,148-byte payload), answered with
+    // 33,554,431; one more `z` is refused. That boundary is not re-measured here because
+    // a 33 MB reply in a unit test buys nothing the ratio does not already say.
+    let frame = measure(&call_line(
+        "tokfold_compress",
+        &format!(r#"{{"k":"{}"}}"#, "z".repeat(400_000)),
+    ));
+
+    assert_eq!(
+        result_of(&frame.reply, "structuredContent.compressed"),
+        Some(&json::Value::Bool(true)),
+        "the large-call limit belongs to the compress path; this fixture must reach it"
+    );
+
+    let observed = frame.percent_of_request();
+    assert!(
+        (330..=334).contains(&observed),
+        "the escape-free large-call compress limit moved: {} request bytes answered with {} \
+         reply bytes ({observed}%), outside the documented 333%. Either the reply stopped \
+         carrying the payload twice plus a base64 archive, or the docs in \
+         `crates/tokfold-mcp/README.md` and `src/lib.rs` now name a number this fixture \
+         does not produce",
+        frame.request_bytes,
+        frame.reply_bytes
+    );
 }
 
 #[test]

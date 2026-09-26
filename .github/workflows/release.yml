@@ -26,8 +26,10 @@
 #   3. `confirm` must be typed as the exact string `PUBLISH`. A boolean alone is
 #      one mis-click; a boolean plus a typed word is not.
 #   4. The version in the form must equal the version in `Cargo.toml` and in all
-#      six package manifests. A release of "whatever happens to be on main" is
-#      not possible.
+#      six package manifests. That pins the number, not the commit: the run
+#      builds whatever ref it was dispatched on, from any branch, and nothing
+#      here checks that the ref's CI passed. Picking the commit is the operator's
+#      job.
 #
 # npm makes the consequence of getting this wrong permanent: a published version
 # number can never be reused, and unpublish is restricted to a 72-hour window.
@@ -114,10 +116,18 @@ jobs:
           echo "Confirmed: this run will publish."
 
       - name: Versions agree
-        # Seven places carry the version: the Rust workspace, the launcher
-        # package, its five optionalDependencies pins, and the five platform
-        # packages. They are checked against each other AND against the version
-        # typed into the form, so a half-finished bump cannot ship.
+        # The version is carried by the Rust workspace, the launcher package,
+        # each of its optionalDependencies pins, and each platform package (the
+        # script below requires five of those). They are checked against each
+        # other AND against the version typed into the form, so a half-finished
+        # bump cannot ship.
+        #
+        # The total is not written down here. The summary line at the end
+        # reports the checks it actually ran, because this comment said "seven"
+        # while the sentence in it enumerated twelve and the code performed
+        # twelve, and a later revision then opened with "twelve" itself. A
+        # hand-maintained tally is one more thing that can drift out of step
+        # with the thing it claims to be counting.
         env:
           WANT: ${{ inputs.version }}
         run: |
@@ -130,7 +140,9 @@ jobs:
             const fs = require("node:fs");
             const want = process.env.WANT;
             const problems = [];
+            let checked = 0;
             const check = (where, got) => {
+              checked += 1;
               if (got !== want) problems.push(`${where}: ${got} (expected ${want})`);
             };
 
@@ -164,15 +176,16 @@ jobs:
               for (const line of problems) console.log(`::error::version mismatch -- ${line}`);
               process.exit(1);
             }
-            console.log(`All seven version sites agree on ${want}.`);
+            console.log(`All ${checked} version sites agree on ${want}.`);
           '
 
       - name: Launcher parses and maps every platform
         # The launcher is the one piece of shipped code no Rust test can reach.
-        # This does not run tokfold; it checks that both files parse, and that
-        # three lists which must name the same five packages actually do: the
-        # platform table in resolve.js, the directories under npm/platforms, and
-        # the launcher's own optionalDependencies.
+        # This does not run tokfold; it checks that both files parse, that three
+        # lists which must name the same five packages actually do -- the
+        # platform table in resolve.js, the manifests under npm/platforms, and
+        # the launcher's own optionalDependencies -- and that each of those
+        # packages declares the `os` and `cpu` its table key promises.
         #
         # Any two of the three agreeing is not enough. "Versions agree" above
         # compares the dependencies against the directories, and this step used
@@ -183,13 +196,27 @@ jobs:
         # prebuilt binary for linux-arm64", months later, on someone else's
         # machine.
         #
+        # The disk list is read from each manifest's own `name`, never rebuilt as
+        # `tokfold-<directory>`. That reconstruction was here and it was wrong:
+        # `npm/platforms/windows-x64` publishes as `tokfold-windows-x64` only by
+        # coincidence, and nothing stops a directory and its package name from
+        # diverging the way `win32-x64` and `windows-x64` already do one level
+        # up. A check that assumes the naming rule cannot catch a break in it.
+        #
+        # The os/cpu check is the one npm itself enforces at install time and
+        # nothing here enforced before: a package whose `os` does not match the
+        # table key installs on the wrong machines or on none, and the launcher
+        # -- which reads the table, not the manifest -- would resolve a name npm
+        # never installed. It mirrors the assertion in npm/tests/resolve.test.js
+        # so that the release gate does not depend on the CI gate having run.
+        #
         # `node --check` here runs on the runner's default Node, not on the
         # `>=18` floor `npm/tokfold/package.json` declares, so it is a parse
         # check and nothing more: a newer builtin would sail through it. The
         # floor is tested for real by the `launcher` job in ci.yml, which runs
-        # the suite on 18 and 22 on every push, and which also covers the
-        # behaviour this step cannot see -- exit codes, signals, the musl
-        # refusal, the missing-package path.
+        # the suite on 18 and 22 on every pull request and every push to `main`,
+        # and which also covers the behaviour this step cannot see -- exit codes,
+        # signals, the musl refusal, the missing-package path.
         run: |
           set -euo pipefail
           node --check npm/tokfold/bin/tokfold
@@ -200,18 +227,53 @@ jobs:
             const fs = require("node:fs");
             const { PACKAGES } = require("./npm/tokfold/lib/resolve.js");
             const main = JSON.parse(fs.readFileSync("npm/tokfold/package.json", "utf8"));
+            const manifest = (dir) =>
+              JSON.parse(fs.readFileSync(`npm/platforms/${dir}/package.json`, "utf8"));
+
+            const dirs = fs.readdirSync("npm/platforms").sort();
+            const problems = [];
             const fromTable = Object.values(PACKAGES).sort();
-            const fromDisk = fs.readdirSync("npm/platforms").sort().map((d) => `tokfold-${d}`);
+            const fromDisk = dirs.map((dir) => manifest(dir).name).sort();
             const fromDeps = Object.keys(main.optionalDependencies ?? {}).sort();
+
             if (JSON.stringify(fromTable) !== JSON.stringify(fromDisk)) {
-              console.log(`::error::resolve.js maps to [${fromTable}] but npm/platforms holds [${fromDisk}]`);
-              process.exit(1);
+              problems.push(`resolve.js maps to [${fromTable}] but npm/platforms declares [${fromDisk}]`);
             }
             if (JSON.stringify(fromTable) !== JSON.stringify(fromDeps)) {
-              console.log(`::error::resolve.js maps to [${fromTable}] but the launcher depends on [${fromDeps}]`);
+              problems.push(`resolve.js maps to [${fromTable}] but the launcher depends on [${fromDeps}]`);
+            }
+
+            for (const [key, pkg] of Object.entries(PACKAGES)) {
+              // A key is platform-arch as Node spells them, and no value of
+              // either contains a hyphen -- but a third segment would be
+              // silently dropped by the destructuring below and the manifest
+              // would then be checked against a key nobody validated.
+              // Reject such a key instead of half-checking it.
+              const segments = key.split("-");
+              if (segments.length !== 2) {
+                problems.push(`resolve.js key ${key} is not a two-segment platform-arch key`);
+                continue;
+              }
+              const [platform, arch] = segments;
+              const dir = dirs.find((d) => manifest(d).name === pkg);
+              if (dir === undefined) {
+                problems.push(`${pkg} has no directory under npm/platforms`);
+                continue;
+              }
+              const p = manifest(dir);
+              if (JSON.stringify(p.os) !== JSON.stringify([platform])) {
+                problems.push(`${pkg} declares os ${JSON.stringify(p.os)}, but the table key ${key} promises ["${platform}"]`);
+              }
+              if (JSON.stringify(p.cpu) !== JSON.stringify([arch])) {
+                problems.push(`${pkg} declares cpu ${JSON.stringify(p.cpu)}, but the table key ${key} promises ["${arch}"]`);
+              }
+            }
+
+            if (problems.length) {
+              for (const line of problems) console.log(`::error::platform table -- ${line}`);
               process.exit(1);
             }
-            console.log(`resolve.js, npm/platforms and optionalDependencies agree on ${fromDisk.length} targets.`);
+            console.log(`resolve.js, npm/platforms and optionalDependencies agree on ${fromDisk.length} targets, each declaring the os and cpu its key promises.`);
           '
 
       - name: No symlinks under npm/
@@ -304,9 +366,10 @@ jobs:
             os: ubuntu-22.04
             target: aarch64-unknown-linux-gnu
           # `windows-x64`, not Node's `win32-x64`: the registry refused the
-          # latter as spam twice. The launcher's table still keys on `win32-x64`
-          # because that is what `process.platform` reports; see the comment on
-          # `PACKAGES` in npm/tokfold/lib/resolve.js.
+          # latter as spam three times over two days, two of those refusals
+          # 1h38m apart on the first day. The launcher's table still keys on
+          # `win32-x64` because that is what `process.platform` reports; see the
+          # comment on `PACKAGES` in npm/tokfold/lib/resolve.js.
           - dir: windows-x64
             os: windows-latest
             target: x86_64-pc-windows-msvc
@@ -696,6 +759,14 @@ jobs:
             exit 1
           fi
 
+          # The tally is what the Summary step reports, rather than what it
+          # assumes. A run in which every package took the "already published by
+          # us" branch is a legitimate green run that uploaded nothing, and
+          # saying "Published" there is how a release that did not happen gets
+          # recorded as one.
+          tally="${RUNNER_TEMP}/publish-tally"
+          : > "$tally"
+
           # Provenance is only meaningful on a real upload -- it signs a tarball
           # that is actually being stored -- so a dry run omits the flag rather
           # than asking the registry to attest to something it will never see.
@@ -755,10 +826,20 @@ jobs:
           # state instead of deadlocking on the work it already did.
           #
           # "Already there" is not the same question as "already ours", and only
-          # the second one is safe to skip on. These names are public and some
-          # of them are still unclaimed, so a squatter who publishes one first
-          # would otherwise turn this into a workflow that reports success
-          # having uploaded nothing, while `npm i -g tokfold` runs their code.
+          # the second one is safe to skip on. All six names are claimed now, at
+          # 0.0.1 under this account, but not in one batch and not all on one day:
+          # the four Linux and macOS platform packages went out at
+          # 2026-08-27T19:03Z, and tokfold-windows-x64 followed at
+          # 2026-08-29T22:54:14Z with the launcher 3.3 seconds behind it. Those
+          # timestamps are worth re-deriving rather than trusting from here --
+          # `curl -s https://registry.npmjs.org/<name>` answers with a `time`
+          # object -- because a date in a comment rots and the registry does not.
+          # Either way the version this was written against is no longer the
+          # exposure, and the check is not about 0.0.1. Every version after it is
+          # an unclaimed coordinate on a public name, and a squatter who gets to
+          # `<name>@0.0.2` first would otherwise turn this into a workflow that
+          # reports success having uploaded nothing, while `npm i -g tokfold` runs
+          # their code.
           # Hence `_npmUser.name`: equal to us means done, anything else -- a
           # different account, or a registry that will not say -- means stop,
           # because whatever is under that name at that version is not ours and
@@ -856,16 +937,28 @@ jobs:
             if [ "$DRY_RUN" = "true" ]; then
               if [ "$skip" = "yes" ]; then
                 echo "would skip -- $reason"
+              elif [ "$found" -eq 2 ]; then
+                # `found -eq 2` is "the registry never answered", which is the
+                # case the live path prints a warning about and then publishes
+                # through anyway. Reporting that as "is not on the registry"
+                # turns an absence of evidence into a positive claim about the
+                # registry, in the one output a person reads to decide whether
+                # the real run is safe to start.
+                echo "would publish -- the registry did not answer, so whether $name@$VERSION exists is unknown"
               else
-                echo "would publish -- $name@$VERSION is not on the registry"
+                echo "would publish -- $name@$VERSION was not found on the registry"
               fi
             elif [ "$skip" = "yes" ]; then
               echo "skipping -- $reason"
+              echo "skipped $name" >> "$tally"
               return 0
             fi
 
             # shellcheck disable=SC2086
             ( cd "$dir" && npm publish $flags )
+            if [ "$DRY_RUN" != "true" ]; then
+              echo "uploaded $name" >> "$tally"
+            fi
           }
 
           # Order matters. The launcher's optionalDependencies name versions that
@@ -885,6 +978,13 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
+          tally="${RUNNER_TEMP}/publish-tally"
+          uploaded=0
+          skipped=0
+          if [ -f "$tally" ]; then
+            uploaded="$(grep -c '^uploaded ' "$tally" || true)"
+            skipped="$(grep -c '^skipped ' "$tally" || true)"
+          fi
           {
             if [ "$DRY_RUN" = "true" ]; then
               echo "## Dry run complete"
@@ -894,6 +994,17 @@ jobs:
               echo ""
               echo "To publish for real: run this workflow again with \`dry_run\` unchecked and"
               echo "\`confirm\` set to \`PUBLISH\`."
+            elif [ "$uploaded" -eq 0 ]; then
+              # Green, and correct: every name at this version was already ours.
+              # It is still not a release, and calling it one is how a workflow
+              # that uploaded nothing gets remembered as the run that shipped.
+              echo "## Nothing to publish for \`$VERSION\`"
+              echo ""
+              echo "All $skipped packages were already on the registry under this account, so"
+              echo "this run uploaded nothing. What \`npm i -g tokfold@$VERSION\` installs is"
+              echo "whatever was published earlier -- **not** the code in this run."
+              echo ""
+              echo "To ship the current code, bump the version and run this workflow again."
             else
               echo "## Published \`$VERSION\`"
               echo ""
@@ -901,7 +1012,8 @@ jobs:
               echo "npm install -g tokfold@$VERSION"
               echo '```'
               echo ""
-              echo "Six packages: the \`tokfold\` launcher and five platform binaries."
-              echo "npm versions cannot be reused and unpublish is limited to 72 hours."
+              echo "Uploaded $uploaded of 6 packages; $skipped were already on the registry"
+              echo "under this account. npm versions cannot be reused and unpublish is"
+              echo "limited to 72 hours."
             fi
           } >> "$GITHUB_STEP_SUMMARY"

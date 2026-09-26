@@ -15,9 +15,11 @@
 //!
 //! This crate is **not hardened**. It sits in the secrets path — a transcript passed
 //! through it is fully visible to it — and the audit that would make that acceptable
-//! is a separate milestone gating any public launch. [`EXPERIMENTAL_NOTICE`] carries
-//! that warning in text; the `tokfold mcp` subcommand prints it to stderr on start-up,
-//! and an embedder calling [`Server`] directly is expected to surface it too.
+//! has not been done. Shipping did not wait for it: the `0.0.1` npm release carries
+//! this server as it stands, so release is not evidence of review. What the release
+//! does carry is the warning. [`EXPERIMENTAL_NOTICE`] holds it in text; the
+//! `tokfold mcp` subcommand prints it to stderr on start-up, and an embedder calling
+//! [`Server`] directly is expected to surface it too.
 //!
 //! Specifically out of scope here, and deliberately so: the *proxy* shape — an
 //! upstream connection, a content-addressed archive store, and a `retrieve` tool —
@@ -39,10 +41,13 @@
 //! line, an unsupported protocol revision — testable without spawning a process.
 //!
 //! Because the split is where the protocol rules live, the frame size limit lives there
-//! too: [`Server::handle_line`] never returns a line longer than
-//! [`MAX_MESSAGE_BYTES`], so an embedder that writes its own transport gets the same
-//! bound the stdio loop does. See [`MAX_MESSAGE_BYTES`] for what a client is handed when
-//! an answer does not fit.
+//! too: a [`Server`] left at its default never returns a line longer than
+//! [`MAX_MESSAGE_BYTES`] from [`Server::handle_line`], so an embedder that writes its own
+//! transport gets the same bound the stdio loop does. An embedder that overrides the
+//! limit owns both ends of it — [`Server::with_max_message_bytes`] documents the floor
+//! of 95 bytes, under which the refusal frame no longer fits inside the limit it
+//! reports, and the regimes above it. See [`MAX_MESSAGE_BYTES`] for what a client is handed when an answer
+//! does not fit.
 //!
 //! The server answers both protocol eras: `initialize` for clients on `2025-11-25`
 //! and earlier, and stateless per-request metadata plus `server/discover` for
@@ -55,9 +60,11 @@
 //! mainstream MCP client SDK already reads a stdio server's output on a separate task,
 //! which is why this is a documented precondition and not a live bug. A client that
 //! writes a burst of requests and only then starts reading deadlocks instead: the
-//! server blocks once its replies fill the OS pipe buffer (64 KiB on macOS) and stops
-//! draining stdin. The threshold is one pipe buffer — a couple of thousand small calls
-//! reach it — not a large payload. [`stdio::serve`] has the measurements.
+//! server blocks once its replies fill the stdout pipe and stops draining stdin, and the
+//! client blocks once the stdin pipe and the loop's read buffer are full too. The
+//! threshold is what those buffers hold together — on macOS 2,195 pipelined `ping` calls
+//! completed and 2,200 deadlocked — not a large payload. [`stdio::serve`] has the
+//! measurement and its fixture.
 //!
 //! # No new dependencies
 //!
@@ -105,18 +112,45 @@ pub use server::Server;
 /// # One number in both directions
 ///
 /// This is the cap on what is *read* and the cap on what is *emitted*, and it is one
-/// constant rather than two so the two can never drift. The asymmetry it removes was
-/// real and measured: a reply is always bigger than the call it answers — the payload
+/// constant rather than two so the two can never drift. It is measured the same way on
+/// both sides — inclusive, on the message, with the newline that frames it left out —
+/// because one constant compared two ways is two limits: the read side used to charge
+/// the newline, and a message of exactly this size was refused as exceeding it while a
+/// reply of the same size went out. The asymmetry the constant removes was
+/// real and measured: a reply can be several times the call it answers — the payload
 /// goes back twice, as `content` and as `structuredContent`, plus a base64 archive on
-/// the compress path — at about 2x on the passthrough path and up to about 3.3x when an
-/// archive barely shrinks. With only the read side capped, a request of around 10 MB,
-/// well inside what this admits, produced a line this same reader would have refused.
+/// the compress path. A large call tends to 2.00x on the passthrough path and to 3.33x
+/// when the rendering barely shrinks (the archive, at v0.0.1, never does), that second
+/// figure being 2 + 4/3; escaping inflates the call and both copies in the reply
+/// together, so it can only pull the payload's share of the ratio down. Those are limits
+/// approached from above, not ceilings — the reply's fixed envelope outweighs the
+/// call's, so `{"k":"z"}` measures 5.02x counting each line's newline (a 121-byte call,
+/// a 608-byte reply; 5.06x on the messages alone) — but only a large call nears this cap, and
+/// there the envelope is noise. With only the read side capped, a 10,066,259-byte call — under a
+/// third of what this admits — produced a 33,554,431-byte line this same reader would
+/// have refused one byte later. Those two sizes are messages with the newline left out,
+/// as the cap measures them.
 ///
-/// [`Server::handle_line`] therefore never returns a longer string, and
-/// [`stdio::MAX_LINE_BYTES`] is this same constant. A request whose answer would not fit
-/// is refused with a JSON-RPC error addressed to that request's own id, so the call
-/// fails rather than hanging; `tests/session.rs` pins both the multiplier and the
-/// refusal.
+/// That multiple is not a law, either. Which side is bigger depends on how the client
+/// encoded its request: one that escapes non-ASCII as `\uXXXX` — what Python's
+/// `json.dumps` does by default — spends six bytes per character on the way in and is
+/// answered in raw UTF-8, so a Cyrillic payload measured here came back at 0.72x its
+/// call. That direction is harmless, and it has a floor rather than a ceiling: an
+/// escaped character costs six bytes in the call and returns at its UTF-8 width `w`,
+/// twice, so the no-archive path tends to `2w/6` — 2/3 for Cyrillic, 1/3 for ASCII a
+/// client chose to spell `\u00XX` (`\u0041` × 100 000 measured 0.3338x) — and with an
+/// archive of raw bytes behind a rendering that shrinks toward nothing it tends to
+/// `(4/3)w/6`, 2/9 for ASCII (a million `\u0020` over ten thousand rows measured
+/// 0.2703x). The cap exists for the other direction.
+///
+/// [`Server::handle_line`] therefore never returns a longer string from a server left
+/// at this default, and [`stdio::MAX_LINE_BYTES`] is this same constant. A request
+/// whose answer would not fit is refused with a JSON-RPC error addressed to that
+/// request's own id, so the call fails rather than hanging; `tests/session.rs` pins
+/// both the multiplier and the refusal. The one exception is an id so wide that the
+/// addressed refusal would not fit either — a string id within about a hundred bytes of
+/// this cap, which the reader still admits. That request is refused with the id-less
+/// form, a bounded frame its client cannot correlate, so that call alone waits.
 pub const MAX_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
 
 /// Warning shown when the experimental server is started.

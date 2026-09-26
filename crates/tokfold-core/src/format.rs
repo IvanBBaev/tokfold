@@ -44,22 +44,42 @@ pub const VERSION: u8 = 1;
 /// Number of checksum bytes (`SHA-256` digest width).
 const CHECKSUM_LEN: usize = 32;
 
+// The four offsets below are `pub(crate)` on purpose. `compressor` aims its
+// `Corrupt { byte_offset }` errors at individual header fields, and it used to do
+// that from a second, hand-maintained copy of these expressions. Two copies of a
+// frozen layout agree until the layout moves, and then nothing complains: both
+// sides compile, and every offset an archive reports silently names the wrong
+// field. This module owns the layout, so it owns the offsets too — the same
+// reasoning the CLI already applies to [`MAGIC`], which it imports rather than
+// spells.
+
 /// Byte offset of the `version` field, derived from the frozen layout.
 const VERSION_OFFSET: usize = MAGIC.len();
 /// Byte offset of the `encoder_id` field.
-const ENCODER_ID_OFFSET: usize = VERSION_OFFSET + 1;
+pub(crate) const ENCODER_ID_OFFSET: usize = VERSION_OFFSET + 1;
 /// Byte offset of the little-endian `tokenizer_id` field.
-const TOKENIZER_ID_OFFSET: usize = ENCODER_ID_OFFSET + 1;
+pub(crate) const TOKENIZER_ID_OFFSET: usize = ENCODER_ID_OFFSET + 1;
 /// Byte offset of the little-endian `flags` field.
-const FLAGS_OFFSET: usize = TOKENIZER_ID_OFFSET + 2;
+pub(crate) const FLAGS_OFFSET: usize = TOKENIZER_ID_OFFSET + 2;
 /// Byte offset of the `original_len` varint.
-const ORIGINAL_LEN_OFFSET: usize = FLAGS_OFFSET + 2;
+pub(crate) const ORIGINAL_LEN_OFFSET: usize = FLAGS_OFFSET + 2;
 
 /// Mask of `flags` bits 3..=15, all of which MUST be zero in this version.
 const FLAGS_RESERVED_MASK: u16 = 0xFFF8;
 
 /// Maximum bytes an unsigned `LEB128`-encoded `u64` may occupy.
 const ULEB128_MAX_BYTES: usize = 10;
+
+// `read_uleb128` shifts by `i * 7` for `i` up to `ULEB128_MAX_BYTES - 1` and guards
+// the shift with `u64::MAX >> shift`, which itself panics once `shift` reaches 64.
+// The guard is therefore only sound while this constant stays at 10; raising it to
+// 11 would turn an 11-byte varint in a hostile archive into a debug-build panic in
+// the one function whose whole job is to survive hostile archives. Nothing in the
+// loop makes that dependency visible, so state it where the constant is defined.
+const _: () = assert!(
+    (ULEB128_MAX_BYTES - 1) * 7 < 64,
+    "ULEB128_MAX_BYTES is too large: read_uleb128 would shift a u64 by 64 or more"
+);
 
 /// Value bits of a `LEB128` byte.
 const LOW_SEVEN_BITS: u8 = 0x7F;
@@ -677,11 +697,26 @@ mod tests {
         ));
     }
 
+    /// Offset 4 covers two faults, and the CLI README and the `Corrupt` rustdoc both
+    /// name it: a version byte `0`, and no version byte at all. A version byte above
+    /// `1` is not one of them: it is `UnsupportedVersion`.
     #[test]
     fn version_zero_rejected() {
         let mut zero = header_bytes();
         zero[VERSION_OFFSET] = 0;
-        assert!(Header::decode(&zero).is_err());
+        assert!(matches!(
+            Header::decode(&zero),
+            Err(DecompressError::Corrupt {
+                byte_offset: VERSION_OFFSET
+            })
+        ));
+
+        assert!(matches!(
+            Header::decode(&MAGIC),
+            Err(DecompressError::Corrupt {
+                byte_offset: VERSION_OFFSET
+            })
+        ));
     }
 
     #[test]
@@ -718,50 +753,124 @@ mod tests {
             Header::new(1, 0x1234, Flags::default(), 0, [7u8; CHECKSUM_LEN]).encode_into(&mut out);
             out
         };
+        // A header with a one-byte length field; a wide one is the next test's.
+        // What each prefix is reported at, which is the start of the field it ends
+        // inside: under four bytes there is no magic to recognize; a two-byte field
+        // cut after its first byte is still reported at its first; the one-byte
+        // length is 10; and a checksum cut anywhere is reported where it begins, 11.
+        // `is_err()` alone let every one of these move without a test noticing.
+        let expected = |len: usize| match len {
+            0..=3 => None,
+            4 | 5 => Some(len),
+            6 | 7 => Some(TOKENIZER_ID_OFFSET),
+            8 | 9 => Some(FLAGS_OFFSET),
+            10 => Some(ORIGINAL_LEN_OFFSET),
+            _ => Some(ORIGINAL_LEN_OFFSET + 1),
+        };
         for len in 0..full.len() {
-            assert!(
-                Header::decode(&full[..len]).is_err(),
-                "prefix of length {len} decoded"
-            );
+            let got = match Header::decode(&full[..len]) {
+                Err(DecompressError::BadMagic) => None,
+                Err(DecompressError::Corrupt { byte_offset }) => Some(byte_offset),
+                other => {
+                    assert!(other.is_err(), "prefix of length {len} decoded: {other:?}");
+                    Some(usize::MAX)
+                }
+            };
+            assert_eq!(got, expected(len), "prefix of length {len}");
         }
         let (_, offset) = Header::decode(&full).unwrap();
         assert_eq!(offset, full.len());
     }
 
     #[test]
+    fn truncation_behind_a_wide_length_field_is_reported_where_the_field_ends() {
+        // The checksum begins after the length field, however wide that is: behind a
+        // ten-byte length it begins at 20, so 20 is also the report for a checksum
+        // cut short -- one past the length field, without being a varint fault.
+        let mut ten_byte_len = vec![0x80u8; ULEB128_MAX_BYTES - 1];
+        ten_byte_len.push(0x01);
+        let long = archive_with_len_bytes(&ten_byte_len);
+        assert!(matches!(
+            Header::decode(&long[..ORIGINAL_LEN_OFFSET + ULEB128_MAX_BYTES + 5]),
+            Err(DecompressError::Corrupt { byte_offset: 20 })
+        ));
+
+        // A length field that runs out mid-varint is reported at the byte it lacks.
+        assert!(matches!(
+            Header::decode(&long[..ORIGINAL_LEN_OFFSET + 2]),
+            Err(DecompressError::Corrupt { byte_offset: 12 })
+        ));
+    }
+
+    #[test]
     fn overlong_leb128_rejected() {
         // Value 0 and value 1 written in two bytes instead of one.
         for len_bytes in [[0x80u8, 0x00], [0x81, 0x00]] {
+            // Reported at the terminating zero, the field's second byte.
             let archive = archive_with_len_bytes(&len_bytes);
             assert!(matches!(
                 Header::decode(&archive),
-                Err(DecompressError::Corrupt { .. })
+                Err(DecompressError::Corrupt { byte_offset: 11 })
             ));
         }
     }
 
+    /// Which byte a ten-byte length field is reported at follows the order of the
+    /// checks in `read_uleb128`. Three of them can fire while a byte is being read,
+    /// in this order — the byte is missing, its value bits overflow the `u64`, it
+    /// terminates an overlong encoding — and each names the byte it fired on, so each
+    /// lands inside the field. (The `u32` conversion of the shift, which runs between
+    /// the first two, has a failure arm that cannot fire within ten bytes.) The
+    /// remaining check is not per-byte at all: it is raised after the loop has spent
+    /// all ten bytes with the continuation bit still set, and it is the only *varint* fault that can fall outside the field.
+    /// (A checksum cut short behind a ten-byte length is reported at 20 as well, where
+    /// the checksum begins;
+    /// `truncation_behind_a_wide_length_field_is_reported_where_the_field_ends`
+    /// holds that.) The field starts at 10, so its tenth byte is 19 and "one past the
+    /// field" is 20. Every offset below is what `tokfold expand` prints for the same
+    /// bytes spliced into a real archive; the CLI test
+    /// `expand_names_the_corrupt_offsets_the_readme_quotes` holds the printed line.
     #[test]
     fn leb128_overflow_rejected() {
-        // Tenth byte carries value bits above bit 63.
-        let overflow = [0x80u8, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02];
-        assert!(matches!(
-            Header::decode(&archive_with_len_bytes(&overflow)),
-            Err(DecompressError::Corrupt { .. })
-        ));
+        const TENTH: usize = ORIGINAL_LEN_OFFSET + ULEB128_MAX_BYTES - 1;
+        const ONE_PAST: usize = ORIGINAL_LEN_OFFSET + ULEB128_MAX_BYTES;
+        assert_eq!((TENTH, ONE_PAST), (19, 20));
 
-        // Ten bytes that never clear the continuation bit.
-        let never_terminates = [0x80u8, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x81];
-        assert!(matches!(
-            Header::decode(&archive_with_len_bytes(&never_terminates)),
-            Err(DecompressError::Corrupt { .. })
-        ));
+        let corrupt_at = |len_bytes: &[u8]| match Header::decode(&archive_with_len_bytes(len_bytes))
+        {
+            Err(DecompressError::Corrupt { byte_offset }) => Some(byte_offset),
+            _ => None,
+        };
+        let nine_then = |tenth: u8| {
+            let mut field = vec![0x80u8; ULEB128_MAX_BYTES - 1];
+            field.push(tenth);
+            field
+        };
 
-        // All-continuation bytes (also non-terminating / overflowing).
-        let all_continue = [0xFFu8; ULEB128_MAX_BYTES];
-        assert!(matches!(
-            Header::decode(&archive_with_len_bytes(&all_continue)),
-            Err(DecompressError::Corrupt { .. })
-        ));
+        // Tenth byte carries value bits above bit 63: overflow, reported at that byte.
+        assert_eq!(corrupt_at(&nine_then(0x02)), Some(TENTH));
+
+        // Ten bytes that never clear the continuation bit and never overflow: the
+        // decoder needed an eleventh byte, so it reports one past the field.
+        assert_eq!(corrupt_at(&nine_then(0x81)), Some(ONE_PAST));
+        assert_eq!(corrupt_at(&nine_then(0x80)), Some(ONE_PAST));
+
+        // The continuation bit is set *and* the byte overflows: overflow is checked
+        // first, so this is the tenth byte, not one past it. `0x80` and `0x81` are the
+        // only tenth bytes that reach 20; all-`0xFF` is this case too.
+        assert_eq!(corrupt_at(&nine_then(0x82)), Some(TENTH));
+        assert_eq!(corrupt_at(&[0xFFu8; ULEB128_MAX_BYTES]), Some(TENTH));
+
+        // A terminating zero after nine continuation bytes is overlong, at that byte.
+        assert_eq!(corrupt_at(&nine_then(0x00)), Some(TENTH));
+
+        // A well-formed ten-byte length is not a varint fault at all: 2^63 decodes,
+        // and disagreeing with the payload is `decompress`'s complaint, at 10. That
+        // complaint is out of reach here -- this test stops at `Header::decode` --
+        // so `a_well_formed_ten_byte_length_is_refused_at_the_length_field` in
+        // `compressor.rs` is what holds the 10 in place.
+        let (header, _) = Header::decode(&archive_with_len_bytes(&nine_then(0x01))).unwrap();
+        assert_eq!(header.original_len, 1u64 << 63);
     }
 
     #[test]
@@ -792,6 +901,9 @@ mod tests {
         assert_eq!(decode_full(&archive).unwrap(), Vec::<u8>::new());
     }
 
+    /// Drives [`decode_full`], a test-only copy of the reader, so this holds the
+    /// format; `compressor`'s `decompress_rejects_every_single_bit_flip` holds the
+    /// public `decompress`.
     #[test]
     fn any_single_bit_flip_is_rejected() {
         let original = b"hello world";

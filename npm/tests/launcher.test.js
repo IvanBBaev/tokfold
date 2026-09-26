@@ -17,6 +17,7 @@
 
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 const { spawn, spawnSync } = require("node:child_process");
@@ -36,8 +37,14 @@ const NO_PACKAGE =
 // The stand-in binary is a `#!/bin/sh` script, which Windows cannot exec. That
 // is an honest reason to skip rather than to weaken an assertion; the resolver
 // suite covers every platform on every host. It applies only to tests that need
-// a child that runs -- the launcher's own failure paths never reach one, so they
-// use `NO_PACKAGE` and do run on Windows.
+// a child that runs -- most of the launcher's own failure paths never reach one,
+// so they use `NO_PACKAGE` and do run on Windows.
+//
+// `NO_MODE_BITS` below is a second, narrower Windows skip, and this one does not
+// imply it: the EACCES case is also a failure path that never starts a child,
+// and it is still skipped on Windows, for an unrelated reason. Reading this
+// comment as "every failure path runs on Windows" is how that claim reached
+// `.github/workflows/ci.yml` and `npm/README.md`, where it was false.
 const SKIP =
   process.platform === "win32"
     ? "the stand-in binary is a shell script, which Windows cannot exec"
@@ -60,6 +67,22 @@ const corrupt = NO_PACKAGE
 const blocked = NO_PACKAGE
   ? null
   : createInstall({ packages: [HOST_PACKAGE], binIsFile: [HOST_PACKAGE] });
+
+// Mode bits deny execution on POSIX and do not on Windows, where the ACL is
+// what decides and a cleared `x` bit means nothing. Producing EACCES there
+// would take a different mechanism, and faking it would be testing the fixture.
+const NO_MODE_BITS =
+  process.platform === "win32"
+    ? "Windows does not deny execution through mode bits, so there is no EACCES to stage"
+    : NO_PACKAGE;
+
+/** A complete, correct binary with its execute bits cleared. */
+const unexecutable = NO_MODE_BITS
+  ? null
+  : createInstall({
+      packages: [HOST_PACKAGE],
+      notExecutable: [HOST_PACKAGE],
+    });
 
 /** Only the launcher installed -- optional dependencies were skipped. */
 const bare = createInstall();
@@ -88,10 +111,17 @@ const STARTS_ANYWAY =
  *
  * @param {{launcher: string}} install
  * @param {string[]} args
- * @param {{env?: object, input?: string, forgePlatform?: boolean}} [options]
+ * `preload` loads `preload-platform.js` ahead of the launcher's first line,
+ * which is how a test forges the machine the launcher believes it is running
+ * on: `process.platform`, `process.arch`, the libc report, and the runtime's
+ * signal table. Which of those it forges is decided by the `TOKFOLD_TEST_*`
+ * variables in `env`; with none of them set the preload is inert, so passing
+ * this alone changes nothing.
+ *
+ * @param {{env?: object, input?: string, preload?: boolean}} [options]
  */
 function run(install, args, options = {}) {
-  const nodeArgs = options.forgePlatform ? ["--require", PRELOAD] : [];
+  const nodeArgs = options.preload ? ["--require", PRELOAD] : [];
 
   return spawnSync(process.execPath, [...nodeArgs, install.launcher, ...args], {
     encoding: "utf8",
@@ -101,6 +131,10 @@ function run(install, args, options = {}) {
     maxBuffer: 16 * 1024 * 1024,
     env: { ...process.env, ...(options.env ?? {}) },
     input: options.input,
+    // A launcher that hangs must fail its test, not the whole suite: without
+    // a bound, `spawnSync` waits for ever and `node --test` never reports.
+    timeout: 30_000,
+    killSignal: "SIGKILL",
   });
 }
 
@@ -218,7 +252,25 @@ test("the binary's stderr reaches the caller's stderr", { skip: SKIP }, () => {
 // Signals
 // ---------------------------------------------------------------------------
 
-for (const signal of ["TERM", "INT"]) {
+// Node does not die of SIGUSR1 while its own handler is installed: it starts
+// the inspector, printing "Debugger listening" on stderr and opening a debugger
+// port. The 0.0.1 launcher re-raised it with that handler in place, exited 1,
+// and printed the line in about one run in three. Removing the launcher's own
+// listener first leaves the kernel default behind, so the re-raise is a real
+// death. The inspector was a race, so this runs the case several times.
+test("a child killed by SIGUSR1 kills the launcher the same way and starts no debugger", { skip: SKIP }, () => {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const result = run(installed, ["compress"], {
+      env: { TOKFOLD_FAKE_SIGNAL: "USR1" },
+    });
+
+    assert.equal(result.signal, "SIGUSR1");
+    assert.equal(result.status, null);
+    assert.equal(result.stderr, "");
+  }
+});
+
+for (const signal of ["TERM", "INT", "HUP", "QUIT"]) {
   test(`a child killed by SIG${signal} kills the launcher the same way`, { skip: SKIP }, () => {
     // A shell reports 130 for an interrupted command because the process *died
     // by* SIGINT, not because it exited with 130. Turning the signal into a
@@ -233,24 +285,108 @@ for (const signal of ["TERM", "INT"]) {
   });
 }
 
-test("a signal the runtime ignores falls back to exit 1", { skip: SKIP }, () => {
+test("a signal the runtime ignores becomes 128 + the signal number", { skip: SKIP }, () => {
   // Node ignores SIGPIPE process-wide, so re-raising it cannot kill the
   // launcher and control reaches the `process.exit` after `process.kill`.
   //
-  // This pins a documented corner rather than asserting it is ideal: the child
-  // did run, yet the caller sees 1, which the launcher's own header reserves for
-  // "tokfold never ran". It is unreachable with the real binary -- Rust ignores
-  // SIGPIPE too, and tokfold-cli treats a closed pipe as a clean exit -- and the
-  // alternative, inventing a number for the signal, is the thing the exit-code
-  // contract exists to prevent. If that ever changes, this test is where the
-  // decision is recorded.
+  // This test previously pinned 1 here, on the reasoning that turning a signal
+  // into a number is what the exit-code contract exists to prevent. That
+  // reasoning was wrong, and this is where the reversal is recorded. 128 + N is
+  // not a number invented for the occasion: it is the encoding every POSIX
+  // shell already uses for a signal death, so 141 is exactly what the caller
+  // would have seen had the binary been run directly and died of SIGPIPE --
+  // which is the launcher's whole design goal. Exiting 1 was the lie, because
+  // the header reserves 1 for "tokfold never ran" and here it ran and was
+  // killed.
+  //
+  // Still unreachable with the real binary -- Rust ignores SIGPIPE too, and
+  // tokfold-cli treats a closed pipe as a clean exit -- so this pins the
+  // contract, not an observed production path.
   const result = run(installed, ["compress"], {
     env: { TOKFOLD_FAKE_SIGNAL: "PIPE" },
   });
 
-  assert.equal(result.status, 1);
+  assert.equal(result.status, 128 + os.constants.signals.SIGPIPE);
+  assert.equal(result.status, 141);
   assert.equal(result.signal, null);
 });
+
+test("a SIGXFSZ death becomes 128 + N, the one production path to it", { skip: SKIP }, () => {
+  // The SIGPIPE test above pins the contract on a signal the real binary cannot
+  // die of. SIGXFSZ is the one it can: a write past `ulimit -f` kills it, and
+  // Node ignores SIGXFSZ process-wide, so re-raising it on the launcher cannot
+  // kill the launcher either. Measured on macOS, Node 22: the release binary
+  // writing past `ulimit -f 10` exits 153 run directly and 153 through this
+  // launcher, where the 0.0.1 launcher exited 1.
+  const result = run(installed, ["compress"], {
+    env: { TOKFOLD_FAKE_SIGNAL: "XFSZ" },
+  });
+
+  assert.equal(result.status, 128 + os.constants.signals.SIGXFSZ);
+  assert.equal(result.signal, null);
+  // The one launcher line that is allowed on the signal path is for a signal
+  // that cannot be numbered; SIGXFSZ can, so nothing is written.
+  assert.doesNotMatch(result.stderr, /cannot map to a signal number/);
+});
+
+test("a signal this runtime cannot number exits 1 and says so", { skip: SKIP }, () => {
+  // The launcher's `128 + N` needs an `N`, and the table it reads is the
+  // runtime's, not a constant: Windows names far fewer signals than POSIX. On a
+  // POSIX host the miss cannot be staged by choosing an exotic signal. The
+  // *name* the exit handler receives comes from a list in Node's C++ layer, not
+  // from this table, but on macOS with Node 22 every name that list produced for
+  // signals 1-31 maps back here (measured), and an unnamed signal never reaches
+  // the lookup at all (it arrives as an ordinary exit; see the SIGEMT test
+  // below). So
+  // the table itself is emptied from a preload, which is the only seam that
+  // reaches this branch without adding one to the launcher.
+  //
+  // Two things are pinned. That the code is `1` and not `128 + undefined`,
+  // which is `NaN`: `process.exit(NaN)` reports **0** on Node 18, so without
+  // this test a killed run would silently look like a success on the oldest
+  // runtime the package supports, and the guard that prevents it would look
+  // like superstition on every newer one. And that a line is written, because
+  // this is the single case where `1` does not mean "tokfold never ran" -- a
+  // caller that reacts to `1` by telling the user to reinstall would be sending
+  // them to repair an installation that just worked.
+  const result = run(installed, ["compress"], {
+    preload: true,
+    env: { TOKFOLD_FAKE_SIGNAL: "PIPE", TOKFOLD_TEST_NO_SIGNAL_TABLE: "1" },
+  });
+
+  assert.equal(result.status, 1);
+  assert.equal(result.signal, null);
+  assert.match(result.stderr, /killed by SIGPIPE/);
+  assert.match(result.stderr, /cannot map to a signal number/);
+  // Node's own complaint about a non-integer exit code, which is what this
+  // path produces on Node 20 and later if the guard is removed.
+  assert.doesNotMatch(result.stderr, /ERR_OUT_OF_RANGE/);
+});
+
+// The other half of the same gap, and the half with no fix. Node names the
+// child's signal before the `exit` event, and a signal it has no name for is
+// not delivered as an unnamed signal: it is delivered as `exit(0, null)`. So a
+// killed binary reads as a success. Pinned so that the documentation of it is
+// held to what happens, and so that a runtime which starts naming SIGEMT shows
+// up here as a failure worth reading. macOS only: SIGEMT does not exist on
+// Linux. Linux has the same gap -- on aarch64 with glibc 2.39 and Node v22.23.2
+// every signal from 32 to 64 arrived as `exit(0, null)` (measured by hand) --
+// but no test here sends one of those.
+test(
+  "a signal Node cannot name reads as a clean exit, which is documented, not fixed",
+  { skip: SKIP || (process.platform !== "darwin" && "SIGEMT exists only on macOS here") },
+  () => {
+    assert.equal(os.constants.signals.SIGEMT, undefined);
+
+    const result = run(installed, ["compress"], {
+      env: { TOKFOLD_FAKE_SIGNAL: "EMT" },
+    });
+
+    assert.equal(result.status, 0);
+    assert.equal(result.signal, null);
+    assert.equal(result.stdout, "");
+  },
+);
 
 /**
  * Whether a pid still names a live process.
@@ -299,7 +435,7 @@ async function waitFor(probe, what) {
   }
 }
 
-for (const signal of ["SIGTERM", "SIGINT"]) {
+for (const signal of ["SIGTERM", "SIGINT", "SIGHUP", "SIGQUIT"]) {
   test(`${signal} to the launcher alone takes the binary with it`, { skip: SKIP }, async () => {
     // The orphan case, and the reason the spawn is asynchronous. A signal sent
     // to the launcher's pid alone -- what `timeout`, a cancelled CI job, or a
@@ -355,13 +491,121 @@ for (const signal of ["SIGTERM", "SIGINT"]) {
   });
 }
 
+test("SIGUSR1 to the launcher alone is relayed and opens no debugger", { skip: SKIP }, async () => {
+  // With no listener, Node does not die of SIGUSR1: it opens its inspector on
+  // 127.0.0.1:9229 and prints "Debugger listening" on stderr, and the binary
+  // keeps running. The launcher listens for it and relays it, so the binary
+  // dies of it as it would run directly, and the launcher dies of it in turn.
+  const pidfile = path.join(installed.root, "hold-SIGUSR1.pid");
+
+  const launcher = spawn(process.execPath, [installed.launcher, "mcp"], {
+    stdio: ["ignore", "ignore", "pipe"],
+    env: {
+      ...process.env,
+      TOKFOLD_FAKE_MODE: "hold",
+      TOKFOLD_FAKE_PIDFILE: pidfile,
+    },
+  });
+  let stderr = "";
+  launcher.stderr.on("data", (chunk) => {
+    stderr += chunk;
+  });
+  const ended = new Promise((resolve) => {
+    launcher.on("exit", (code, sig) => resolve({ code, sig }));
+  });
+
+  let child;
+  try {
+    child = await waitFor(() => {
+      const raw = fs.readFileSync(pidfile, "utf8").trim();
+      return raw === "" ? undefined : Number(raw);
+    }, "the binary to record its pid");
+
+    process.kill(launcher.pid, "SIGUSR1");
+    const result = await ended;
+
+    assert.equal(result.sig, "SIGUSR1");
+    assert.equal(result.code, null);
+    await waitFor(() => (alive(child) ? undefined : true), "the binary to exit");
+    assert.doesNotMatch(stderr, /Debugger/);
+  } finally {
+    if (child !== undefined && alive(child)) {
+      process.kill(child, "SIGKILL");
+    }
+    if (launcher.exitCode === null && launcher.signalCode === null) {
+      launcher.kill("SIGKILL");
+    }
+  }
+});
+
+test("a relayed signal the kernel refuses does not end the launcher", { skip: SKIP }, async () => {
+  // `child.kill` reports EPERM as an `error` event on the child rather than
+  // throwing it. The launcher used to route every `error` event to its
+  // failed-to-start exit, so a refused relay exited 1 -- "tokfold never ran" --
+  // while the binary kept running on the caller's descriptors: the orphan the
+  // forwarding exists to prevent. A running child's later errors are now
+  // ignored, and its own exit is what ends the launcher.
+  const pidfile = path.join(installed.root, "hold-eperm.pid");
+
+  const launcher = spawn(process.execPath, ["--require", PRELOAD, installed.launcher, "mcp"], {
+    stdio: ["ignore", "ignore", "pipe"],
+    env: {
+      ...process.env,
+      TOKFOLD_FAKE_MODE: "hold",
+      TOKFOLD_FAKE_PIDFILE: pidfile,
+      TOKFOLD_TEST_KILL_EPERM: "1",
+    },
+  });
+  let stderr = "";
+  launcher.stderr.on("data", (chunk) => {
+    stderr += chunk;
+  });
+  const ended = new Promise((resolve) => {
+    launcher.on("exit", (code, sig) => resolve({ code, sig }));
+  });
+
+  let child;
+  try {
+    child = await waitFor(() => {
+      const raw = fs.readFileSync(pidfile, "utf8").trim();
+      return raw === "" ? undefined : Number(raw);
+    }, "the binary to record its pid");
+
+    process.kill(launcher.pid, "SIGTERM");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    assert.equal(launcher.exitCode, null, "the launcher must outlive a refused relay");
+    assert.ok(alive(child));
+    // Without this a launcher that relayed nothing at all would pass: the
+    // binary would be alive and the launcher still running for the same reason.
+    assert.match(stderr, /preload: refused kill SIGTERM/);
+
+    process.kill(child, "SIGTERM");
+    const result = await ended;
+
+    assert.equal(result.sig, "SIGTERM");
+    assert.equal(result.code, null);
+    assert.doesNotMatch(stderr, /failed to run/);
+  } finally {
+    if (child !== undefined && alive(child)) {
+      process.kill(child, "SIGKILL");
+    }
+    if (launcher.exitCode === null && launcher.signalCode === null) {
+      launcher.kill("SIGKILL");
+    }
+  }
+});
+
 // ---------------------------------------------------------------------------
-// The launcher's own failures. All of them, and only these, exit 1.
+// The launcher's own failures. All of them exit 1, and they are the only paths
+// that exit 1 while tokfold never ran -- see "a signal this runtime cannot
+// number exits 1 and says so" for the one corner where a 1 means the child ran
+// and died of a signal the launcher could not number.
 // ---------------------------------------------------------------------------
 
 test("an unsupported platform exits 1 and explains itself on stderr", () => {
   const result = run(bare, ["--version"], {
-    forgePlatform: true,
+    preload: true,
     env: {
       TOKFOLD_TEST_PLATFORM: "freebsd",
       TOKFOLD_TEST_ARCH: "x64",
@@ -378,7 +622,7 @@ test("an unsupported platform exits 1 and explains itself on stderr", () => {
 
 test("an unsupported architecture exits 1", () => {
   const result = run(bare, ["--version"], {
-    forgePlatform: true,
+    preload: true,
     env: {
       TOKFOLD_TEST_PLATFORM: "linux",
       TOKFOLD_TEST_ARCH: "riscv64",
@@ -393,7 +637,7 @@ test("an unsupported architecture exits 1", () => {
 
 test("a musl runtime exits 1 rather than loading a glibc binary", () => {
   const result = run(bare, ["--version"], {
-    forgePlatform: true,
+    preload: true,
     env: {
       TOKFOLD_TEST_PLATFORM: "linux",
       TOKFOLD_TEST_ARCH: "x64",
@@ -426,7 +670,11 @@ test("an installed package with no binary exits 1 and names the path", { skip: N
 
   assert.equal(result.status, 1);
   assert.match(result.stderr, /^tokfold: failed to run the binary at /);
-  assert.ok(result.stderr.includes(empty.packageDir(HOST_PACKAGE)), result.stderr);
+  // The binary's own path, not the directory holding it. "at
+  // .../tokfold-linux-x64-gnu" is a place the user can list and find `bin/`
+  // sitting there, which is the opposite of the file-to-check this message
+  // exists to name -- and asserting the parent accepts both.
+  assert.ok(result.stderr.includes(empty.binaryPath(HOST_PACKAGE)), result.stderr);
   assert.equal(result.stdout, "");
 });
 
@@ -451,7 +699,7 @@ test("a binary that cannot be started exits 1, not with a stack trace", { skip: 
 
   assert.equal(result.status, 1);
   assert.match(result.stderr, /^tokfold: failed to run the binary at /);
-  assert.ok(result.stderr.includes(blocked.packageDir(HOST_PACKAGE)), result.stderr);
+  assert.ok(result.stderr.includes(blocked.binaryPath(HOST_PACKAGE)), result.stderr);
   // The launcher's message, not Node's. A stack trace would satisfy every
   // assertion above if the message were merely a prefix of it.
   assert.doesNotMatch(result.stderr, /node:internal|at ChildProcess/);
@@ -481,13 +729,41 @@ test("a truncated binary exits 1 and says which file it is", {
   assert.equal(result.stdout, "");
 });
 
-test("every launcher-level failure uses exit code 1 and only 1", { skip: NO_PACKAGE }, () => {
+test("a binary present but not executable exits 1 and names the file", { skip: NO_MODE_BITS }, () => {
+  // A correct, complete binary that cannot be started -- what a `tar` extracted
+  // under a restrictive umask leaves, or a package copied by a tool that drops
+  // modes. EACCES is one of the five errnos `spawn` reports through the `error`
+  // event instead of throwing, and other than the ENOENT above it is the only
+  // one this suite produces on purpose (EAGAIN, EMFILE and ENFILE need a
+  // resource limit the suite does not set), so it is the only other coverage the
+  // `child.on("error", failedToRun)` route gets -- on a path a user reaches
+  // without corrupting anything.
+  const result = run(unexecutable, ["--version"]);
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^tokfold: failed to run the binary at /);
+  assert.ok(
+    result.stderr.includes(unexecutable.binaryPath(HOST_PACKAGE)),
+    result.stderr,
+  );
+  assert.doesNotMatch(result.stderr, /node:internal|at ChildProcess/);
+  assert.equal(result.stdout, "");
+});
+
+test("no launcher-level failure exits anything but 1", { skip: NO_PACKAGE }, () => {
   // Stated as one assertion because it is one guarantee: a 1 from this command
   // means tokfold never ran, so no launcher failure may borrow 2 or 3, and no
   // launcher failure may exit 0 either.
+  //
+  // "No launcher-level failure" is a claim about the fixtures below, not about
+  // the launcher's whole surface, and the gap is worth naming. `corrupt` is
+  // left out because half the hosts start it (see STARTS_ANYWAY), and the
+  // unmapped-signal path is left out because it is the one exit of `1` that is
+  // not a launcher-level failure at all -- the binary ran and was killed. Both
+  // have their own tests above.
   const failures = [
     run(bare, [], {
-      forgePlatform: true,
+      preload: true,
       env: {
         TOKFOLD_TEST_PLATFORM: "freebsd",
         TOKFOLD_TEST_ARCH: "x64",
@@ -495,7 +771,7 @@ test("every launcher-level failure uses exit code 1 and only 1", { skip: NO_PACK
       },
     }),
     run(bare, [], {
-      forgePlatform: true,
+      preload: true,
       env: {
         TOKFOLD_TEST_PLATFORM: "linux",
         TOKFOLD_TEST_ARCH: "x64",
@@ -505,11 +781,15 @@ test("every launcher-level failure uses exit code 1 and only 1", { skip: NO_PACK
     run(bare, []),
     run(empty, []),
     run(blocked, []),
+    ...(NO_MODE_BITS ? [] : [run(unexecutable, [])]),
   ];
 
+  // Pinned rather than derived, so that a fixture quietly dropping out of the
+  // list cannot shrink the guarantee while keeping the test green.
+  assert.equal(failures.length, NO_MODE_BITS ? 5 : 6);
   assert.deepEqual(
     failures.map((result) => result.status),
-    [1, 1, 1, 1, 1],
+    new Array(failures.length).fill(1),
   );
   for (const result of failures) {
     assert.equal(result.signal, null);

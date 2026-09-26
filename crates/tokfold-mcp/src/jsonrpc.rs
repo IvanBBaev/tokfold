@@ -12,8 +12,10 @@ pub const VERSION: &str = "2.0";
 
 /// A request identifier.
 ///
-/// JSON-RPC allows a string or a number. The value is echoed back verbatim, so it
-/// is kept in the shape it arrived in rather than normalized to one of the two.
+/// JSON-RPC allows a string or a number. The value is echoed back as the same string
+/// or the same integer, so it is kept as the kind it arrived as rather than normalized
+/// to one of the two. An integer is echoed by value, not by lexeme: `-0` comes back as
+/// `0`.
 ///
 /// # Known limitation
 ///
@@ -97,7 +99,7 @@ impl Request {
 ///
 /// 120 bytes is chosen to be longer than anything real and short enough to be free.
 /// The strings that reach an error message this way are method names, tool names, and
-/// protocol revisions: the longest that exist are `notifications/initialized` at 26
+/// protocol revisions: the longest that exist are `notifications/initialized` at 25
 /// bytes, `tokfold_decompress` at 18, and a revision date at 10. A typo, a version
 /// suffix, or a namespaced name from an aggregating client all still arrive intact.
 pub const MAX_ECHO_BYTES: usize = 120;
@@ -256,11 +258,17 @@ impl Response {
 
 /// Renders `response` as one frame of at most `max` bytes.
 ///
-/// A reply is always larger than the call it answers, so a server that caps only what it
-/// reads will eventually emit a frame it would itself refuse to read — a peer of its own
+/// A reply can be several times the size of the call it answers — the payload comes back
+/// twice, plus a base64 archive on the compress path — so a server that caps only what it
+/// reads will eventually emit a frame it would itself refuse to read: a peer of its own
 /// kind cannot consume its output, and the size of that output is chosen by the peer.
-/// This is the one place that rule is enforced, so every caller — the dispatcher, a
-/// batch member, the transport's panic bulkhead — degrades identically.
+/// Not *always* larger, which is the tempting way to say it and is false: a client that
+/// escapes non-ASCII as `\uXXXX` spends six bytes per character on the way in and is
+/// answered in raw UTF-8, so its replies come back smaller than its calls — two thirds
+/// for Cyrillic, and a third when the client spells even ASCII that way. Only the
+/// growing direction matters here. The ladder that enforces it is written once, below, and every
+/// caller — the dispatcher, a batch member through `render_member`, the transport's
+/// panic bulkhead — degrades identically.
 ///
 /// # The refusal is addressed to the call it replaces
 ///
@@ -296,22 +304,44 @@ impl Response {
 /// nothing would hang the client, which is worse than exceeding a bound the caller chose.
 #[must_use]
 pub fn render_bounded(response: Response, max: usize) -> String {
+    render_within(response, max, &oversize_error(max))
+}
+
+/// Renders one member of a batch into the `budget` bytes the array has left of a `max`
+/// byte frame.
+///
+/// The same ladder as [`render_bounded`] — the real answer, else the refusal addressed
+/// to the member's id, else an id-less one — but measured against the remainder rather
+/// than the limit, because the array is the frame and the member is only part of it.
+/// The refusal names both numbers, since either alone misleads: the limit on its own
+/// would say a 143-byte `ping` answer exceeded 32 MiB, and the remainder on its own —
+/// which is what a member's refusal once reported as "the frame limit" — told a client
+/// that the server's limit was 177 bytes when 225 942 earlier answers had merely used
+/// the rest.
+#[must_use]
+pub(crate) fn render_member(response: Response, budget: usize, max: usize) -> String {
+    render_within(response, budget, &oversize_error_within(budget, max))
+}
+
+/// The ladder both renderers share: the answer, else `refusal` addressed to the answer's
+/// id, else `refusal` with no id, each tried in turn against `room`.
+fn render_within(response: Response, room: usize, refusal: &ErrorObject) -> String {
     let id = response.id.clone();
     let frame = response.into_value().to_string();
-    if frame.len() <= max {
+    if frame.len() <= room {
         return frame;
     }
     // Released before the replacement is built: this can be most of the process's
     // resident memory, and the whole point of refusing is not to keep carrying it.
     drop(frame);
 
-    let addressed = Response::error(id, oversize_error(max))
+    let addressed = Response::error(id, refusal.clone())
         .into_value()
         .to_string();
-    if addressed.len() <= max {
+    if addressed.len() <= room {
         return addressed;
     }
-    Response::error(None, oversize_error(max))
+    Response::error(None, refusal.clone())
         .into_value()
         .to_string()
 }
@@ -324,6 +354,19 @@ pub(crate) fn oversize_error(max: usize) -> ErrorObject {
     ErrorObject::new(
         crate::protocol::error_code::INVALID_PARAMS,
         format!("the reply exceeds the {max} byte frame limit"),
+    )
+}
+
+/// The error that answers a batch member whose reply will not fit what the array has
+/// left.
+///
+/// Reports the remainder *and* the limit, for the reason [`render_member`] gives, and
+/// carries no `data` for the reason [`oversize_error`] gives. Both messages end in the
+/// same three words, so a test that recognises one recognises the other.
+fn oversize_error_within(budget: usize, max: usize) -> ErrorObject {
+    ErrorObject::new(
+        crate::protocol::error_code::INVALID_PARAMS,
+        format!("the reply does not fit the {budget} bytes left of the {max} byte frame limit"),
     )
 }
 
