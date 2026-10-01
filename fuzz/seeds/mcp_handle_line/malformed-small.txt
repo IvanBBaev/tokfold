@@ -1,0 +1,6 @@
+P{"jsonrpc":"2.0","id":42,"method":5}
+{"jsonrpc":"2.0","id":{},"method":"ping"}
+{"jsonrpc":"2.0","id":1.5,"method":"ping"}
+{"jsonrpc":"2.0","id":1
+  	
+[]

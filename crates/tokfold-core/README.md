@@ -106,7 +106,10 @@ model as one.
 ## Licence
 
 Dual-licensed under either of MIT ([LICENSE-MIT](https://github.com/IvanBBaev/tokfold/blob/main/LICENSE-MIT)) or Apache
-License 2.0 ([LICENSE-APACHE](https://github.com/IvanBBaev/tokfold/blob/main/LICENSE-APACHE)) at your option. Both texts
-also travel inside the published tarball, next to this file.
+License 2.0 ([LICENSE-APACHE](https://github.com/IvanBBaev/tokfold/blob/main/LICENSE-APACHE)) at your option. The two files
+are symlinks here to the workspace root, and `cargo package` resolves them: the
+tarball it builds carries their texts as regular files beside this README, byte-identical
+to the root copies (`cargo package --list -p tokfold-core`, then `tar tvzf` the
+`.crate`). Nothing has published that tarball: crates.io is still on hold.
 
 Minimum supported Rust version: 1.85 (edition 2024).

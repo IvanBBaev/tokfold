@@ -616,7 +616,7 @@ impl Parser<'_> {
     /// Parses a syntactically valid literal, rejecting one that overflows to infinity.
     ///
     /// `"1e999".parse::<f64>()` succeeds and yields `inf`, which JSON cannot spell.
-    /// Keeping it would put a value in the tree that [`Value::to_string`] has to
+    /// Keeping it would put a value in the tree that `Value`'s `Display` has to
     /// degrade to `null`, so the input is refused instead of silently changing type.
     fn finite_float(&self, text: &str) -> Result<Value, ParseError> {
         match text.parse::<f64>() {

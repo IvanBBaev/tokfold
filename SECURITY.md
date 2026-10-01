@@ -16,6 +16,24 @@ not marketed as reducing injection risk. Reports framed as "the compressor let a
 malicious payload through" are out of scope unless they also demonstrate one of the
 impact classes below.
 
+A second deliberate non-claim: the archive's SHA-256 is **unkeyed** and travels inside
+the archive it covers, so it detects corruption, not tampering — anyone who can modify
+an archive can recompute the digest to match (`crates/tokfold-core/src/format.rs`
+module docs; `docs/threat-model.md`, *Integrity of reconstruction*). A report that a
+*forged* archive decodes to whatever the forger chose is therefore out of scope: that
+is the documented design, and defending against it would need a keyed construction (a
+MAC), which this format does not have and does not claim.
+
+## Threat model and privacy
+
+- [`docs/threat-model.md`](docs/threat-model.md) — trust boundaries, assets and
+  mitigations for the library, the CLI and the experimental `tokfold mcp` server,
+  with the code that holds each one, plus the issues that are known and still open.
+  Check it before reporting: a limitation listed there as known is already recorded.
+- [`docs/privacy.md`](docs/privacy.md) — what tokfold does and does not do with your
+  data: network, telemetry, the files it reads and writes, what the MCP server sends
+  back to its client, environment variables and the npm launcher.
+
 ## Supported Versions
 
 | Version | Distributed on | Supported |
@@ -34,18 +52,20 @@ version.
 
 ## Reporting a Vulnerability
 
-Report privately through **GitHub Private Vulnerability Reporting**: the
-repository's **Security** tab → **Advisories** → **Report a vulnerability**.
+**GitHub Private Vulnerability Reporting is switched off on this repository**, so the
+**Security** tab has no **Report a vulnerability** button today
+(`gh api repos/IvanBBaev/tokfold/private-vulnerability-reporting` answers
+`{"enabled":false}`, measured 2026-10-01). It is a repository setting, not something a
+reporter can work around.
 
-**If that button is not there, private reporting has not been switched on yet.** It
-is a repository setting, not something a reporter can work around. In that case open
-a public issue containing *only* the sentence "security report, requesting a private
-channel" — no details, no reproduction, no input — and a private channel will be
-opened for you. Disclosing nothing but the existence of a report is what keeps that
-fallback safe.
+Until it is on, open a public issue containing *only* the sentence "security report,
+requesting a private channel" — no details, no reproduction, no input — and a private
+channel will be opened for you. Disclosing nothing but the existence of a report is
+what keeps that fallback safe. If the button *is* there when you look, the setting was
+enabled after this was measured: use it instead.
 
-Otherwise, do **not** open a public issue, discussion, or pull request for a
-suspected vulnerability, and do not disclose it elsewhere until the
+Beyond that one sentence, do **not** open a public issue, discussion, or pull
+request for a suspected vulnerability, and do not disclose it elsewhere until the
 coordinated-disclosure window has closed.
 
 Please include the following. The **semantic-integrity impact class** is required —
@@ -55,10 +75,14 @@ it determines severity and triage order:
   - `silent-meaning-change` — decompression returns bytes that are not
     semantically equal to the original, yet no error is raised. Violates the core
     reversibility contract; treated as the highest severity.
-  - `fail-open-on-corruption` — a corrupted or forged archive decodes to
-    plausible-but-wrong bytes instead of returning a `DecompressError`.
-  - `integrity-check-bypass` — the header checksum or a reserved-bit guard can be
-    made to pass on content it should reject.
+  - `fail-open-on-corruption` — a corrupted or truncated archive decodes to
+    plausible-but-wrong bytes instead of returning a `DecompressError`. A *forged*
+    archive does not qualify: the digest is unkeyed by design, so a modifying
+    adversary can always recompute it.
+  - `integrity-check-bypass` — a check that should fail does not: an archive whose
+    stored digest disagrees with the bytes it covers, or one with a reserved flag bit
+    set, decodes without an error. Recomputing the digest over changed bytes is not a
+    bypass; the digest is unkeyed by design.
   - `availability` — crafted input panics, aborts, hangs, or exhausts memory in
     the engine (a denial-of-service against the host agent).
   - `confidentiality` — core, or a path reachable from it, performs I/O, reaches

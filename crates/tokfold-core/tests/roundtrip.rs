@@ -40,10 +40,23 @@
 //! compress(b).rendering`".
 //! Taken literally over *raw bytes* that invariant is **false by construction** for
 //! this engine, and deliberately so: the crate's contract (`lib.rs`) is that
-//! insignificant whitespace and escape style are canonicalized away, so two
-//! byte-distinct inputs that differ only there are *supposed* to collapse to the same
-//! rendering. Testing the literal statement would fail on the first benign
-//! whitespace variant — that is the design, not a bug.
+//! whitespace and escape style "**may** be canonicalized", so two byte-distinct
+//! inputs that differ only there are *allowed* to collapse to the same rendering.
+//! Testing the literal statement would fail on the first benign whitespace variant —
+//! that is the design, not a bug.
+//!
+//! "Allowed", not "supposed to": this paragraph said "supposed to collapse to the
+//! same rendering" until it was measured, and the measurement refutes it. Collapse is
+//! something the *tape-re-emitting* encoders do. `PASSTHROUGH`'s body is the input
+//! bytes verbatim, so under it a whitespace-only difference survives into the
+//! rendering; `{ "a" : 1 }` renders as `⟦tkfd:v1:raw⟧` plus those exact bytes.
+//! Measured over the 1 500 pairs in
+//! [`generators_reach_the_regions_the_properties_need`]: of 487 byte-distinct pairs
+//! the oracle calls equal, 22 collapsed — every one of them with both sides on
+//! `E1_MINIFY` — and 465 did not, because at least one side chose passthrough. That
+//! is not a violation of anything (prop08 is the contrapositive, so a semantically
+//! equal pair may render either way), but it does mean the premise of the literal
+//! statement is narrower than "any two benign whitespace variants".
 //!
 //! The property's actual intent — no *semantically distinct* documents share a
 //! rendering — is the contrapositive, which is both true and the strongest honest
@@ -488,6 +501,12 @@ fn arb_small_valid_json() -> impl Strategy<Value = String> {
 /// independently produced only byte-identical pairs in practice, which collapsed
 /// the property to oracle reflexivity; this makes the collision branch fire on
 /// genuinely different bytes.
+///
+/// "Insignificant whitespace" is a category of four bytes (RFC 8259 §2), and this
+/// function inserts only what its caller passes, so the category claim lives in the
+/// callers' filler sets, not here. The callers in this file pass `" "`, `"\n  "` and
+/// `"\t"` (from [`arb_related_pair`]); all four bytes, and two multi-byte runs, go
+/// through it from [`every_insignificant_whitespace_byte_is_canonicalized_away`].
 fn inject_whitespace(doc: &str, filler: &str) -> String {
     let mut out = String::with_capacity(doc.len() * 2);
     let mut in_string = false;
@@ -560,6 +579,14 @@ fn uppercase_unicode_escapes(doc: &str) -> String {
 
 /// A document and a *related* one: same document reformatted, restyled, or wrapped.
 /// Every mutation maps valid JSON to valid JSON, so both sides always compress.
+///
+/// The reformatting arm draws its filler from `" "`, `"\n  "` and `"\t"` — three of
+/// the four bytes RFC 8259 §2 calls insignificant whitespace, and never `"\r"`. That
+/// gap is covered deterministically by
+/// [`every_insignificant_whitespace_byte_is_canonicalized_away`] rather than by a
+/// fourth filler here, because a filler fires on a fraction of the draws while the
+/// category should be checked on every run — and because adding an index would
+/// invalidate the committed `.proptest-regressions` seeds.
 fn arb_related_pair() -> impl Strategy<Value = (String, String)> {
     (arb_valid_json(), 0usize..6).prop_map(|(a, which)| {
         let b = match which {
@@ -659,11 +686,23 @@ proptest! {
     ///
     /// The claim is per encoder: passthrough must reproduce the input byte for byte,
     /// and E1 minify must stay semantically equal to it. E2's body is a header + row
-    /// projection rather than a JSON document, so its fidelity is left to
-    /// [`prop08_anti_collision`] and the E2 unit tests. Dispatching on the wire id
-    /// with a plain `match` rather than `prop_assume!` matters: only a few percent of
-    /// generated documents select E1, so assuming would exhaust proptest's global
-    /// reject budget instead of testing anything.
+    /// projection rather than a JSON document, so it is not compared here; its
+    /// fidelity is covered by `tests/hostile.rs`, whose `check_accepted` parses the
+    /// body back with `expand_e2_body` and then calls `json_semantically_eq`, and by
+    /// the E2 unit tests in `encoder::e2_tabular`.
+    ///
+    /// This paragraph used to name [`prop08_anti_collision`] as the E2 coverage. That
+    /// was false and stood unmeasured: prop08 only asserts that two DIFFERENT
+    /// documents do not render to the same string, so an E2 body that is wrong but
+    /// still injective is invisible to it. Measured by hand-mutation on a scratch
+    /// copy: reversing the header key order in `emit_table` left every test in this
+    /// file green (26 passed) and failed five in `tests/hostile.rs`.
+    ///
+    /// Dispatching on the wire id with a plain `match` rather than `prop_assume!`
+    /// matters: only a few percent of generated documents select E1, so assuming
+    /// would exhaust proptest's global reject budget instead of testing anything. The
+    /// final arm pins the id it swallows, so a new encoder cannot start passing this
+    /// property by falling through it.
     #[test]
     fn prop01b_rendering_semantic_fidelity(x in arb_valid_json()) {
         let c = compressor();
@@ -684,7 +723,10 @@ proptest! {
                 "minify rendering is NOT semantically equal to its input\n  in   = {:?}\n  body = {:?}",
                 x, body
             ),
-            _ => {}
+            other => prop_assert_eq!(
+                other, EncoderId::E2_TABULAR.0,
+                "unknown encoder id {} fell through prop01b unchecked", other
+            ),
         }
     }
 
@@ -882,7 +924,15 @@ proptest! {
         let depth = md + extra;
         let input = format!("{}1{}", "[".repeat(depth), "]".repeat(depth));
         match c.compress(input.as_bytes()) {
-            Err(CompressError::DepthExceeded { limit, .. }) => prop_assert_eq!(limit, md),
+            Err(CompressError::DepthExceeded { depth: reported, limit }) => {
+                prop_assert_eq!(limit, md);
+                // `depth` is a number in a reported error, so it is a claim: pin it.
+                // The tape refuses on the way IN, at the first container above the
+                // limit (`new_depth = stack.len() + 1`, refused when `> max_depth`),
+                // so the reported depth is always exactly `limit + 1` and never the
+                // nesting the input actually reaches -- `extra` does not appear in it.
+                prop_assert_eq!(reported, md + 1);
+            }
             other => prop_assert!(false, "expected DepthExceeded, got {:?}", other),
         }
     }
@@ -986,14 +1036,24 @@ fn extremely_deep_input_errors_without_stack_overflow() {
     let c = compressor(); // default max_depth = 512
     let unbalanced = "[".repeat(100_000);
     match c.compress(unbalanced.as_bytes()) {
-        Err(CompressError::DepthExceeded { limit, .. }) => assert_eq!(limit, 512),
+        // Both numbers are pinned: the tape refuses on the way in, so `depth` is the
+        // first level above the limit (513) and NOT the 100 000 the input reaches.
+        // An implementation that reported how deep the input went would pass an
+        // `assert_eq!(limit, 512)` alone.
+        Err(CompressError::DepthExceeded { depth, limit }) => {
+            assert_eq!((depth, limit), (513, 512));
+        }
         other => panic!("expected DepthExceeded, got {other:?}"),
     }
     let balanced = format!("{}1{}", "[".repeat(2000), "]".repeat(2000));
-    assert!(matches!(
-        c.compress(balanced.as_bytes()),
-        Err(CompressError::DepthExceeded { .. })
-    ));
+    match c.compress(balanced.as_bytes()) {
+        // Same numbers on a balanced input: the refusal does not depend on what
+        // follows the offending bracket.
+        Err(CompressError::DepthExceeded { depth, limit }) => {
+            assert_eq!((depth, limit), (513, 512));
+        }
+        other => panic!("expected DepthExceeded, got {other:?}"),
+    }
 }
 
 /// Property 5, concrete: an exhaustive single-bit sweep over a representative,
@@ -1053,6 +1113,8 @@ fn generators_reach_the_regions_the_properties_need() {
     let c = compressor();
 
     let mut distinct_collisions = 0usize;
+    let mut byte_distinct_pairs = 0usize;
+    let mut semantically_equal_pairs = 0usize;
     let mut hostile_ok = 0usize;
     let mut hostile_err = 0usize;
     let mut high_escapes = 0usize;
@@ -1063,6 +1125,10 @@ fn generators_reach_the_regions_the_properties_need() {
             if a != b {
                 let ra = c.compress(a.as_bytes()).expect("mutated pair stays valid");
                 let rb = c.compress(b.as_bytes()).expect("mutated pair stays valid");
+                byte_distinct_pairs += 1;
+                if json_semantically_eq(&a, &b) {
+                    semantically_equal_pairs += 1;
+                }
                 if ra.rendering == rb.rendering {
                     distinct_collisions += 1;
                 }
@@ -1082,21 +1148,47 @@ fn generators_reach_the_regions_the_properties_need() {
         }
     }
 
+    // These floors are not `> 0`. A count asserted only to be non-zero is a number
+    // without its place: it stays green when the region it guards shrinks to a single
+    // draw, which is how a liveness test quietly stops being one.
+    //
+    // Measured over the 1 500 draws above under `TestRunner::deterministic()`, on the
+    // tree this comment was written against: 1 273 pairs were byte-distinct, 487 of
+    // those were semantically equal -- the class whose renderings *may* collide -- and
+    // 22 actually collided, every one of them with both sides on `E1_MINIFY`. The
+    // other 465 did not collide because at least one side took `PASSTHROUGH`, whose
+    // body is the input bytes verbatim, so a whitespace-only difference survives into
+    // the rendering (405 pairs passthrough on both sides, 57 passthrough against E1,
+    // 3 against E2). Not a violation -- prop08 is the contrapositive, so a
+    // semantically equal pair is *allowed* to render differently -- but it does mean
+    // prop08's collision branch is live on the E1 path only, which no doc said.
+    //
+    // Each floor is set near half of what was measured, so a collapse of the region is
+    // caught while ordinary encoder-selection drift is not. Re-run the numbers rather
+    // than trusting them: they move with the estimator and with every generator.
     assert!(
-        distinct_collisions > 0,
-        "prop08 is vacuous: {DRAWS} pairs produced no byte-distinct rendering collision"
+        byte_distinct_pairs >= 600,
+        "arb_json_pair stopped producing byte-distinct pairs: {byte_distinct_pairs} of {DRAWS} (1 273 when measured)"
     );
     assert!(
-        hostile_ok > 0,
-        "prop06's round-trip arm is dead: none of {DRAWS} hostile inputs compressed"
+        semantically_equal_pairs >= 240,
+        "arb_json_pair stopped producing semantically equal pairs, so prop08's premise is rare: {semantically_equal_pairs} of {DRAWS} (487 when measured)"
     );
     assert!(
-        hostile_err > 0,
-        "prop06's rejection arm is dead: all of {DRAWS} hostile inputs compressed"
+        distinct_collisions >= 10,
+        "prop08 is near-vacuous: {distinct_collisions} of {DRAWS} pairs produced a byte-distinct rendering collision (22 when measured)"
     );
     assert!(
-        high_escapes > 0,
-        "arb_raw_body never emitted an escape above 0x00FF in {DRAWS} draws"
+        hostile_ok >= 150,
+        "prop06's round-trip arm is starved: {hostile_ok} of {DRAWS} hostile inputs compressed (337 when measured)"
+    );
+    assert!(
+        hostile_err >= 550,
+        "prop06's rejection arm is starved: {hostile_err} of {DRAWS} hostile inputs were refused (1 163 when measured)"
+    );
+    assert!(
+        high_escapes >= 500,
+        "arb_raw_body is starved of escapes above 0x00FF: {high_escapes} of {DRAWS} draws (1 092 when measured)"
     );
 }
 
@@ -1121,5 +1213,58 @@ fn distinct_documents_get_distinct_renderings() {
         let ra = c.compress(a.as_bytes()).unwrap().rendering;
         let rb = c.compress(b.as_bytes()).unwrap().rendering;
         assert_ne!(ra, rb, "distinct documents collided: {a:?} vs {b:?}");
+    }
+}
+
+/// The mirror of [`distinct_documents_get_distinct_renderings`], and a category claim
+/// this suite did not reach. What is claimed here is *not* that the rendering drops
+/// the whitespace — `lib.rs` only says it "may be canonicalized", and under
+/// `PASSTHROUGH` it is not — but the weaker, unconditional half: each of these bytes
+/// is insignificant to the value tree, so the document still parses and still means
+/// what the bare document means. RFC 8259 §2 names four such bytes — space, tab, line
+/// feed and CARRIAGE RETURN. `arb_related_pair`'s fillers were `" "`, `"\n  "`
+/// and `"\t"`, `tests/hostile.rs`'s were `"\n  "`, `"\n\t"` and `"\n    "`, so no
+/// generator in this crate's suite ever fed the engine an insignificant `\r`.
+/// Measured by hand-mutation on a scratch copy: deleting `b'\r'` from
+/// `tape::skip_ws` (its whitespace arm is `b' ' | b'\t' | b'\n' | b'\r'`) left the
+/// whole `tokfold-core` integration suite green.
+///
+/// A deterministic test rather than a seventh filler in `arb_related_pair`, because a
+/// filler fires on a fraction of the draws and this is a four-member category that
+/// should be checked on every run. Each spelling is asserted to have changed the
+/// bytes, so a filler that silently stopped being inserted cannot pass this.
+#[test]
+fn every_insignificant_whitespace_byte_is_canonicalized_away() {
+    let c = compressor();
+    // Not an array of like objects, so E2 cannot win and the body is always a JSON
+    // document the oracle can read; the wildcard arm below pins that.
+    let bare = r#"{"a":[1,2],"b":{"c":true}}"#;
+    for ws in [" ", "\t", "\n", "\r", "\r\n", " \t\r\n"] {
+        let spelled = inject_whitespace(bare, ws);
+        assert_ne!(spelled, bare, "filler {ws:?} inserted nothing");
+        // `compress` returning `Err` here IS the failure this test exists to catch: a
+        // parser that did not treat one of these bytes as whitespace would report
+        // `InvalidJson` on a document that only differs from `bare` by layout.
+        let art = c
+            .compress(spelled.as_bytes())
+            .unwrap_or_else(|e| panic!("whitespace {ws:?} made {spelled:?} unparseable: {e:?}"));
+        let restored = c.decompress(&art.archive).unwrap();
+        let restored = std::str::from_utf8(&restored).unwrap();
+        assert!(json_semantically_eq(bare, restored), "archive lost {ws:?}");
+        let body = art
+            .rendering
+            .split_once('\n')
+            .expect("a framed rendering always carries a sentinel line")
+            .1;
+        match art.stats.encoder {
+            // Passthrough keeps the layout; E1 strips it. Either way the body must
+            // still stand for `bare`, which is the whole point of "insignificant".
+            EncoderId::PASSTHROUGH | EncoderId::E1_MINIFY => assert!(
+                json_semantically_eq(bare, body),
+                "{:?} body for filler {ws:?} is not {bare}: {body:?}",
+                art.stats.encoder
+            ),
+            other => panic!("unexpected encoder {other:?} for filler {ws:?}"),
+        }
     }
 }

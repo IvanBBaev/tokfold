@@ -588,6 +588,52 @@ mod tests {
         }
     }
 
+    /// The header's byte count, which the crate docs quote as "43 to 46 bytes — 47
+    /// for an original of 2^28 bytes or more". It is not a constant and no constant
+    /// in this module states it: the layout is ten fixed bytes, then the
+    /// `original_len` varint, then the 32-byte checksum, so a header is
+    /// `42 + varint` wide and the varint's width is the only variable. Measured at
+    /// every boundary it has, and paired with `decode`'s payload offset, which must
+    /// be the same number.
+    ///
+    /// Two ceilings are easy to confuse. [`ULEB128_MAX_BYTES`] would allow ten bytes
+    /// of varint, hence a 52-byte header, for an arbitrary `u64`; but `original_len`
+    /// is an input length and `compress` rejects an input longer than `u32::MAX`, so
+    /// no archive this crate writes can carry more than five varint bytes. 47 is
+    /// therefore the ceiling, and 46 is the ceiling under the default
+    /// `max_input_bytes` of 16 MiB, which is why the docs name 47 as needing a
+    /// raised one.
+    #[test]
+    fn header_byte_count_at_every_varint_boundary() {
+        for (original_len, expected) in [
+            (0u64, 43usize),
+            (127, 43),
+            (128, 44),
+            (16_383, 44),
+            (16_384, 45),
+            (2_097_151, 45),
+            (2_097_152, 46),
+            (16 * 1024 * 1024, 46),    // the default `max_input_bytes`
+            (268_435_455, 46),         // 2^28 - 1
+            (268_435_456, 47),         // 2^28, the first length needing a raised limit
+            (u64::from(u32::MAX), 47), // the longest input the parser addresses
+        ] {
+            let header = Header::new(1, 0, Flags::default(), original_len, [0u8; CHECKSUM_LEN]);
+            let mut buf = Vec::new();
+            header.encode_into(&mut buf);
+            assert_eq!(
+                buf.len(),
+                expected,
+                "header width for original_len {original_len}"
+            );
+            let (_, payload_offset) = Header::decode(&buf).unwrap();
+            assert_eq!(
+                payload_offset, expected,
+                "payload offset for original_len {original_len}"
+            );
+        }
+    }
+
     /// The framing a `LEB128` byte carries, inspected byte by byte.
     ///
     /// `roundtrip_varint_boundaries` only proves the encoder and the decoder agree,
@@ -753,7 +799,8 @@ mod tests {
             Header::new(1, 0x1234, Flags::default(), 0, [7u8; CHECKSUM_LEN]).encode_into(&mut out);
             out
         };
-        // A header with a one-byte length field; a wide one is the next test's.
+        // A header with a one-byte length field; a wide one is covered by
+        // `truncation_behind_a_wide_length_field_is_reported_where_the_field_ends`.
         // What each prefix is reported at, which is the start of the field it ends
         // inside: under four bytes there is no magic to recognize; a two-byte field
         // cut after its first byte is still reported at its first; the one-byte

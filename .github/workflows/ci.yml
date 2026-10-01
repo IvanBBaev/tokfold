@@ -21,6 +21,9 @@
 #   deny        -- cargo deny --locked check (supply-chain policy)
 #   package     -- cargo package --workspace --locked
 #   launcher    -- node --test over the npm launcher (see that job)
+#   fuzz        -- builds every cargo-fuzz target under fuzz/ on a pinned
+#                  nightly and runs each for 60 seconds, or for 600 seconds
+#                  on a scheduled or manual run (see that job)
 #
 # Where a line above gives a command, it is that job's `run:` verbatim (the
 # `docs` line names its RUSTDOCFLAGS separately, because that one is an
@@ -31,16 +34,19 @@
 # cargo outright -- "unexpected argument '-D' found", because `-D warnings` is an
 # argument for the lint driver and has to follow a `--`. A legend nobody can run
 # cannot be checked against the job it claims to summarize, which is the only
-# thing a legend is for. Three lines describe rather than quote: `doc-drift` and
-# `launcher` point at their own job, and `actionlint` runs a downloaded binary
-# (`./actionlint -color`) rather than a cargo command.
+# thing a legend is for. Four lines describe rather than quote: `doc-drift`,
+# `launcher` and `fuzz` point at their own job (`fuzz` has five `run:` steps and
+# a loop, which no single line can quote), and `actionlint` runs a downloaded
+# binary (`./actionlint -color`) rather than a cargo command.
 #
-# Each of those eight jobs carries exactly one condition, `if: github.event_name !=
+# Eight of those nine jobs carry exactly one condition, `if: github.event_name !=
 # 'schedule'`, which keeps the weekly cron from paying for the whole gate a
-# second time. That is the only way a gate can be skipped, and it is visible in
-# one grep. What it deliberately is *not* is conditional on a matrix value:
-# nothing a contributor can rename or mistype in a `required:` key can turn one
-# of *those eight* gates off on a push or a pull request.
+# second time. The ninth, `fuzz`, carries no `if:` at all: it runs on every
+# trigger, and the trigger decides only how long it fuzzes. That condition is
+# the only way a gate can be skipped, and it is visible in one grep. What it
+# deliberately is *not* is conditional on a matrix value: nothing a
+# contributor can rename or mistype in a `required:` key can turn one of *those
+# nine* gates off on a push or a pull request.
 #
 # The `test` matrix is now only about *running the test suite* on each
 # OS/toolchain/feature combination. Its `required` key still exists, and its only
@@ -52,7 +58,7 @@
 # that job is precisely what decides whether a failing leg still reports success.
 # Flip `required: true` to `false` on one of those three and it goes green while
 # failing -- the very thing the paragraph above says a `required:` key can no
-# longer do. The eight jobs are unreachable that way; those three legs are not.
+# longer do. The nine jobs are unreachable that way; those three legs are not.
 # Closing the gap would mean hoisting the required legs out of the matrix, which
 # renames the checks branch protection matches by exact string, so it is not a
 # change to make quietly.
@@ -91,7 +97,10 @@
 # `continue-on-error`, which is why they are not on the list. The `launcher` job
 # has no `continue-on-error` on any leg -- all four block today, and all four
 # belong on the list: they are the only gate covering the shipped JavaScript,
-# which no cargo command reads.
+# which no cargo command reads. The `fuzz` job has no `continue-on-error`
+# either, so it fails the run today, but it is deliberately not on the list:
+# whether a 60-second fuzz smoke test may block a merge is the owner's call, not
+# this file's, and a required check is added in the repository settings.
 #
 # ---------------------------------------------------------------------------
 # Conventions that apply to every job below
@@ -99,20 +108,35 @@
 # Every cargo invocation that resolves a dependency graph passes `--locked`: CI
 # must fail when the committed Cargo.lock no longer matches the manifests,
 # instead of silently resolving a fresh graph that nobody has reviewed or
-# audited. Exactly one invocation below deliberately omits the flag -- `cargo
-# fmt`, which never touches the graph. One further command cannot take it:
-# `cargo audit` rejects `--locked` outright (it reads the committed Cargo.lock
-# directly), as its own job comment explains. Note that `cargo deny` *does*
-# accept the flag and carries it: it resolves the graph via `cargo metadata`.
+# audited. Five invocations below carry no `--locked`, and not one of the five is
+# an exception to that rule. Check it with
+#
+#   grep -n 'cargo ' .github/workflows/ci.yml | grep -v '#' | grep -v 'Cache cargo'
+#
+# which lists 16 invocations today, and again with `| grep -v -- --locked`, which
+# leaves those five. One of them is outside the rule: `cargo fmt --all --check`
+# never touches the graph, so it has no graph to lock. The other four cannot take
+# the flag. `cargo audit` rejects it outright (it reads the committed Cargo.lock
+# directly), as its own job comment explains. `cargo fuzz` (0.13.2) has no such
+# option on `build`, `run` or `list`, and the `fuzz` job runs all three -- so it
+# checks its own lockfile, `fuzz/Cargo.lock`, with a separate `cargo fetch
+# --locked` before any of them. Note that `cargo deny` *does* accept the flag and
+# carries it: it resolves the graph via `cargo metadata`.
 #
 # Third-party action pins: every third-party action is pinned to a full commit
 # SHA, with the human-readable tag in a trailing comment. A tag (`@v4`) is a
 # mutable ref -- whoever controls the action repo can repoint it at new code that
 # then runs with this workflow's token. The SHA is immutable, so an update is a
-# reviewable diff. Bump the SHA and the comment together. Installed tools
-# (cargo-deny, cargo-audit, actionlint) are version-pinned for the same reason:
-# an unqualified install pulls whatever is newest at run time, so the policy this
-# repo is checked against could change without a commit here.
+# reviewable diff. Bump the SHA and the comment together. The installed tools are
+# version-pinned for the same reason: an unqualified install pulls whatever is
+# newest at run time, so the policy this repo is checked against could change
+# without a commit here. There are four of them, and they arrive three different
+# ways: cargo-deny and cargo-audit through `taiki-e/install-action`, actionlint as
+# a download whose tarball is checked against a recorded SHA-256, and cargo-fuzz
+# through `cargo install cargo-fuzz --version 0.13.2 --locked` in the `fuzz` job.
+# That last one is the one to remember when auditing this paragraph: it is the
+# only tool installed by a cargo command rather than by an action or a curl, so a
+# reader looking only at `uses:` lines will not see it.
 # The Rust toolchain is installed via the runner's preinstalled rustup rather
 # than a third-party action, which keeps one fewer dependency to pin and lets
 # `rustup override` cleanly beat the repo's rust-toolchain.toml on the MSRV legs.
@@ -133,7 +157,9 @@ on:
     # `release-test` and `nightly` -- because all three answer questions that a
     # per-PR run cannot: a PR-only audit misses advisories published *after* code
     # shipped, and the release profile and the nightly toolchain are moving
-    # targets that no PR changes.
+    # targets that no PR changes. The `fuzz` gate runs here too, and it is the
+    # only gate that does: on this slot it fuzzes each target for 600 seconds
+    # instead of the 60 a push or a pull request gets.
     #
     # LIMITATION (GitHub platform behaviour, not something this file can undo):
     # GitHub disables `schedule` triggers automatically after 60 days without
@@ -146,7 +172,8 @@ on:
     #      `gh workflow enable ci.yml` (or the Actions tab); pushing a commit
     #      alone does not restore a disabled schedule.
     - cron: "0 6 * * 1"
-  # Manual trigger: runs the full matrix, every gate, *and* the weekly jobs.
+  # Manual trigger: runs the full matrix, every gate, *and* the weekly jobs, with
+  # `fuzz` at its weekly length of 600 seconds a target.
   # Kept as the escape hatch for the 60-day schedule auto-disable described above.
   workflow_dispatch:
 
@@ -175,7 +202,8 @@ jobs:
   # ---------------------------------------------------------------------------
   # Gates. Each of these is a separate job on purpose -- see the header. The one
   # condition they carry is `github.event_name != 'schedule'`, which depends on
-  # the trigger alone; none of them may grow an `if:` that depends on matrix data.
+  # the trigger alone; `fuzz` carries none and runs on every trigger. None of
+  # them may grow an `if:` that depends on matrix data.
   # ---------------------------------------------------------------------------
 
   actionlint:
@@ -542,12 +570,113 @@ jobs:
         working-directory: npm/tests
         run: node --test
 
+  fuzz:
+    # Builds every cargo-fuzz target under `fuzz/` and runs each one for
+    # `FUZZ_SECONDS`: 60 seconds on every pull request and every push to `main`,
+    # 600 seconds on the weekly schedule and on a manual run. The targets and
+    # what each one asserts are described in `fuzz/README.md`. The 60-second run
+    # only has to find a regression that a minute of mutation from the committed
+    # seeds can reach; the 600-second run goes further from the same seeds,
+    # without holding up a pull request. Neither is a claim of coverage: every
+    # run starts from the committed seeds, because nothing here keeps the corpus
+    # a previous run grew. A real campaign is a local, longer run (the README
+    # says how).
+    #
+    # This is the only gate without `if: github.event_name != 'schedule'`. It
+    # runs on every trigger, and the trigger picks only `FUZZ_SECONDS` and
+    # `timeout-minutes`.
+    #
+    # Nightly is required -- cargo-fuzz builds with `-Zsanitizer=address` -- and
+    # it is pinned to a dated build rather than the moving `nightly` channel, so
+    # a red mark here is a finding in this repo and not upstream churn. The
+    # weekly `nightly` job below is the one that tracks the moving channel. To
+    # bump: change the date here and in `fuzz/README.md`, and rebuild `fuzz/`
+    # locally first.
+    #
+    # `fuzz/` is its own workspace with its own `Cargo.lock` and is not a member
+    # of the root one, so nothing else in this file compiles it and nothing here
+    # depends on nightly except this job. cargo-fuzz 0.13.2 has no `--locked`
+    # option on `build`, `run` or `list`, so the lockfile is checked by the
+    # `cargo fetch --locked` step before any of them runs: a stale
+    # `fuzz/Cargo.lock` fails there instead of being re-resolved silently.
+    #
+    # `timeout-minutes` is the only one in this file, because this is the only
+    # job whose work is open-ended by construction: `-max_total_time` bounds the
+    # mutation loop and `-timeout` bounds each single input, and the job limit is
+    # the backstop for a hang in neither (the build included). It is 30 minutes
+    # for the 60-second run, whose five targets fuzz for 5 minutes in total, and
+    # 80 minutes for the 600-second run, whose five targets fuzz for 50. The
+    # rest of each budget is for the toolchain, cargo-fuzz and the build. Neither
+    # limit is derived from the number of targets: a sixth target adds 1 or 10
+    # minutes of fuzzing to a budget that stays where it is.
+    name: fuzz
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 80 || 30 }}
+    env:
+      FUZZ_SECONDS: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 600 || 60 }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust nightly (pinned)
+        run: |
+          set -euo pipefail
+          rustup toolchain install nightly-2026-09-28 --profile minimal
+          rustup override set nightly-2026-09-28
+          rustc --version
+
+      - name: Cache cargo build artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: fuzz
+
+      - name: Install cargo-fuzz
+        # Built from source at a pinned version with its own lockfile, like the
+        # other installed tools in this file are version-pinned.
+        run: cargo install cargo-fuzz --version 0.13.2 --locked
+
+      - name: Check fuzz/Cargo.lock
+        working-directory: fuzz
+        run: cargo fetch --locked
+
+      - name: Build fuzz targets
+        working-directory: fuzz
+        run: cargo fuzz build
+
+      - name: Run each fuzz target for FUZZ_SECONDS
+        # The target list comes from `cargo fuzz list`, which reads the `[[bin]]`
+        # tables in `fuzz/Cargo.toml`, so a new target is run by virtue of being
+        # declared -- there is no list here to forget to extend. Each run starts
+        # from the committed seeds in `fuzz/seeds/<target>` (read-only: libFuzzer
+        # writes new inputs only into the first corpus directory).
+        working-directory: fuzz
+        run: |
+          set -euo pipefail
+          targets="$(cargo fuzz list)"
+          test -n "$targets"
+          for target in $targets; do
+            mkdir -p "corpus/$target"
+            cargo fuzz run "$target" "corpus/$target" "seeds/$target" -- \
+              -max_total_time="$FUZZ_SECONDS" -timeout=10 -dict=json.dict
+          done
+
+      - name: Upload fuzz crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/
+          if-no-files-found: ignore
+          retention-days: 30
+
   # ---------------------------------------------------------------------------
   # Test matrix. Runs the suite on each OS/toolchain/feature combination. Three of
   # its five legs gate: `continue-on-error` below is `!matrix.required`, so a
   # failing required leg fails the run, and those same three legs are on the
   # branch-protection list in this file's header. The other two report for signal
-  # only. The header spells out why "no gate hangs off it" is true of the eight
+  # only. The header spells out why "no gate hangs off it" is true of the nine
   # jobs above and false of these three legs.
   # ---------------------------------------------------------------------------
 
@@ -633,9 +762,11 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       # PROPTEST_CASES is read by proptest itself, so it raises every property
-      # suite in the workspace: `tokfold-core/tests/roundtrip.rs`, whose `config()`
-      # defaults to 32 so a local `cargo test` stays fast, and
-      # `tokfold-mcp/tests/properties.rs`, which takes proptest's own default.
+      # block in the workspace: the ones in `tokfold-core/tests/roundtrip.rs` and
+      # `tokfold-core/tests/hostile.rs`, whose `config()` defaults to 32 so a local
+      # `cargo test` stays fast, and the ones in `tokfold-mcp/tests/properties.rs`
+      # and the test module of `tokfold-core/src/encoder/e2_tabular.rs`, which take
+      # proptest's own default of 256.
       # Without this variable CI ran the same handful of cases a developer machine
       # does -- far fewer than the roundtrip suite's own module docs claim -- so the
       # property tests were weakest in the one place they are meant to be strongest.
@@ -747,14 +878,13 @@ jobs:
   nightly:
     # Weekly early-warning run on the nightly toolchain.
     #
-    # This slot was considered for fuzzing and deliberately is not fuzzing: there
-    # is no `fuzz/` directory in this workspace, and `cargo fuzz` cannot run
-    # without one. A fuzz target is source code -- it has to be written, reviewed
-    # and maintained, and it belongs in a commit that adds `fuzz/`, not in a CI
-    # file that would otherwise be scheduling a command guaranteed to fail. If
-    # `fuzz/` is ever added, this is the job to extend.
+    # Fuzzing does not live here. It has its own `fuzz` job above, on a nightly
+    # pinned to a date, because a fuzz regression is a defect in this repo and
+    # should surface on the change that introduced it, not on the next Monday
+    # under a toolchain that moved in the meantime. That job also runs on this
+    # weekly slot, for longer, on the same pinned nightly.
     #
-    # What nightly *can* check without new source is future breakage: nightly is
+    # What this job checks is future breakage: nightly is
     # the stable of a few months' time, so a compile error or a new lint here is
     # advance notice. Both steps are `continue-on-error` and this job is not a
     # required check -- nightly adds, renames and un-deprecates lints on its own

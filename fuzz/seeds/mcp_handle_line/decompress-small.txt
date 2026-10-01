@@ -1,0 +1,1 @@
+P{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"tokfold_decompress","arguments":{"archive":"VEtGRAEAAAAAAHqMdmfXXPdEU/iClTPb4U1uT80w2o8+AnrHLIu/RLeVglt7ImlkIjoxLCJuYW1lIjoiYSIsIm9rIjp0cnVlfSx7ImlkIjoyLCJuYW1lIjoiYiIsIm9rIjpmYWxzZX0seyJpZCI6MywibmFtZSI6ImMiLCJvayI6dHJ1ZX0seyJpZCI6NCwibmFtZSI6ImQiLCJvayI6bnVsbH1d"}}}

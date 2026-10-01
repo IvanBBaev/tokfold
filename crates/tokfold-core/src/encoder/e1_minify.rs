@@ -11,22 +11,28 @@
 //!
 //! # Why this is a candidate, not a guarantee (CRITICAL)
 //!
-//! Minification is **not** uniformly a token win, even though it always removes
-//! bytes, because bytes and tokens are priced very differently — and the pricing is
-//! a lookup table, not a rule, so it cannot be reasoned about, only measured.
+//! Minification is **not** uniformly a token win, even though the body it emits is
+//! never longer than the input (no step has a lengthening arm, and
+//! `the_body_is_never_longer_than_the_input` drives one input per step), because
+//! bytes and tokens are priced very differently
+//! — and the pricing is a lookup table, not a rule, so it cannot be reasoned about,
+//! only measured.
 //!
 //! cl100k and o200k carry a dedicated token for many indentation widths, so a run
-//! of spaces costs **1** token whatever its byte length: 4, 8, 16 and even 128
-//! spaces are one token each. At the depths real documents reach, a line therefore
-//! sheds many bytes and exactly two tokens — the newline and the run — and a byte
-//! objective over-rewards this encoder. But the table is finite and **not
-//! monotonic**: of the run lengths `1..=400`, cl100k spends one token on 86 of them
-//! and o200k on 84; the longest single-token run is 128 for both, while the first
-//! length that costs more is 82 under cl100k and 80 under o200k. A 512-space run —
-//! reachable, since [`Config`](crate::Config)'s default `max_depth` is 512 — is 4
-//! tokens, and 2048 spaces is 16. Past the table, stripping a run is worth
-//! progressively more, so the same byte objective *under*-rewards the encoder
-//! there. It misprices in both directions, which is the point.
+//! of spaces can cost **1** token at widths a byte count would price far apart: 4,
+//! 8, 16 and even 128 spaces are one token each. At the depths real documents reach,
+//! a line therefore sheds many bytes and exactly two tokens — the newline and the
+//! run, 2 together at every indentation width from 2 to 64 under both tokenizers and
+//! never merged into one — and a byte objective over-rewards this encoder. But the
+//! table is finite and **not monotonic**: of the run lengths `1..=400`, cl100k
+//! spends one token on 86 of them and o200k on 84; the longest single-token run is
+//! 128 for both, while the first length that costs more is 82 under cl100k and 80
+//! under o200k. A 512-space run — reachable, since [`Config`](crate::Config)'s
+//! default `max_depth` is 512 — is 4 tokens under both, and 2048 spaces is 16 under
+//! both. Past the table, stripping a run is worth progressively more, so the same
+//! byte objective *under*-rewards the encoder there. It misprices in both
+//! directions, which is the point. Every figure in this section is pinned against
+//! the tokenizers themselves by `run_pricing_is_what_the_module_docs_say_it_is`.
 //!
 //! Stripping the space in a post-key `": "` pays, and pays predictably: `": "` is 2
 //! tokens where `":"` is 1, so that is one token per key. It is the smaller half of
@@ -455,6 +461,106 @@ mod tests {
     fn mini(input: &str) -> String {
         let t = tape::parse(input, 512).unwrap();
         render(&t, input).unwrap()
+    }
+
+    /// Every real-tokenizer figure this module's docs quote, pinned against the
+    /// tokenizers themselves: how many run lengths in `1..=400` cost a single token
+    /// (86 under cl100k, 84 under o200k), the longest single-token run (128 under
+    /// both), the first length that costs more than one (82 and 80 -- which is what
+    /// makes the table non-monotonic, since 128 is still one token), the 512- and
+    /// 2048-space runs (4 and 16 tokens under both), the post-key `": "` against
+    /// `":"` (2 tokens against 1 under both, both spellings including the quote byte
+    /// the docs show), and the two tokens a pretty-printed line sheds: a newline plus
+    /// its indentation run is 2 at every width from 2 to 64 under both tokenizers --
+    /// never 1, so there is no combined newline-and-indent token to merge them, and
+    /// never 3.
+    ///
+    /// Measured on runs standing alone, which is how the docs state them. A run
+    /// inside a document can price differently when a neighbouring byte merges into
+    /// it; `the_sentinel_cost_moves_with_leading_whitespace` in `estimator` measures
+    /// that case.
+    #[cfg(feature = "tiktoken")]
+    #[test]
+    fn run_pricing_is_what_the_module_docs_say_it_is() {
+        use crate::estimator::{Cl100kEstimator, O200kEstimator, TokenEstimator};
+
+        let cl = Cl100kEstimator::new().unwrap();
+        let o2 = O200kEstimator::new().unwrap();
+        let cases: [(&dyn TokenEstimator, &str, usize, usize); 2] =
+            [(&cl, "cl100k", 86, 82), (&o2, "o200k", 84, 80)];
+
+        for (est, name, single_token_lengths, first_dearer) in cases {
+            let ones: Vec<usize> = (1..=400)
+                .filter(|n| est.estimate(&" ".repeat(*n)) == 1)
+                .collect();
+            assert_eq!(
+                ones.len(),
+                single_token_lengths,
+                "{name}: single-token runs"
+            );
+            assert_eq!(ones.iter().copied().max(), Some(128), "{name}: longest");
+            assert_eq!(
+                (1..=400).find(|n| est.estimate(&" ".repeat(*n)) > 1),
+                Some(first_dearer),
+                "{name}: first run costing more than one token"
+            );
+            assert_eq!(est.estimate(&" ".repeat(512)), 4, "{name}: 512 spaces");
+            assert_eq!(est.estimate(&" ".repeat(2048)), 16, "{name}: 2048 spaces");
+
+            // The docs spell the post-key sequence with the key's closing quote.
+            assert_eq!(est.estimate("\": \""), 2, "{name}: quote-colon-space");
+            assert_eq!(est.estimate("\":\""), 1, "{name}: quote-colon");
+
+            assert_eq!(est.estimate("\n"), 1, "{name}: a newline alone");
+            for width in [2usize, 4, 8, 16, 20, 40, 64] {
+                let line = format!("\n{}", " ".repeat(width));
+                assert_eq!(est.estimate(&line), 2, "{name}: newline + {width} spaces");
+            }
+        }
+    }
+
+    /// The module docs say the body E1 emits is never longer than the input. Every
+    /// step it has either deletes bytes or rewrites an escape into a form no longer
+    /// than itself (`canonical_escape` and `emit_scalar` have no lengthening arm), so
+    /// the inputs below -- one per byte-changing step, plus the two carve-outs that
+    /// copy a lexeme verbatim -- are checked for that, and the already-compact ones
+    /// for byte-identity. Identity needs more than compactness: `"\u001F"` has
+    /// nothing to strip yet comes back `"\u001f"`, the same length in different bytes.
+    #[test]
+    fn the_body_is_never_longer_than_the_input() {
+        let never_longer = [
+            "{ \"a\" : 1 }",
+            "[\n  1,\n  2\n]",
+            "{\"a\\/b\":\"c\\/d\"}",
+            "[\"\\u0041\",\"\\u00e9\",\"\\u0022\",\"\\u005c\",\"\\u0008\",\"\\u001F\"]",
+            "[\"\\ud83d\\ude00\"]",
+            "[\"\\udead\"]",
+            "{\"e\":\"error[E0308]: mismatched types\"}",
+            "[1.0,1e3,1E3,-0,2.5e10,0.5]",
+            "[[[[[[null,true,false]]]]]]",
+        ];
+        for input in never_longer {
+            let out = mini(input);
+            assert!(
+                out.len() <= input.len(),
+                "body grew: {input:?} -> {out:?} ({} -> {})",
+                input.len(),
+                out.len()
+            );
+        }
+
+        let identical = [
+            "{\"a\":1}",
+            "[1,2,3]",
+            "{\"b\":1,\"a\":2}",
+            "[null,true,false]",
+            "[1.0,1e3,1E3,-0,2.5e10,0.5]",
+            "{\"a\":\"line\\nbreak\\ttab\"}",
+            "[\"\\udead\"]",
+        ];
+        for input in identical {
+            assert_eq!(mini(input), input, "already-compact input was rewritten");
+        }
     }
 
     #[test]

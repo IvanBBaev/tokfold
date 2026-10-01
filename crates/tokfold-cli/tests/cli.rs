@@ -1263,6 +1263,69 @@ fn a_standard_output_that_cannot_be_written_fails_the_command() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(2), "expand, stderr: {stderr}");
     assert!(stderr.contains("writing to standard output"), "{stderr}");
+
+    let out = run(&["stats", "-i", path_str(&valid)]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "stats, stderr: {stderr}");
+    assert!(stderr.contains("writing to standard output"), "{stderr}");
+}
+
+/// The one exception the README states for a standard output that cannot be written:
+/// a `compress` or `expand` whose payload is zero bytes writes nothing, so no write can
+/// fail, and it exits `0`. Both halves are reached here — a rejected pass over an
+/// empty input, whose passthrough is empty, and an `expand` of an archive whose
+/// original is empty. The compressor never emits that archive (any non-empty input
+/// yields at least the raw sentinel, and an empty one is rejected), so it is built by
+/// hand from the layout in `tokfold-core/src/format.rs`: magic, version `1`, encoder
+/// `0`, tokenizer and flags `0`, a `ULEB128` length of `0`, and the SHA-256 of the
+/// empty original.
+#[cfg(unix)]
+#[test]
+fn a_zero_byte_payload_exits_0_on_a_standard_output_that_cannot_be_written() {
+    let dir = scratch_dir("read_only_stdout_empty_payload");
+    let sink = dir.join("sink");
+    fs::write(&sink, b"").expect("write the read-only sink");
+    let empty = dir.join("empty");
+    fs::write(&empty, b"").expect("write the empty input");
+    let archive = dir.join("empty.tkfd");
+    let mut bytes = b"TKFD".to_vec();
+    bytes.extend_from_slice(&[1, 0, 0, 0, 0, 0, 0]);
+    bytes.extend_from_slice(&[
+        0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f, 0xb9,
+        0x24, 0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c, 0xa4, 0x95, 0x99, 0x1b, 0x78, 0x52,
+        0xb8, 0x55,
+    ]);
+    assert_eq!(bytes.len(), 43, "the smallest header there is");
+    fs::write(&archive, &bytes).expect("write the hand-built archive");
+
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_tokfold"))
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(fs::File::open(&sink).expect("open the sink read-only"))
+            .stderr(Stdio::piped())
+            .output()
+            .expect("run tokfold")
+    };
+
+    let out = run(&["compress", "-i", path_str(&empty)]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "empty compress, stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("passing input through uncompressed")
+            && !stderr.contains("writing to standard output"),
+        "{stderr}"
+    );
+
+    let out = run(&["expand", "-i", path_str(&archive)]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "empty expand, stderr: {stderr}");
+    assert_eq!(stderr, "", "an empty original expands silently");
+    assert_eq!(fs::read(&sink).expect("reread the sink"), b"");
 }
 
 /// `--help` and `--version` reach standard output through the same guard, and so does
@@ -2808,7 +2871,7 @@ fn compress_help_says_what_an_archive_actually_holds() {
 }
 
 /// The same help puts a size on the header — "43 to 46 bytes" — and no test read it:
-/// the test above pins phrases, none of them a number, and a number on a help screen
+/// `compress_help_says_what_an_archive_actually_holds` pins phrases, none of them a number, and a number on a help screen
 /// is a claim like any other. The figure is derived here, not trusted: the header is
 /// 42 fixed bytes plus the original length as a `ULEB128` varint, which gains a byte at
 /// each power of 128, so an original under 128 bytes gets 43 and one of 2^21 bytes or
@@ -3518,4 +3581,110 @@ fn a_write_only_stdout_spelled_as_the_input_is_a_read_failure_on_macos() {
         fs::read(&target).expect("reread the file"),
         COMPRESSIBLE_JSON
     );
+}
+
+/// The length shortcut behind a descriptor spelling settles only what is *shorter*
+/// than the magic. A file of exactly four bytes is long enough to be one, so it is
+/// read: `TKFD` behind a read-write descriptor is a stale archive that cannot be
+/// removed, and four bytes behind a write-only descriptor cannot be read to rule one
+/// out. Both are refused at exit `2`. macOS only, like the other descriptor-slot tests.
+#[test]
+#[cfg(target_os = "macos")]
+fn a_four_byte_file_behind_a_descriptor_spelling_is_read_not_assumed_foreign() {
+    let dir = scratch_dir("descriptor-slot-four-bytes");
+
+    let magic = dir.join("magic.tkfd");
+    fs::write(&magic, b"TKFD").expect("seed the four-byte magic");
+    let out = compress_into_descriptor_3("<>", &magic, b"not json");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(out.stdout, b"", "nothing may pass through beside the magic");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("so it cannot be removed"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(fs::read(&magic).expect("reread the slot"), b"TKFD");
+
+    let log = dir.join("log");
+    fs::write(&log, b"abcd").expect("seed four bytes");
+    let out = compress_into_descriptor_3(">>", &log, b"not json");
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(out.stdout, b"");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("and not passed through: inspecting the archive path /dev/fd/3"),
+        "{stderr}"
+    );
+    assert_eq!(fs::read(&log).expect("reread the log"), b"abcd");
+}
+
+/// A successful pass whose archive path cannot even be `stat`ed for a reason other
+/// than "not there" fails on that inspection, not on the open that would follow it:
+/// here a regular file is used as a directory (`ENOTDIR`). The message names the
+/// step that failed, and nothing reaches stdout.
+#[test]
+#[cfg(unix)]
+fn an_archive_path_that_cannot_be_inspected_fails_the_successful_pass_on_the_inspection() {
+    let dir = scratch_dir("archive_path_not_a_directory");
+    let input = dir.join("good.json");
+    fs::write(&input, COMPRESSIBLE_JSON).expect("write the compressible input");
+    let not_a_dir = dir.join("plain");
+    fs::write(&not_a_dir, b"x").expect("write the plain file");
+    let archive = not_a_dir.join("a.tkfd");
+
+    let out = run_tokfold_without_stdin(&[
+        "compress",
+        "--input",
+        path_str(&input),
+        "--archive",
+        path_str(&archive),
+    ]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "stderr: {stderr}");
+    assert!(out.stdout.is_empty(), "no rendering without its archive");
+    assert!(
+        stderr.contains(&format!(
+            "inspecting the archive path {}",
+            path_str(&archive)
+        )),
+        "{stderr}"
+    );
+    assert_eq!(fs::read(&not_a_dir).expect("reread the plain file"), b"x");
+}
+
+/// A directory at the archive path of a successful pass is not refused as "not a
+/// regular file": it falls through to the open, so the caller sees the platform's own
+/// diagnostic, as `write_file` documents. Nothing reaches stdout and the directory is
+/// left as it was.
+#[test]
+#[cfg(unix)]
+fn a_directory_at_the_archive_path_of_a_successful_pass_reports_the_platform_error() {
+    let dir = scratch_dir("archive_path_is_a_directory");
+    let input = dir.join("good.json");
+    fs::write(&input, COMPRESSIBLE_JSON).expect("write the compressible input");
+    let archive = dir.join("slot");
+    fs::create_dir(&archive).expect("create the directory slot");
+
+    let out = run_tokfold_without_stdin(&[
+        "compress",
+        "--input",
+        path_str(&input),
+        "--archive",
+        path_str(&archive),
+    ]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "stderr: {stderr}");
+    assert!(out.stdout.is_empty(), "no rendering without its archive");
+    assert!(
+        stderr.contains(&format!("writing archive to {}", path_str(&archive)))
+            && stderr.contains("Is a directory")
+            && !stderr.contains("not a regular file"),
+        "{stderr}"
+    );
+    assert!(archive.is_dir());
 }

@@ -641,6 +641,88 @@ released says so, and names what `0.0.1` does in the same case.
   that does not exist. The workflow also verifies that each package declares the `os`
   and `cpu` its table key promises, and it collects every problem before failing
   instead of stopping at the first.
+- A cargo-fuzz harness in `fuzz/` — its own workspace, not a member of the root one,
+  and in no crate tarball — with five targets: archive decoding (canonical header
+  round trip, fail-closed `decompress`); the compress/decompress round trip under the
+  Option B contract, the do-no-harm gate and determinism; `tape::parse`, differential
+  against the test oracle; MCP `Server::handle_line` over whole sessions at chosen
+  frame limits (one line per reply, valid JSON, within the limit); and
+  `tokfold_mcp::json::parse` with the writer's fixed point. A new `fuzz` CI job
+  builds them on a pinned nightly and runs each for 60 seconds on push and pull
+  request, and for 600 seconds on the weekly schedule and on manual dispatch. The
+  seed corpora include 316 inputs from each of the four JSON-reading targets taken
+  from Nicolas Seriot's JSONTestSuite (MIT, pinned commit `1ef36fa`, imported by
+  `fuzz/import-jsontestsuite.sh`, licence in `fuzz/seeds/JSONTestSuite.NOTICE`). A
+  300-second run of each target on macOS arm64 (nightly 2026-09-28, cargo-fuzz
+  0.13.2, ASan), and a 130-second run with the JSONTestSuite seeds, found no crash;
+  `fuzz/README.md` carries the run counts.
+- `crates/tokfold-core/tests/hostile.rs`: property tests with hostile generators —
+  nesting at and one level past the depth limit for every container kind, number
+  lexemes from the whole RFC 8259 grammar (generated integer parts of 100 to 121
+  digits and fractions of 100 to 120, fixtures of 1 000, `-0` spellings, values past
+  every `f64`, `i64` and `u64` bound) and malformed ones, lone and reversed surrogate
+  escapes, near-identical E2 tables, raw control bytes, bad escapes and invalid
+  UTF-8 refused at their exact offset, every prefix of a hostile document **of at
+  most 256 bytes** (the prefix loop compresses once per byte, so a `prop_filter`
+  discards longer draws — over 6 000 draws of `arb_hostile_valid` under
+  `TestRunner::deterministic()` it keeps 3 860, and the draws it drops run to 20 879
+  bytes), the size cap, and determinism across instances and threads —
+  checked against an independent E2 decoder with its own self-test, whose rustdoc
+  enumerates the body shapes it returns `None` for instead of calling itself strict;
+  two of them the encoder cannot emit (a count below 2, an empty header key list),
+  because `finish_array` refuses both. One test, a 16 MiB table, was `#[ignore]`d for
+  its run time until it was timed — 11.0–11.4 s in a debug build and 1.06–1.12 s under
+  `--release` over two runs (macOS 27.0.0 arm64, stable 1.97, 2026-09-30), against
+  27.19 s and 6.45 s for the whole workspace leg. No gate leg passes
+  `--ignored`, so the only case that reaches the default cap exactly ran in no leg at
+  all; it is unconditional now. **This suite found no defect in `tokfold-core`.** Six
+  were found later in its own claims, each by reading a claim back against the cases
+  its inputs reach:
+  - "every prefix of a hostile document" was every prefix of a document of at most
+    256 bytes — the qualification above.
+  - "every row edit is drawn" was unasserted: `arb_table_doc` discarded the
+    `RowEdit`s it applied, and a rendered document cannot be read back into them.
+    The generator now hands them over and the liveness test counts all five.
+  - the 16 MiB test asserted only `bytes_before`, so "E2 expansion included" stayed
+    green if selection fell back to passthrough and the expansion the test is named
+    for stopped running. The encoder is pinned to E2 and `bytes_after <
+    bytes_before`.
+  - "whatever its bytes are" reaches two kinds of input, not every kind: over 4 000
+    deterministic draws, 3 917 invalid UTF-8 and 83 valid UTF-8 that is not valid
+    JSON, and never one the depth check would refuse (the generator nests at most 24
+    levels against a limit of 512). The population is now written into the test, and
+    the size guard's precedence over the depth check is a concrete test — a
+    600-level document is `DepthExceeded { depth: 513, limit: 512 }` under a cap wide
+    enough to hold it and `InputTooLarge` under a cap one byte short of it.
+  - the pool of "text that imitates the rendering's own framing" held two of the
+    three sentinels `sentinel_for` names, so a string spelling the E1 sentinel was
+    never generated. All three are in the pool, and the liveness test counts the
+    inputs spelling each (38, 40 and 33 of 600 draws).
+  - "a backslash in front of it does not make it an escape" was false: the parser
+    reads the control byte as the escape's character, so the rule that refuses it is
+    "invalid escape character in string" rather than "unescaped control character in
+    string". The offset names the control byte either way, and the offset was all
+    the test read. Both messages are asserted now, and the offsets and rules of the
+    six malformed-number breaks are pinned on named fixtures, since over generated
+    lexemes a break has no single message (`1e5` with an `e` appended is a parsed
+    number followed by trailing input, not a digitless exponent).
+- `crates/tokfold-mcp/tests/quickstart.rs`, which replays the session the MCP README's
+  Quickstart quotes and checks every quoted reply, the rendering and the byte counts
+  against the server. It names two limits in particular, and says they are not all of
+  them: a quoted reply is trimmed with `…`, and drift inside an elided run passes —
+  `the_quoted_replies_anchor_only_part_of_what_they_quote` pins per reply how many
+  pieces the quote has and how much is held, 1693 bytes of 7178, with the `tools/list`
+  reply the widest and the least anchored at 205 of 2521 — and the replay drives
+  `stdio::serve` in process, so the `tokfold mcp <<'EOF'` line is compared as text and
+  the binary is never run. This bullet said the file "states its own two limits rather
+  than claiming the example cannot drift" until 2026-10-01, and on the day it was
+  written the file's first paragraph made that claim outright ("the document cannot
+  drift from the server without this file failing"), unqualified, while the paragraph
+  that names the file's limits conceded the opposite. Both are corrected: the file's
+  opening now holds only where it anchors, and the count of limits is no longer stated
+  as the whole. The
+  session's only notification was checked by counting id-less lines, which holds for
+  any notification, so its method is asserted as well.
 
 ### Removed
 
@@ -651,6 +733,25 @@ released says so, and names what `0.0.1` does in the same case.
 
 ### Documentation
 
+- `docs/threat-model.md` — trust boundaries, assets and mitigations for the library,
+  the CLI and the experimental `tokfold mcp` server, each tied to the code that holds
+  it, plus the MCP and engine issues that are known and still open — and
+  `docs/privacy.md` — no network I/O (the dependency ban is enforced by `cargo deny`
+  in CI; first-party sockets are held by review), no telemetry, no caches, the
+  environment variables the binary reads through its dependencies, what the npm
+  launcher does, and that the only file written is the `--archive` path, created with
+  the process umask's mode and holding the input verbatim. Both describe `main` and
+  say so: the published `0.0.1` binaries predate the archive-path protections (a
+  rejected pass there leaves a stale archive in place, and `--input r.json --archive
+  r.json` replaces the input with its archive), measured on the registry's
+  darwin-arm64 binary. Both are linked from `SECURITY.md`.
+- `crates/tokfold-mcp/README.md` gains a Quickstart: installing from npm or building
+  from the git repository (there is no crates.io package), connecting Claude Code
+  (`claude mcp add tokfold -- tokfold mcp`, measured connected), Claude Desktop (the
+  standard `mcpServers` entry, not exercised) and any other stdio client, a session a
+  reader can paste with its measured replies, what each tool returns, the 32 MiB frame
+  and 16 MiB input limits, and troubleshooting. The root README links to it.
+
 Corrections, each to a statement that had become false, or to an omission, where
 the sentence that should have been there was never written at all.
 Sources are listed because this repository's most reliable defect source is
@@ -660,7 +761,8 @@ documentation a previous fix falsified.
   rustdoc said it was.** It said each step down "loses exactly one more thing" and
   that one outsized call "fails alone". Neither holds: each member's refusal takes
   the widest form that fits the room left at that member and reserves nothing for
-  the members after it. With the running member budget added since `0.0.1`,
+  the members after it. On the working tree, whose member refusal names two numbers
+  (the room left and the limit) where `0.0.1`'s names one,
   `[ping, tools/list with a 300-byte id, ping]` is answered (both pings, id-less
   refusal) at a 576-byte limit and collapses to one id-less error at every limit
   from 577 to 700, because from 577 the addressed refusal (431 bytes) fits its own
@@ -676,9 +778,14 @@ documentation a previous fix falsified.
   from 2 858 to 2 953, two results from 2 954 and three from 3 002 — so at 576 it
   collapses and at 700 it answers, the reverse of the numbers above. The same
   shape is reachable at the default 32 MiB limit, in `0.0.1` too, and it has both
-  windows there as well; the steps around the later window are taken exactly where
-  the reply would exceed the limit by one byte, while the early collapse starts one
-  id byte after a 33 554 430-byte reply and was not derived. Through the published `tokfold-darwin-arm64` 0.0.1 binary
+  windows there as well. Every step into either window (the last ping losing its
+  answer, then its id, then the batch) is taken exactly where the reply would exceed
+  the limit by one byte — the reply at the width before each window is exactly
+  33 554 432 bytes — while the step out of the later window is taken where the
+  middle member's addressed refusal first exceeds its own budget by one byte. Each
+  window is one width wider than the range of budgets the last ping's id-less
+  refusal cannot fit (96 widths for `0.0.1`'s one-number refusal, 129 for the
+  working tree's two-number one); the rustdoc derives both. Through the published `tokfold-darwin-arm64` 0.0.1 binary
   (macOS arm64, ids of `x`), a middle id 33 551 779 to 33 551 874 bytes wide gets a
   single 101-byte error (the real catalogue answer starving the last ping) and one of
   33 551 875 an array again; one of 33 554 082 to 33 554 177 gets the single error
@@ -687,7 +794,8 @@ documentation a previous fix falsified.
   plus 131 bytes) is exactly 33 554 432 bytes and `0.0.1` refuses it at the read
   side, which charged the newline, with `-32600` "message exceeds the 33554432 byte
   limit" — the Fixed entry "The MCP transport refused a message of exactly its own
-  limit", not the batch code. The running member budget added since moves the two
+  limit", not the batch code. The two-number member refusal added in `0f759f6` (the
+  running member budget itself dates from `36b771e` and is in `0.0.1`) moves the two
   windows to 33 551 636 to 33 551 764 and 33 554 017 to 33 554 145. Behaviour
   unchanged; reserving room or
   reordering is an open contract question.
@@ -1077,7 +1185,16 @@ documentation a previous fix falsified.
   in `crates/tokfold-mcp/README.md`, `src/lib.rs`,
   `src/jsonrpc.rs`, `tests/session.rs` and `tests/contract.rs`; the ratchet's fixtures
   are ASCII, which its comment now says, because that is why its direction assertion
-  holds at all.
+  holds at all. The 294 KB / 108 KB figure above was never reproduced and is left as
+  written: 108/294 is 0.367x, below both floors a Cyrillic payload has — 2·2/6 = 2/3
+  with no archive, and (4/3)·2/6 = 4/9 once the base64 archive dominates the reply —
+  so that fixture cannot have produced it. That clause read "below the 2/3 the
+  Cyrillic direction approaches from above" until 2026-10-01: 2/3 is the no-archive
+  floor only, and the lower of the two still leaves 0.367x out of reach. Measured, a
+  152 KB Cyrillic payload is a 424 KB call answered by 304 KB, **0.72x**; 0.37x
+  belongs to the escaped-ASCII curve, derived with its fixtures in the entry headed
+  **"0.37x could not have been measured on any path this server has" was itself
+  false, and so was the floor it rested on.**
 - **The reply-multiplier paragraph written earlier to fix this was itself
   wrong in three of its four numbers, and one of them was unreachable.** It gave 3.6x as
   the ceiling against the payload, 3.20x as the ceiling against the call, a 9.4 MB
@@ -1097,12 +1214,18 @@ documentation a previous fix falsified.
   archive that lifts the floor to 4/9. The real figure is **0.72x** — a 152 KB Cyrillic
   payload, a 424 KB call, a 304 KB reply. The likeliest origin is a measurement taken
   before the reply echoed the payload twice, kept through the change that made it false.
+  The two sentences here about 0.37x and about the floor are themselves refuted, by the
+  entry headed **"0.37x could not have been measured on any path this server has" was
+  itself false, and so was the floor it rested on.** It quotes both, so they are left as
+  written: 0.37x is reachable on escaped ASCII, whose floor is 1/3 and not 2/3, and the
+  base64 archive lowers that floor rather than lifting it. Only the 0.72x measurement
+  and its fixture survive from this paragraph's last two sentences.
 - **`notifications/initialized` is 25 bytes, not 26.** `MAX_ECHO_BYTES` is 120 and the
   point of the sentence — that nothing real comes near it — is untouched, but a byte
   count that does not survive `wc -c` is not evidence of anything.
 - **The `#[allow(clippy::indexing_slicing)]` count in `tape.rs` was wrong by seven.** It
   said four test modules take it; eleven files did when this was corrected, and more
-  have been added since, which is why the count is gone rather than corrected. It was written when `tokfold-core` was the whole workspace
+  have been added since. It was written when `tokfold-core` was the whole workspace
   and went stale the day `tokfold-mcp` arrived. The count is gone rather than corrected
   — it carries no weight the sentence needs and rots on every crate added. (Worth noting
   how it hid: `grep -rn indexing_slicing | grep allow` returns *nothing*, because the
@@ -1131,8 +1254,9 @@ documentation a previous fix falsified.
   byte counts, the ratio and the selected encoder from the run itself and checks the
   report against them.
 - **The stale-archive fix was described in four places as removing only files it can
-  actually expand, which overstates what four bytes prove.** The entry above, the
-  CLI README, `ArchiveSlot`'s docs and a test's comment each said the deletion is
+  actually expand, which overstates what four bytes prove.** The `Fixed` entry headed
+  **A rejected `compress` no longer leaves a stale recovery archive at `--archive`.**,
+  the CLI README, `ArchiveSlot`'s docs and a test's comment each said the deletion is
   keyed to the archive magic "so only such a file is removed" and that `compress
   --archive notes.md` therefore leaves `notes.md` untouched. The magic is a
   *necessary* condition for the hazard, not a sufficient one: a four-byte `TKFD`
@@ -1143,7 +1267,8 @@ documentation a previous fix falsified.
   truncation whatever its bytes (a FIFO, a socket, a device, or a path whose
   opening does not empty it is refused at exit `2`) — so the reject path is still never the
   wider of the two, which is the claim that actually matters and the one the docs
-  now make.
+  now make. The list opened "The entry above" until 2026-10-01: the two bullets
+  directly above this one are a different fix, and the site meant is in `Fixed`.
 - **`Corrupt.byte_offset` did not say it can point past the end of the archive.** It
   is a position in the format, produced by fields the header itself declares, and a
   caller who took it for a buffer index and sliced with it could panic on a
@@ -1188,16 +1313,20 @@ documentation a previous fix falsified.
   rejections a damaged file can produce — `bad magic` for something that is not an
   archive at all, `archive corrupted at byte N` for framing, and `integrity
   checksum mismatch` for a well-framed archive whose digest disagrees.
-- **"No gate hangs off a matrix value" was true of eight jobs and false of three
-  legs.** `ci.yml`'s header and the `[0.0.1]` section below both stated it without
-  qualification, and it is the whole justification for having hoisted each gate out
-  of the `test` matrix. Three `test` legs *are* on the branch-protection list, and
-  `continue-on-error` on that job is derived from `matrix.required` — so flipping
-  `required: true` to `false` on one of them makes a failing leg report success,
-  which is exactly the failure mode the hoisting removed everywhere else. Both sites
-  now scope the claim to the eight jobs and name the exception, along with why
-  closing it is not a quiet change: hoisting those legs renames the checks branch
-  protection matches by exact string.
+- **"No gate hangs off a matrix value" was true of every gate outside the `test`
+  matrix and false of three legs inside it.** `ci.yml`'s header and the `[0.0.1]`
+  section below both stated it without qualification, and it is the whole justification
+  for having hoisted each gate out of the `test` matrix. Three `test` legs *are* on the
+  branch-protection list, and `continue-on-error` on that job is derived from
+  `matrix.required` — so flipping `required: true` to `false` on one of them makes a
+  failing leg report success, which is exactly the failure mode the hoisting removed
+  everywhere else. Both sites now scope the claim to the gates that sit outside the
+  matrix and name the exception, along with why closing it is not a quiet change:
+  hoisting those legs renames the checks branch protection matches by exact string. This
+  entry said "the eight jobs" until the count went stale: the `[0.0.1]` site carries no
+  number at all and scopes the claim by enumerating the gates, while `ci.yml`'s header
+  does carry one and has since moved to nine as the `fuzz` job was added. The scope is
+  stated here rather than counted, because the count moves with every gate.
 - **Two documents said every launcher failure path runs on Windows.** `ci.yml` and
   `npm/README.md` both took that from `launcher.test.js`'s own comment, which scopes
   itself to the shell-script skip and says nothing about the *second*, narrower
@@ -1406,7 +1535,10 @@ documentation a previous fix falsified.
   now make" — the `Fixed` entry on the deletion's justification shows a `chmod 444`
   archive and a trailing separator on which the reject path is the wider one, and
   counts three files that carried the claim. This entry was a fourth site and is not
-  counted there. Both are left as written.
+  counted there. Of those two cases only the `chmod 444` one still holds: the
+  trailing-separator half was itself fixed later — see "**A rejected `compress` no
+  longer deletes its own input through a trailing separator.**" — so the invariant is
+  false on one measured case now, not two. Both are left as written.
 - **The `Corrupt` entry above says "a varint fault is reported at the offending
   byte", and one fault is not.** A byte that is missing, overlong, or would overflow
   the `u64` is reported at that byte — 10 to 19 — but a tenth byte that still carries
@@ -1431,8 +1563,11 @@ documentation a previous fix falsified.
 - **The `--archive` long help said the archive is "slightly larger" than the
   input, and the CLI README said `--archive` "adds the input's own size again".**
   Both now give the figure: the archive is the input plus a header of 43 to 46 bytes
-  (the ladder the corrupt-archive entry above measured), so it is larger than the
-  input by exactly that header and puts the input's own size on disk once more.
+  (the ladder measured, rung by rung, in the entry headed **"52 in the limit" was
+  never reachable.**), so it is larger than the input by exactly that header and puts
+  the input's own size on disk once more. The parenthesis read "the ladder the
+  corrupt-archive entry above measured" until 2026-10-01: that entry measured which
+  byte a fault is reported at, and no ladder.
   `compress_help_says_what_an_archive_actually_holds` passes before and after, as the
   entry above on it says: it pins phrases, none of them a size.
 - **The crate rustdoc of `tokfold-core` described `decompress` as canonicalizing
@@ -1459,8 +1594,13 @@ documentation a previous fix falsified.
   (see `Tests`). The entry is left as written.
 - **The `--archive` "slightly larger" entry above credits "the corrupt-archive entry
   above" with the 43-to-46 ladder, and that entry measured no ladder.** The ladder
-  with its ceiling and fixtures is in the "52 in the limit" entry; the corrupt-archive
-  entry measured which byte a fault is reported at. The entry is left as written.
+  with its ceiling and fixtures is in the entry headed **"52 in the limit" was never
+  reachable.** — not in the earlier entry that coined the phrase and put the ceiling
+  at 52 — and the corrupt-archive entry measured which byte a fault is reported at.
+  The credit now names that headline. This read "is in the `52 in the limit` entry"
+  and "The entry is left as written." until 2026-10-01: the phrase fits two entries,
+  one of them wrong about the ceiling, and a credit known to be false is not
+  something a reason can leave standing.
 - **The "full 43-byte header" entry above counted "six places" with "four of them
   already hedged", and on the day it was written there were seven and five.** The
   fifth hedged site is the root README's reversibility paragraph, added by the
@@ -1491,9 +1631,15 @@ documentation a previous fix falsified.
   `package` lines had each dropped the `--locked` their steps carry, and the `docs`
   line paraphrased. Every legend line that gives a command is now that job's `run:`
   verbatim; the `docs` line names its `RUSTDOCFLAGS` separately, because that one is
-  an environment variable and not an argument; and the three lines that describe
-  rather than quote say which job to read. A legend nobody can run cannot be checked
-  against the thing it summarizes, which is the only work a legend does.
+  an environment variable and not an argument; and the lines that describe rather
+  than quote say what their job checks. That last clause read "the three lines that
+  describe rather than quote say which job to read" until 2026-10-01, and it was
+  false twice over: `actionlint`'s line names no job at all, and the legend's
+  describing lines are four on this tree, `fuzz` having joined them. It restates no
+  count now, because a count copied out of that file goes stale when the file grows;
+  the entry headed "The job-layout legend in `ci.yml` said its describing lines" is
+  where both of them live. A legend nobody can run cannot be checked against the
+  thing it summarizes, which is the only work a legend does.
 - **The doc comment on `leb128_overflow_rejected` stated the last two checks in
   `read_uleb128` the wrong way round** — "a missing byte, then overflow, then the
   continuation bit, then an overlong terminator" — and that order is what the whole
@@ -1508,12 +1654,20 @@ documentation a previous fix falsified.
   between them cannot be reached within ten bytes.
 
 - **The job-layout legend in `ci.yml` said its describing lines "say so by pointing
-  at their job", as the `ci.yml` entry above repeats, and one of them does not.**
+  at their job", as the entry on that legend's clippy line did too, and one of them
+  does not.**
   `doc-drift` and `launcher` point at their own job; `actionlint` describes what the
   job checks and names no job to read. The legend now says which is which. The
-  paragraph after it opened "Each of those carries exactly one condition", where
-  "those" read as the three describing lines; it now says the eight gate jobs. The
-  entry is left as written.
+  paragraph after it opened "Each of those carries exactly one condition", where "those"
+  read as the describing lines; it now names the gate jobs instead. Both counts this
+  entry quoted have since moved with `ci.yml`, and are its to keep current: the set of
+  describing lines has gained `fuzz`, and the condition sentence, which gave eight when
+  eight was also the total, now reads "Eight of those nine jobs" — the ninth being
+  `fuzz`, the one gate that carries no `if:` at all. What the fix did, name the jobs
+  rather than the lines, is unchanged. The clippy-line entry's own present-tense
+  clause was corrected on 2026-10-01 — it had carried both the count and the very
+  property this entry refutes — and restates neither now; what it records about the
+  command it fixed stands as written.
 - **The root README called `compress` "total on valid JSON" with no limits.** Past
   16 MiB of input or 512 levels of nesting — the defaults, both raised through
   `ConfigBuilder` — `compress` returns a `CompressError` exactly as it does for
@@ -1749,9 +1903,13 @@ documentation a previous fix falsified.
   byte `0`, as the entry on the `Corrupt` rustdoc records. The paraphrase is left
   as written.
 - **The MCP README and rustdoc called the 2.00x and 3.33x reply ratios ceilings.**
-  They are limits approached from above: a one-byte `{"k":"z"}` call is answered at
-  5.02x and a 10,000-byte value at 3.35x, and the largest call still answered in one
-  frame gives 3.3334x, which a `tests/session.rs` comment gave as 3.3339x. `2 +
+  They are limits approached from above: a `{"k":"z"}` call of 121 bytes is answered
+  with 608 at 5.02x, a 10,000-byte value at 3.35x, and the largest call still answered
+  in one frame gives 3.3334x, where `tests/contract.rs` names it. This read "a
+  one-byte `{"k":"z"}` call" and "which a `tests/session.rs` comment gave as 3.3339x"
+  until 2026-10-01: that call is 121 bytes, not one, and the `session.rs` comment's
+  3.3339x belongs to the 400,000-`z` fixture it drives — where the same comment names
+  the largest call (10,066,259 bytes answered with 33,554,431) it gives no ratio. `2 +
   4/(3e)` is now described as the payload's share of the ratio, not the whole of it.
   The same README's call-size threshold held for the `{"k":"z"×n}` shape only; it
   now says so, and that a 5,000,000-byte run of `A` is answered with 10,000,338
@@ -1841,12 +1999,26 @@ documentation a previous fix falsified.
   8 KiB read buffer fill behind them. Measured on macOS with 41-byte pings answered
   with 144 bytes, 2,195 complete and 2,200 deadlock; the docs now give that fixture
   and platform.
-- **`stdio::MAX_LINE_BYTES` said a reply is "always bigger" than its call.** A
-  passthrough of escaped whitespace answers a 6,128,998-byte call with 1,656,953
-  bytes (0.27x). The MCP README's unfixtured payload ratios (3.68x ordinary, 4.16x
+- **`stdio::MAX_LINE_BYTES` said a reply is "always bigger" than its call.** An
+  escaped-whitespace call of 6,128,998 bytes is answered with 1,656,953 (0.27x).
+  This read "A passthrough of escaped whitespace answers" until 2026-10-01, and the
+  fixture is not a passthrough: re-measured through the built binary, the million
+  `\u0020` over ten thousand rows that the floor entry names select the `tabular`
+  encoder (1,108,891 bytes of payload rendered as 78,921), so the reply is the
+  base64 archive and little else — the (4/3)*w*/6 direction that entry derives. A
+  real passthrough of escaped whitespace stays far above it: a whitespace-bloated
+  object of 200,007 bytes, encoder `passthrough`, answers a 1,200,116-byte call
+  with 1,067,273 bytes, 0.89x, because that reply carries the escaped payload twice
+  *and* the archive. The MCP README's unfixtured payload ratios (3.68x ordinary, 4.16x
   quote-dense) are replaced by a measured one with its fixture: `["a","b",…]` of
   50,000 one-letter strings is answered at 4.34x its payload. The earlier entry that
-  quotes 3.68x and 4.16x is left as written. Small-call ratios are now marked as
+  quotes 3.68x and 4.16x stands as history, and its sentence "the fixture that
+  produces each is named in the source so it can be re-run" does not cover those two:
+  on 2026-10-01 no file under `crates/` carries either number or a quote-dense
+  fixture, and this entry's own word for the README lines that did carry them is
+  "unfixtured", so the source named no fixture for them at the time either. Only the
+  `["a","b",…]` fixture above re-derives the payload side. That clause read "is left
+  as written" until 2026-10-01. Small-call ratios are now marked as
   counting each line's newline (`{"k":"z"}`: 121 → 608 framed, 5.02x; 5.06x on the
   messages alone) and the boundary sizes as message sizes.
 - **The npm launcher justified its Node 18 guard with a CI leg that cannot see the
@@ -1884,6 +2056,81 @@ documentation a previous fix falsified.
   That is `EAGAIN_ATTEMPTS` times `EAGAIN_PAUSE_MS` at the nominal pause, and no test
   reaches the retry: it needs a full non-blocking pipe on fd 2. Both comments that
   gave the duration now call it a chosen budget that was never measured.
+- **The CLI README and the `--archive` long help described a `/dev` spelling as the
+  thing refused.** The spelling is not the refusal; the bytes behind the descriptor
+  are. Measured against the built binary: `--archive /dev/fd/3 3>fresh.tkfd` onto a
+  fresh file, the same through `3>>` onto an empty one, and `--archive /dev/stderr`
+  each exit `0` and write a 125-byte archive carrying the `TKFD` magic, the first of
+  them round-tripped through `expand`; only `3<>` over a non-empty file is refused,
+  with "opening it did not empty it", and the file survives. Both documents now say
+  the spelling is written like any other when opening it empties the file.
+- **They also left unstated that a read-only spelling is not compared at all.** A
+  read-only `--archive /dev/stdin` fails at the write with "Permission denied (os
+  error 13)" on a good input and, on a rejected one, prints "left /dev/stdin
+  untouched: it cannot be opened for writing" and exits `0` — the same-file comparison
+  never runs, because a descriptor the archive write cannot open cannot destroy
+  anything. Recorded in both. The README additionally states the empty-archive case
+  in the two places that state it -- the `expand` bullet and the header-table
+  paragraph: one of 1 to 3 bytes is reported as a bad magic and 0 bytes as empty
+  rather than as corruption, measured at 0, 1, 2 and 3 bytes.
+- **Both crate READMEs said the two licence texts "travel inside the published
+  tarball".** Nothing has published a tarball — crates.io is on hold — and what sits in
+  each crate directory is a symlink to the workspace root, not a text. Measured
+  2026-10-01: `cargo package --list -p tokfold-core` names `LICENSE-APACHE`,
+  `LICENSE-MIT` and `README.md`, and `cargo package --no-verify` then `tar tvzf` on the
+  `.crate` shows both licences as regular files (`-rw-r--r--`, 11,357 and 1,053 bytes,
+  the sizes of the root copies), so `cargo package` resolves the symlinks. Both READMEs
+  now say that, and that nothing has published the tarball.
+- **`tests/contract.rs` quoted the one small-call ratio whose value depends on how the
+  two lines are counted, without saying which.** "a small call measures more (5.02x for
+  `{"k":"z"}`)" is the framed figure — 608 reply bytes over a 121-byte call, 5.0248x —
+  inside a comment whose other sizes are messages *without* their terminator: the
+  10,066,259-byte call answered with 33,554,431, and the 16,777,324-byte call one byte
+  past core's own ceiling. Counted that second way the same exchange is 607 over 120,
+  5.0583x, which `src/lib.rs` renders as 5.06x, so a reader re-deriving the figure from
+  that comment's own neighbours lands in the wrong second decimal. Every other site
+  names its convention — `src/tools.rs` and `tests/session.rs` say "framed", the MCP
+  README and `src/lib.rs` say "counting each line's newline" — and the entry above
+  recording that "small-call ratios are now marked" was written about the README and the
+  rustdoc, so it never reached a test file. The comment now gives both conventions and
+  names the test that pins them. The sizes are re-derivable without running the server:
+  the `tools/call` wrapper is 105 bytes and `{"k":"z"}` escapes to 15, giving the 120,
+  and 16 MiB + 1 byte of `text` plus its two quotes plus 105 is exactly 16,777,324.
+
+- **A correction to the threat model put a false invariant where the error it
+  replaced had been.** The bullet on a truncated archive had been rewritten to end
+  "neither number moves with the size of the cut, so do not read the offset as
+  'where the file ends'". The warning is right and the premise is false, and the two
+  cases that refute it are the two the bullet itself named: on a 1 664-byte archive
+  of a 1 620-byte JSON original, a cut to 10 bytes is reported at byte 10 and a cut
+  to 11 at byte 11, so the offset both moves with the cut and coincides with the end
+  of the file. Every truncation length from 1 to 1 664 was then run through `expand`
+  against the built binary (SHA-1 `834c01f2…`), which answers in ten bands and
+  nothing else, and `docs/threat-model.md` now publishes the table, the fixture that
+  reaches it and the rule the bands derive from: **the reported offset is the first
+  byte of the field that came up short**, not the byte at which the cut fell. It
+  equals the cut at 4, 5, 6, 8, 10 and 11 and lags it by one at 7 and at 9, because
+  a two-byte field — `tokenizer_id` at 6–7, `flags` at 8–9 — is reported at its own
+  first byte and not at the byte that is missing. The offsets are the `*_OFFSET`
+  constants `crates/tokfold-core/src/format.rs` owns, so the rule is the format's.
+
+  The band boundaries are not: they move with the width of the `original_len` varint,
+  because every field after it moves. The bullet now says so and names the one-byte
+  counterpart that was already in the suite —
+  `expand_names_the_corrupt_offsets_the_readme_quotes` in
+  `crates/tokfold-cli/tests/cli.rs`, whose 13-byte original puts the checksum at 11
+  and the payload at 43, and which pins a cut to 20 bytes at offset 11 where the
+  threat model's fixture reports 12, and a cut to 43 at offset 10 where that fixture
+  is still inside its checksum. A band is quotable only together with the original's
+  size.
+
+  The last band differs in kind rather than in width. With the frame whole and only
+  the payload short no digest is computed, so all 1 620 cuts inside the payload are
+  reported at the `original_len` field at offset 10 — the field the payload
+  disagrees with — and not at the checksum they lie behind. On this fixture that band
+  is three orders of magnitude wider than all the header bands together, so it is
+  where an interrupted write of a large archive actually lands; the header bands are
+  reachable only by a write that died inside its first 44 bytes.
 
 ### Tests
 
@@ -1896,6 +2143,21 @@ same way afterwards — followed by the tests that pin the fixes above.
   3 200 with the wide member in the middle, and from 413 to 3 200 with it at the end
   (exact shapes up to 1 000, "no collapse" beyond). It also pins the tool catalogue at
   2 521 bytes as a batch member; in `0.0.1` it is 2 411.
+- **Three `--archive` paths no test reached are pinned** (`tokfold-cli`). A file of exactly
+  four bytes behind a `/dev/fd/3` spelling is read, not assumed foreign (macOS only).
+  A successful pass whose archive path cannot be `stat`ed (`ENOTDIR`) fails on the
+  inspection, not on the open. A directory at the archive path reaches the platform's own
+  "Is a directory" error rather than a "not a regular file" refusal. Each was a mutant that
+  survived the whole suite. The same mutation run showed that the `/dev` branch of the
+  CLI's removal-time identity check could not be reached, because `/dev/fd` targets are
+  routed away before a removable archive is recorded. That branch is deleted, and the
+  check is now a plain `stat`. Behaviour is unchanged.
+- **The read-only-stdout guard is pinned on `stats` and on its zero-byte carve-out**
+  (`tokfold-cli`). `stats` on a standard output that cannot be written exits `2`. A
+  rejected `compress` of an empty input, and an `expand` of a hand-built archive whose
+  original is empty, write nothing, so they exit `0`, as the CLI README states. The
+  compressor cannot emit the empty-original archive, so it is only reachable as a
+  caller-built input.
 
 - **The output-into-input refusal is pinned for all seven entry points** —
   `compress`, `expand` and `stats` each through `--input` and through standard input,
@@ -2242,6 +2504,18 @@ same way afterwards — followed by the tests that pin the fixes above.
 - **The sentinel's cost is pinned across leading whitespace**, and the first
   whitespace run that costs two tokens (82 cl100k, 80 o200k) and the exact one-token
   tail (83, 87, 91, 95, 128) are pinned where the tests had checked membership only.
+
+- **The `{"k":"z"}` reply ratio is pinned.**
+  `the_small_call_figure_the_docs_quote_carries_its_counting_convention` drives the
+  documented fixture through `stdio::serve` and asserts the exchange's two byte counts
+  (a 121-byte framed request, a 608-byte framed reply) and both integer percents — 502
+  framed and 505 on the messages alone, `percent_of_request` truncating rather than
+  rounding, which is why the prose says 5.06x where the assert says 505. The figure was
+  quoted in `src/lib.rs`, `src/tools.rs`, `tests/contract.rs`, twice in the MCP README
+  and twice in `tests/session.rs`, and pinned by none of them, so a reply envelope that
+  gained a field would have left every one of those sites quoting a ratio no fixture
+  produces. Both byte counts are asserted rather than the quotient alone, so a failure
+  names which half moved.
 
 ## [0.0.1] - 2026-08-29
 

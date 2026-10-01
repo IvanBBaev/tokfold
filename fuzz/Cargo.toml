@@ -1,0 +1,64 @@
+# Fuzz targets for tokfold. See README.md in this directory.
+#
+# This crate is deliberately NOT a member of the root workspace: it needs a nightly
+# toolchain and `libfuzzer-sys`, neither of which may reach `cargo package
+# --workspace`, `cargo deny check` or the MSRV 1.85 legs. The `[workspace]` table
+# below makes this directory its own workspace root, so cargo never walks up to the
+# root manifest while building it, and it keeps its own `Cargo.lock`.
+[package]
+name = "tokfold-fuzz"
+version = "0.0.0"
+edition = "2024"
+# Not a support promise -- the targets need nightly. It keeps clippy from suggesting
+# let-chains (Rust 1.88) in the core test oracle this crate includes by path, which
+# the root workspace compiles at its MSRV of 1.85.
+rust-version = "1.85"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "cargo-fuzz targets for tokfold-core and tokfold-mcp (not published)"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+tokfold-core = { path = "../crates/tokfold-core" }
+tokfold-mcp = { path = "../crates/tokfold-mcp" }
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "decompress"
+path = "fuzz_targets/decompress.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "roundtrip"
+path = "fuzz_targets/roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tape_parse"
+path = "fuzz_targets/tape_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mcp_handle_line"
+path = "fuzz_targets/mcp_handle_line.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mcp_json"
+path = "fuzz_targets/mcp_json.rs"
+test = false
+doc = false
+bench = false

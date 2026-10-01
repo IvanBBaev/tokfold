@@ -30,6 +30,13 @@
 //! * Lone surrogates cannot be unescaped to UTF-8, so any string containing one is
 //!   compared by its **raw body bytes** (hex case significant): `"\uD834"` !=
 //!   `"\ud834"`, even though both are unpaired high surrogates.
+//! * NOT COMPARABLE (equal to nothing, not even itself): anything this parser cannot
+//!   read. That is malformed input, trailing data -- and, the one place where the
+//!   oracle's domain is narrower than JSON itself, nesting deeper than [`MAX_DEPTH`],
+//!   which is valid JSON and still not reflexive here. So the contract above is a
+//!   contract over the parseable subset, not over every valid document; the engine's
+//!   own ceiling is half of `MAX_DEPTH`, so no input the engine accepts falls in the
+//!   gap (pinned by `nesting_deeper_than_the_oracle_ceiling_is_not_comparable`).
 //!
 //! This is deliberately a **separate, hand-rolled recursive-descent parser**. It
 //! shares no code with `tokfold_core::tape`, so a bug that made the tape and the
@@ -37,9 +44,15 @@
 //! independently against the same grammar. The oracle imports nothing from the crate
 //! under test.
 //!
-//! Both `tests/oracle.rs` (this file, which also unit-tests the oracle against
-//! hand-built tricky pairs) and `tests/roundtrip.rs` use `json_semantically_eq`;
-//! `roundtrip.rs` pulls it in with `#[path = "oracle.rs"] mod oracle;`.
+//! `tests/oracle.rs` (this file, which also unit-tests the oracle against hand-built
+//! tricky pairs), `tests/roundtrip.rs` and `tests/hostile.rs` all use
+//! `json_semantically_eq`; the latter two pull it in with
+//! `#[path = "oracle.rs"] mod oracle;`. Because that is a module and not a shared
+//! crate, this file's own tests are compiled into all three binaries and so are run
+//! three times by one `cargo test`, under the `oracle::` prefix in the two that
+//! import it. Any count of workspace tests that sums the per-binary `test result:`
+//! lines therefore counts them three times; `grep -c '#\[test\]'` here gives the
+//! number of distinct ones.
 
 /// A parsed JSON value, normalized so that `==` means exactly the equality the module
 /// docs state: order-preserving, duplicate-preserving, number lexemes compared
@@ -76,9 +89,17 @@ pub enum Str {
 /// Decide whether two JSON documents are semantically equal under the contract the
 /// module docs state.
 ///
-/// Returns `false` if either side is not a single well-formed JSON document (an
-/// invalid document is equal to nothing, not even itself). On valid input the
-/// relation is reflexive, symmetric and transitive.
+/// Returns `false` if either side is not a single JSON document *this parser can
+/// read* (such a document is equal to nothing, not even itself). On input it can read
+/// the relation is reflexive, symmetric and transitive -- pinned by
+/// [`reflexive_on_assorted_valid_documents`] and
+/// [`the_relation_is_symmetric_and_transitive_on_parseable_input`].
+///
+/// "Can read" is narrower than "valid JSON" in exactly one way: nesting deeper than
+/// [`MAX_DEPTH`] is rejected, so such a document is valid JSON and still not
+/// reflexive here. [`nesting_deeper_than_the_oracle_ceiling_is_not_comparable`] pins
+/// both sides of that boundary. Every other rejection this parser makes is a
+/// rejection of malformed input.
 #[must_use]
 pub fn json_semantically_eq(a: &str, b: &str) -> bool {
     match (parse(a), parse(b)) {
@@ -414,6 +435,28 @@ fn whitespace_is_ignored() {
         "{\"x\":[1,{\"y\":2}]}",
         "{\n  \"x\": [\n    1,\n    { \"y\": 2 }\n  ]\n}"
     ));
+
+    // One fixture per byte `Parser::skip_ws` accepts, because the name is a category
+    // claim about all four of them: space, tab, newline and carriage return (RFC 8259
+    // §2 ws). The fixtures above spell only space and newline, so dropping `b'\r'`
+    // from `skip_ws` changed nothing any test here could see. Each byte is placed at
+    // every position the grammar allows one -- before the document, between a key and
+    // its colon, after the colon, around a separating comma and before the closing
+    // bracket -- so a `skip_ws` that handled a byte in some call sites only would be
+    // caught as well.
+    for ws in ["\t", "\r", "\n", " "] {
+        let doc = format!("{ws}{{{ws}\"a\"{ws}:{ws}[1{ws},{ws}2{ws}]{ws}}}{ws}");
+        assert!(eq(&doc, "{\"a\":[1,2]}"), "whitespace {ws:?} not skipped");
+    }
+    // A whitespace byte INSIDE a string is data, not layout: the same four bytes must
+    // not be skipped there. `\t` and `\r` have to be escaped -- the scanner rejects a
+    // raw byte <= 0x1F -- so these also pin that the two escapes decode to something
+    // non-empty (an escape arm that fell through to `_ => {}` would drop them and make
+    // both sides equal to `""`).
+    assert!(!eq("\" \"", "\"\""));
+    assert!(!eq("\"\\t\"", "\"\""));
+    assert!(!eq("\"\\r\"", "\"\""));
+    assert!(!eq("\"\\n\"", "\"\""));
 }
 
 #[test]
@@ -431,6 +474,41 @@ fn escape_style_is_ignored_for_valid_scalars() {
     assert!(eq("\"\\ud834\\udd1e\"", "\"\\uD834\\uDD1E\""));
     // Escapes anywhere in a key are canonicalized too.
     assert!(eq("{\"\\u0041\":1}", "{\"A\":1}"));
+
+    // One pair per two-character escape `decode_string_body` handles. The name is a
+    // category claim about escape style, and until these fixtures existed only `\/`
+    // and `\uXXXX` were compared across spellings: renaming the `'"' '\\' 'b' 'f' 'n'
+    // 'r' 't'` arms to characters that cannot occur left all tests in the workspace
+    // green, because `decode_string_body` runs on BOTH sides of every comparison and a
+    // same-spelling fixture decodes identically however the arm is spelled.
+    //
+    // Derivation of the spellings: for these seven the literal character is not
+    // available as a third spelling -- `Parser::string` rejects a raw byte <= 0x1F
+    // (RFC 8259 §7) and a raw `"` closes the string while a raw `\` opens an escape --
+    // so `\X` against `\u00XX` is the only cross-spelling comparison that reaches the
+    // arm at all. The hex value is the code point the arm pushes.
+    assert!(eq("\"\\\"\"", "\"\\u0022\"")); // quotation mark  U+0022
+    assert!(eq("\"\\\\\"", "\"\\u005c\"")); // reverse solidus U+005C
+    assert!(eq("\"\\b\"", "\"\\u0008\"")); // backspace       U+0008
+    assert!(eq("\"\\f\"", "\"\\u000c\"")); // form feed       U+000C
+    assert!(eq("\"\\n\"", "\"\\u000a\"")); // line feed       U+000A
+    assert!(eq("\"\\r\"", "\"\\u000d\"")); // carriage return U+000D
+    assert!(eq("\"\\t\"", "\"\\u0009\"")); // tab             U+0009
+    assert!(eq("\"\\/\"", "\"\\u002f\"")); // solidus         U+002F
+    // ... and the arms must not be interchangeable: each escape decodes to its OWN
+    // code point, so no two of them compare equal. A single arm that pushed the wrong
+    // character would satisfy the pairs above only if its `\uXXXX` twin were wrong the
+    // same way, which the hex digits above forbid; this loop closes the remaining case
+    // of two arms swapped with each other.
+    let escapes = ["\\\"", "\\\\", "\\b", "\\f", "\\n", "\\r", "\\t", "\\/"];
+    for (i, a) in escapes.iter().enumerate() {
+        for b in &escapes[i + 1..] {
+            assert!(
+                !eq(&format!("\"{a}\""), &format!("\"{b}\"")),
+                "{a} and {b} decode to the same character"
+            );
+        }
+    }
 }
 
 #[test]
@@ -506,6 +584,156 @@ fn lone_surrogates_compare_as_raw_lexemes() {
     // A lone surrogate as an object key is compared raw as well.
     assert!(eq("{\"\\udead\":1}", "{\"\\udead\":1}"));
     assert!(!eq("{\"\\udead\":1}", "{\"\\udeAD\":1}"));
+
+    // The fixtures above reach the raw path through only two of the four ways
+    // `decode_string_body` can decide a high surrogate is unpaired. The `paired` test
+    // is `chars[idx] == '\\' && chars[idx + 1] == 'u' && idx + 6 <= len &&
+    // (0xDC00..=0xDFFF).contains(hex4(idx + 2))`, so each conjunct needs a fixture,
+    // and hex case is the observable: a string that decodes to `Str::Raw` keeps the
+    // body verbatim, while one that decodes to `Str::Text` has lost the spelling.
+    //
+    // (a) nothing follows -- `chars.get(idx) == None`. Covered by the first fixture.
+    // (b) a following character that is not an escape.
+    assert!(!eq("\"\\ud834a\"", "\"\\uD834a\""));
+    // (c) a following escape that is not `\u`.
+    assert!(!eq("\"\\ud834\\n\"", "\"\\uD834\\n\""));
+    // (d) a following `\u` escape that is NOT a low surrogate. This is the only
+    //     fixture that prices the UPPER bound of the low-surrogate range: `\ue000` is
+    //     above it, so widening the test to `>= 0xDC00` would pair these two into the
+    //     scalar 0x10000 + (0x034 << 10) + (0xE000 - 0xDC00) = U+1F400 -- a real
+    //     `char`, decoded identically on both sides, so the raw spelling (and this
+    //     inequality) would vanish. `\u0041` covers the same conjunct from below.
+    assert!(!eq("\"\\ud834\\ue000\"", "\"\\uD834\\ue000\""));
+    assert!(!eq("\"\\ud834\\u0041\"", "\"\\uD834\\u0041\""));
+    // A raw-compared string is never equal to the text it would have decoded to, so
+    // the two `Str` variants cannot be confused: `Str::Raw("\\ud834\\u0041")` against
+    // `Str::Text("A")` and against the text of the pair that WOULD have been formed.
+    assert!(!eq("\"\\ud834\\u0041\"", "\"A\""));
+    assert!(!eq("\"\\ud834\\ue000\"", "\"\u{1f400}\""));
+    // A valid pair is NOT raw: it decodes, so its hex case stops mattering -- the
+    // boundary values of the low-surrogate range both pair.
+    assert!(eq("\"\\ud834\\udc00\"", "\"\\uD834\\uDC00\""));
+    assert!(eq("\"\\ud834\\udfff\"", "\"\\uD834\\uDFFF\""));
+    // A lone LOW surrogate returns raw before the pairing test is ever reached, so a
+    // following high surrogate does not rescue it.
+    assert!(!eq("\"\\udc00\\ud834\"", "\"\\udc00\\uD834\""));
+    // The high-surrogate range is bounded on both ends too: U+D7FF and U+E000 are
+    // ordinary BMP scalars and decode, so their hex case is irrelevant.
+    assert!(eq("\"\\ud7ff\"", "\"\\uD7FF\""));
+    assert!(eq("\"\\ue000\"", "\"\\uE000\""));
+    // ... while the ends of the surrogate block itself are raw.
+    assert!(!eq("\"\\ud800\"", "\"\\uD800\""));
+    assert!(!eq("\"\\udfff\"", "\"\\uDFFF\""));
+}
+
+/// The oracle parser is recursive with a fixed ceiling, so "valid JSON" and
+/// "comparable by this oracle" are not the same set. Both sides of that boundary are
+/// pinned here because [`json_semantically_eq`] documents the difference.
+#[test]
+fn nesting_deeper_than_the_oracle_ceiling_is_not_comparable() {
+    // `Parser::value` increments `depth` on entry and restores it on the way out, so
+    // `depth` is the nesting level of the value being parsed, and the refusal is at
+    // the first level ABOVE the ceiling (`if self.depth > MAX_DEPTH`). An empty
+    // container at the bottom costs no extra level -- `array()`/`object()` return
+    // before calling `value()` when they see the closing bracket -- so N nested
+    // arrays reach exactly depth N.
+    let at = format!("{}{}", "[".repeat(MAX_DEPTH), "]".repeat(MAX_DEPTH));
+    let over = format!("{}{}", "[".repeat(MAX_DEPTH + 1), "]".repeat(MAX_DEPTH + 1));
+    assert!(eq(&at, &at), "{MAX_DEPTH} nested arrays should parse");
+    assert!(
+        !eq(&over, &over),
+        "{} nested arrays are valid JSON and must NOT be comparable",
+        MAX_DEPTH + 1
+    );
+    // A scalar at the bottom is a value of its own, so it costs one level: N nested
+    // arrays around a number reach depth N + 1.
+    let scalar_at = format!(
+        "{}1{}",
+        "[".repeat(MAX_DEPTH - 1),
+        "]".repeat(MAX_DEPTH - 1)
+    );
+    let scalar_over = format!("{}1{}", "[".repeat(MAX_DEPTH), "]".repeat(MAX_DEPTH));
+    assert!(eq(&scalar_at, &scalar_at));
+    assert!(!eq(&scalar_over, &scalar_over));
+    // Objects count the same way: `object()` calls `value()` once per member value.
+    let obj_at = format!(
+        "{}{{}}{}",
+        "{\"k\":".repeat(MAX_DEPTH - 1),
+        "}".repeat(MAX_DEPTH - 1)
+    );
+    let obj_over = format!(
+        "{}{{}}{}",
+        "{\"k\":".repeat(MAX_DEPTH),
+        "}".repeat(MAX_DEPTH)
+    );
+    assert!(eq(&obj_at, &obj_at));
+    assert!(!eq(&obj_over, &obj_over));
+    // The claim on `MAX_DEPTH` is that everything the engine accepts under its default
+    // config parses here. The engine's default ceiling is 512 nested containers (named
+    // as a literal on purpose: this file imports nothing from `tokfold_core`), and the
+    // deepest document it accepts is 512 containers around a scalar, which is depth
+    // 513 here -- so the margin is real and this is not a near miss.
+    const ENGINE_DEFAULT_MAX_DEPTH: usize = 512;
+    const _: () = assert!(ENGINE_DEFAULT_MAX_DEPTH + 1 < MAX_DEPTH);
+    let deepest_the_engine_takes = format!(
+        "{}1{}",
+        "[".repeat(ENGINE_DEFAULT_MAX_DEPTH),
+        "]".repeat(ENGINE_DEFAULT_MAX_DEPTH)
+    );
+    assert!(eq(&deepest_the_engine_takes, &deepest_the_engine_takes));
+}
+
+/// [`json_semantically_eq`] claims symmetry and transitivity; nothing read that back
+/// until this test. It parses each side independently, so symmetry is not free, and
+/// the derived `PartialEq` on [`Value`] is only as transitive as the normalization
+/// that precedes it.
+#[test]
+fn the_relation_is_symmetric_and_transitive_on_parseable_input() {
+    // Spellings grouped by the document they denote. Within a group every ORDERED
+    // pair must be equal -- which is symmetry, and, for the three-member groups,
+    // transitivity through a middle spelling that shares no bytes with the other two.
+    // Across groups every ordered pair must differ, so a normalization that collapsed
+    // two documents into one would show up here as well as a rule that lost one.
+    let groups: &[&[&str]] = &[
+        &["{\"a\":1}", "{ \"a\" : 1 }", "{\"\\u0061\":1}"],
+        &["[1,2]", "[ 1 , 2 ]", "[\n\t1,\r2 ]"],
+        // Three spellings of U+1D11E: literal, escaped pair, escaped pair upper-cased.
+        &["\"\u{1d11e}\"", "\"\\ud834\\udd1e\"", "\"\\uD834\\uDD1E\""],
+        &["\"\\t\"", "\"\\u0009\""],
+        // Raw (lone surrogate): only the whitespace outside the string may vary.
+        &["\"\\ud834\"", " \"\\ud834\" ", "\t\"\\ud834\"\r"],
+        // ... and the upper-case spelling of the SAME lone surrogate is its own group.
+        &["\"\\uD834\""],
+        &["1e2", " 1e2", "1e2\r"],
+        &["100"],
+        &["1E2"],
+        &["null"],
+        &["true"],
+        &["{}", "{ }"],
+        &["[]", "[ ]"],
+        &["0"],
+        &["-0"],
+    ];
+    for (gi, g) in groups.iter().enumerate() {
+        for a in *g {
+            for b in *g {
+                assert!(eq(a, b), "group {gi}: {a:?} should equal {b:?}");
+            }
+        }
+        for (gj, h) in groups.iter().enumerate() {
+            if gi == gj {
+                continue;
+            }
+            for a in *g {
+                for b in *h {
+                    assert!(
+                        !eq(a, b),
+                        "groups {gi}/{gj}: {a:?} should differ from {b:?}"
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[test]

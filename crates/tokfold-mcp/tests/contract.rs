@@ -19,7 +19,7 @@
     clippy::indexing_slicing
 )]
 
-use tokfold_mcp::{Server, base64, json, protocol, stdio};
+use tokfold_mcp::{MAX_MESSAGE_BYTES, Server, base64, json, protocol, stdio};
 
 /// Runs a whole session over the real transport and returns one entry per emitted line.
 fn session(input: &str) -> Vec<json::Value> {
@@ -746,9 +746,14 @@ fn the_transport_line_limit_is_the_one_the_documentation_promises() {
     // and once as `structuredContent.rendering` — and to 3.33x when the input is
     // compressed but does not shrink: the same two copies plus a base64 archive, which
     // is a third larger than the bytes it carries. Both are approached from above: the
-    // reply's fixed envelope outweighs the call's, so a small call measures more (5.02x
-    // for `{"k":"z"}`). Escaping inflates the call and both copies in the reply together,
-    // so it can only pull the payload's share of the ratio down. The fixture that nears
+    // reply's fixed envelope outweighs the call's, so a small call measures more:
+    // `{"k":"z"}` is answered at 5.02x with each line's terminator counted and 5.06x
+    // without them, both byte counts pinned by `tests/session.rs`. Which convention a
+    // ratio is quoted under moves its second decimal, and the other numbers in this
+    // comment — the 10,066,259-byte call and the 16,777,324-byte one — leave the
+    // terminator out, because the frame limit does. Escaping inflates the call and both
+    // copies in the reply together, so it can only pull the payload's share of the ratio
+    // down. The fixture that nears
     // 3.33x is named here so the number can be re-derived: `{"k":"z"×n}`, which has
     // nothing in it to escape and nothing for the engine to remove, measures 3.3334x at
     // the boundary below and 3.35x at a 10,000-byte value.
@@ -994,12 +999,118 @@ fn json_with_nothing_to_save_comes_back_verbatim_behind_the_raw_marker() {
         !instructions.contains("returned unchanged"),
         "{instructions}"
     );
-    // The decline half names every reason a valid call is declined, not only prose:
+    // The decline half names the reasons a valid call is declined and comes back
+    // whole, and it names exactly the two that can:
     // `a_decline_distinguishes_unreadable_input_from_input_it_will_not_go_deeper_into`
-    // returns a too-deep document whole with `compressed: false` too.
+    // returns a too-deep document whole with `compressed: false` too. It used to list
+    // a third, "too large", which no call can ever see -- see
+    // `the_engines_own_size_ceiling_is_unreachable_through_the_echoing_tool` for why,
+    // and for the two ceilings whose overlap makes it so. A category in a sentence
+    // handed to a model is a claim about every member of it.
     assert!(
-        instructions.contains("(not JSON, nested too deep, too large) comes back unchanged"),
+        instructions.contains("(not JSON, nested too deep) comes back unchanged"),
         "{instructions}"
+    );
+    assert!(
+        !instructions.contains("too large) comes back unchanged"),
+        "{instructions}"
+    );
+}
+
+#[test]
+fn the_engines_own_size_ceiling_is_unreachable_through_the_echoing_tool() {
+    // Two ceilings, and they overlap the wrong way round.
+    //
+    // A declined `tokfold_compress` echoes the input twice -- once as
+    // `structuredContent.rendering`, once as the content text -- so for text that JSON
+    // escaping does not expand, the frame is `338 + 2T` bytes wide. That reaches
+    // `MAX_MESSAGE_BYTES` exactly at `T = 16_777_047` and passes it at `16_777_048`.
+    // Core declines for size only *above* its own 16 MiB ceiling, so the first input it
+    // calls too large is `16_777_217` -- 169 bytes past the point where the echo
+    // stopped fitting. Every input core would refuse for size therefore comes back as a
+    // framing refusal instead, and no client can ever see the `input_too_large`
+    // `reasonCode` from `tokfold_compress`.
+    //
+    // That is why the instructions no longer promise one, and it is checked here rather
+    // than reasoned about: both numbers are properties of code that can move. The
+    // widths are pinned as the equation, not as constants, so a change to the envelope
+    // fails this test with the arithmetic visible instead of a bare mismatch.
+    // A reply on this path can be 32 MiB wide, so a failure must not print it: an
+    // assertion message that dumps the frame turns one failed test into an unreadable
+    // log. Only the head goes into the message.
+    let head = |frame: &str| -> String { frame.chars().take(120).collect() };
+    let frame = |tool: &str, len: usize| -> String {
+        let text = "a".repeat(len);
+        Server::new()
+            .handle_line(&call_line(1, tool, &format!(r#"{{"text":"{text}"}}"#)))
+            .expect("a request is answered")
+    };
+    let envelope = 338;
+    let last_that_fits = (MAX_MESSAGE_BYTES - envelope) / 2;
+    assert_eq!(last_that_fits, 16_777_047, "the widest echoed input");
+
+    let fitting = frame("tokfold_compress", last_that_fits);
+    assert_eq!(
+        fitting.len(),
+        envelope + 2 * last_that_fits,
+        "a declined compress is the envelope plus two copies of the input"
+    );
+    assert_eq!(fitting.len(), MAX_MESSAGE_BYTES);
+    assert_eq!(
+        error_code(&json::parse(&fitting).expect("a JSON reply")),
+        None,
+        "exactly at the limit is still an answer"
+    );
+
+    // One byte more and the same shape is refused -- the reply it would have carried is
+    // gone, so the decline never reaches the client.
+    let over = frame("tokfold_compress", last_that_fits + 1);
+    assert_eq!(
+        error_code(&json::parse(&over).unwrap()),
+        Some(-32602),
+        "{}",
+        head(&over)
+    );
+
+    // And the first input core itself calls too large is past that, so it lands in the
+    // same refusal rather than in a passthrough.
+    let core_ceiling = 16 * 1024 * 1024;
+    assert!(
+        core_ceiling > last_that_fits,
+        "core accepts {core_ceiling} bytes, wider than the {last_that_fits} the echo can carry"
+    );
+    let too_large = frame("tokfold_compress", core_ceiling + 1);
+    assert_eq!(
+        error_code(&json::parse(&too_large).unwrap()),
+        Some(-32602),
+        "{}",
+        head(&too_large)
+    );
+
+    // `tokfold_estimate` runs the same engine and reports numbers without the payload,
+    // so it is the one tool that can answer there -- and it is where the reason code
+    // lives. Either side of core's ceiling, to show the size check is what moved and
+    // not the parse.
+    let reason = |len: usize| -> String {
+        let text = frame("tokfold_estimate", len);
+        json::parse(&text)
+            .expect("a JSON reply")
+            .get("result")
+            .and_then(|result| result.get("structuredContent"))
+            .and_then(|structured| structured.get("reasonCode"))
+            .and_then(json::Value::as_str)
+            .unwrap_or_else(|| panic!("estimate answers with a reason code: {text}"))
+            .to_owned()
+    };
+    assert_eq!(
+        reason(core_ceiling),
+        "invalid_json",
+        "at the ceiling the size check passes and the parse is what declines"
+    );
+    assert_eq!(
+        reason(core_ceiling + 1),
+        "input_too_large",
+        "one byte past it, the size check declines first"
     );
 }
 

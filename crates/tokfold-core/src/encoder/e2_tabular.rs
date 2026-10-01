@@ -43,22 +43,27 @@
 //! bytes in strings — so a newline unambiguously marks a block/row boundary. Within
 //! a block the fields are separated by JSON's own punctuation (`,` and `:`), not a
 //! tab: a real BPE tokenizer (cl100k/o200k) merges `,"` and `":"` into single tokens
-//! but never merges a `\t"` boundary, so a tab layout can never be the cheaper of the
-//! two spellings. How much dearer it is deserves saying exactly, because the intuition
-//! overshoots and this paragraph used to overshoot with it — it claimed a tab spent
-//! *most* of the key-dedup saving straight back at the tokenizer. It does not, for the
-//! ordinary table. Over the 288 shapes surveyed by
-//! `the_tab_layout_is_priced_the_way_the_e2_docs_say_it_is` in
-//! [`estimator`](crate::estimator) — six value families, two to twenty fields, four to
-//! a hundred rows, both tokenizers — the median give-back is 20% of the saving, and on
+//! but never merges a `\t"` boundary, so a tab cannot be the cheaper spelling at a
+//! boundary where the next value opens with a quote. That argument covers a row of
+//! strings, not every row, so the rest is measurement. How much dearer a tab is
+//! deserves saying exactly, because the intuition overshoots and this paragraph used
+//! to overshoot with it — it claimed a tab spent *most* of the key-dedup saving
+//! straight back at the tokenizer. It does not, for the ordinary table. Over the 288
+//! shapes surveyed by `the_tab_layout_is_priced_the_way_the_e2_docs_say_it_is` in
+//! [`estimator`](crate::estimator) — six value families, two to twenty fields, four
+//! to a hundred rows, both tokenizers — a tab layout is never the cheaper spelling
+//! (the survey asserts a minimum give-back of exactly `0`; whether any table at all
+//! could invert it is unmeasured), the median give-back is 20% of the saving, and on
 //! 96 of them it is nothing at all. It exceeds half on 90, and those are tables whose
-//! every value is a string — dates and short runs of one letter at each surveyed width
-//! from three fields up, one-letter strings from five, each at some of the four heights
-//! rather than all of them — not only wide ones; no table with a number or
-//! a boolean in its rows gets there. The peak is 86%, at twenty date-like fields. So the tab layout
-//! is a steady loss but usually a modest one, and the case for JSON punctuation is
-//! that it is free rather than that a tab would be ruinous. Emitting each row as
-//! minified JSON reuses the punctuation the tokenizer already prices cheaply.
+//! every value is a string — dates and short runs of one letter at each surveyed
+//! width from three fields up, one-letter strings from five — not only wide ones; no
+//! table with a number or a boolean in its rows gets there. The survey's assertions
+//! pin those widths family by family and say nothing about the four row counts, so
+//! neither does this paragraph. The peak is 86%, at twenty date-like fields. So the
+//! tab layout is a steady loss but usually a modest one, and the case for JSON
+//! punctuation is that it is free rather than that a tab would be ruinous. Emitting
+//! each row as minified JSON reuses the punctuation the tokenizer already prices
+//! cheaply.
 //!
 //! A table block replacing an `N`-element array is:
 //!
@@ -132,11 +137,28 @@
 //! determinism note).
 //!
 //! `None` is not limited to that case, though. The render walk also returns it from
-//! its defensive guards: a span that does not resolve to source text, an index step
-//! that would overflow, an element that is not the object the qualifying condition
-//! promised, and the final fail-safe for a walk that emitted no table. Every one of
-//! them is unreachable by construction; they exist so a violated invariant degrades to
-//! passthrough rather than emitting a malformed `tbl` body.
+//! its defensive guards, which are: a node index out of bounds (the walk and each of
+//! its helpers read the node slice through `get`), an index step that would overflow,
+//! a missing plan for an array the walk just found in `plans`, a span that does not
+//! resolve to source text, an element that is not the object the qualifying condition
+//! promised, a member position whose node is not a `Key`, a `Key` where `value_end`
+//! was asked where a value ends, and the final fail-safe for a walk that emitted no
+//! table. They exist so a violated invariant degrades to passthrough rather than
+//! emitting a malformed `tbl` body.
+//!
+//! How unreachable each one is differs, and "unreachable by construction" — which
+//! this paragraph used to say of all of them at once — is exact for only one: the
+//! plan lookup re-reads the key `contains_key` has just accepted, from a map nothing
+//! mutates in between. For the rest the claim is narrower than it sounds. It holds
+//! for a tape and the input it was parsed from — the only pairing this crate passes —
+//! and even there it is a derivation from the matched container pairs the parser
+//! emits, not a measurement over inputs. It is also all the claim can be, because
+//! [`render`] takes tape and input separately and nothing ties them: handed a tape
+//! and an unrelated shorter input, the walk does reach the span guard, as
+//! `the_span_guard_is_reachable_with_a_tape_from_another_input` drives. The helpers
+//! below take a plain `&[Node]` rather than a [`Tape`](crate::tape::Tape), and
+//! `value_end_fails_closed_on_a_key_in_value_position` reaches two more of them
+//! through a synthetic node sequence.
 //!
 //! Whether the tabular form is actually shorter than the input is decided afterwards
 //! by [`select`](super::select) under the token estimator, exactly as for E1.
@@ -149,8 +171,9 @@ use crate::tape::{Node, NodeKind, Span, Tape};
 
 /// Table block/row boundary. A newline cannot occur inside minified JSON, which is
 /// what makes the block boundaries unambiguous. Fields within a row are separated by
-/// JSON's own `,`/`:` punctuation rather than a tab, which never tokenizes dearer and
-/// is usually cheaper by a modest margin (the module docs give the measured spread).
+/// JSON's own `,`/`:` punctuation rather than a tab, which did not tokenize dearer on
+/// any of the 288 shapes the module docs' survey covers, and was cheaper there by a
+/// modest margin (that paragraph gives the measured spread and the survey's scope).
 const BLOCK: char = '\n';
 /// Row-position markers: header, plain row, deviating row.
 const HEADER: char = '#';
@@ -1129,6 +1152,26 @@ mod tests {
         assert_eq!(value_end(&nodes, 2), Some(3));
         // Out of bounds is also `None`, and never a panic.
         assert_eq!(value_end(&nodes, 4), None);
+    }
+
+    /// `render`'s span guard, reached. The module docs called every guard in the walk
+    /// "unreachable by construction"; that holds for a tape and the input it was
+    /// parsed from, which is the only pairing this crate ever passes, but the
+    /// signature does not tie the two -- `render(tape, input)` takes them separately.
+    /// Handed a tape and an unrelated shorter input, `analyze` still plans a table,
+    /// because `shape_hash` skips a span it cannot resolve instead of failing, and
+    /// the walk then reaches `span_str`, which declines. The document degrades to
+    /// passthrough, which is what the guard is for.
+    #[test]
+    fn the_span_guard_is_reachable_with_a_tape_from_another_input() {
+        let input = r#"[{"a":1},{"a":2}]"#;
+        let t = tape_of(input);
+        assert!(render(&t, input).is_some(), "the matched pair renders");
+        assert_eq!(
+            render(&t, ""),
+            None,
+            "an unrelated input hits the span guard"
+        );
     }
 
     // -----------------------------------------------------------------------

@@ -53,12 +53,16 @@
 //! # What an archive actually contains (v0.0.1)
 //!
 //! Every archive this version writes is a **passthrough recovery blob**: a header of
-//! 43 to 46 bytes — 47 for an original of 2^28 bytes or more, which needs a raised
-//! [`ConfigBuilder::max_input_bytes`] — (magic, version, encoder id, tokenizer id,
-//! flags, the original length as a varint, and a `SHA-256` digest) followed by **the
-//! original input bytes, verbatim**. Only the model-facing [`Artifact::rendering`] is ever re-encoded; the
-//! archive payload is not. It is **not encrypted, not encoded and not obfuscated** —
-//! plain bytes behind a short header any reader can skip.
+//! 43 to 46 bytes — 47 once the original is 2^28 bytes or larger, which needs a
+//! raised [`ConfigBuilder::max_input_bytes`]; 47 is the ceiling, because the parser
+//! rejects an input longer than `u32::MAX` and so no archive can carry a sixth
+//! varint byte — (magic, version, encoder id, tokenizer id, flags, the original
+//! length as a varint, and a `SHA-256` digest) followed by **the original input
+//! bytes, verbatim**. Each of those widths is pinned at the varint boundary that
+//! produces it by `header_byte_count_at_every_varint_boundary` in `format`. Only
+//! the model-facing [`Artifact::rendering`] is ever re-encoded; the archive payload
+//! is not. It is **not encrypted, not encoded and not obfuscated** — plain bytes
+//! behind a short header any reader can skip.
 //!
 //! An archive is therefore exactly as sensitive as the plaintext it wraps. Anything
 //! that stores, logs, caches or forwards archives must handle them with the same care

@@ -14,7 +14,7 @@
     clippy::indexing_slicing
 )]
 
-use tokfold_mcp::{Server, json, stdio};
+use tokfold_mcp::{Server, json, stdio, tools};
 
 /// Runs a whole session and returns one entry per emitted line.
 fn session(input: &str) -> Vec<json::Value> {
@@ -87,12 +87,24 @@ fn a_legacy_client_initializes_lists_tools_and_compresses() {
         Some("2025-06-18"),
         "a supported requested revision is echoed back"
     );
+    // Counting the entries would hold for any three tools, and the message that stood
+    // here named three that are not their names -- the tools are `tokfold_compress`,
+    // `tokfold_decompress` and `tokfold_estimate`. Both come off `tools::NAMES` now, so
+    // neither the count nor the names can be restated wrongly here.
+    let catalogue: Vec<&str> = result_of(&replies[1], "tools")
+        .and_then(json::Value::as_array)
+        .expect("tools/list answers with an array of tools")
+        .iter()
+        .map(|tool| {
+            tool.get("name")
+                .and_then(json::Value::as_str)
+                .expect("every catalogue entry carries a name")
+        })
+        .collect();
     assert_eq!(
-        result_of(&replies[1], "tools")
-            .and_then(json::Value::as_array)
-            .map(<[json::Value]>::len),
-        Some(3),
-        "the catalogue holds compress, decompress, and estimate"
+        catalogue,
+        tools::NAMES,
+        "the catalogue holds every tool in `tools::NAMES`, in that order"
     );
     assert_eq!(
         result_of(&replies[2], "isError").and_then(json::Value::as_bool),
@@ -400,6 +412,50 @@ fn the_documented_large_call_reply_limit_is_reached_by_the_fixture_the_docs_name
          does not produce",
         frame.request_bytes,
         frame.reply_bytes
+    );
+}
+
+#[test]
+fn the_small_call_figure_the_docs_quote_carries_its_counting_convention() {
+    // `5.02x for {"k":"z"}` is the one documented ratio whose value changes with how the
+    // two lines are counted, and it is quoted in `src/lib.rs`, `src/tools.rs`,
+    // `tests/contract.rs`, twice in `crates/tokfold-mcp/README.md` (the second referring
+    // back to the first) and twice in this file. `grep -rn 5.02 crates/` re-derives that
+    // list rather than a count here, which would rot as sites are added; when this test
+    // was written every site but `tests/contract.rs` named its convention.
+    //
+    // Each of those sites names its convention: the README counts "each line's newline",
+    // `src/lib.rs` says the same in words, and the comments here and in `src/tools.rs`
+    // say "framed", which is what `measure` does. The frame limit counts a message the
+    // other way, without its terminator, and the same exchange measured that way is 607
+    // reply bytes over 120 request bytes -- 5.0583x, which `src/lib.rs` renders as 5.06x.
+    // Framed it is 608 over 121, 5.0248x, rendered 5.02x. `percent_of_request` truncates
+    // rather than rounds, so the two asserts below read 502 and 505 for those same two
+    // measurements; the prose figure and the integer percent differ in the last place by
+    // that truncation alone, not by measuring different things.
+    //
+    // Nothing pinned either number before this test. Both byte counts are asserted rather
+    // than the ratio alone, so a reply envelope that gains a field says which half moved
+    // instead of only that the quotient did.
+    let frame = measure(&call_line("tokfold_compress", r#"{"k":"z"}"#));
+
+    assert_eq!(
+        (frame.request_bytes, frame.reply_bytes),
+        (121, 608),
+        "the framed small-call exchange moved; the 5.02x in this file, in \
+         `tests/contract.rs` and in `crates/tokfold-mcp/README.md` is derived from these \
+         two byte counts"
+    );
+    assert_eq!(
+        frame.percent_of_request(),
+        502,
+        "5.02x is the framed figure, terminators counted on both sides"
+    );
+    assert_eq!(
+        (frame.reply_bytes - 1) * 100 / (frame.request_bytes - 1),
+        505,
+        "and 505 is the same exchange counted the way the frame limit counts a message, \
+         the 5.06x of `src/lib.rs` truncated; a site that quotes either must say which"
     );
 }
 

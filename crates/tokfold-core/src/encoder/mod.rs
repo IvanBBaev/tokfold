@@ -148,12 +148,16 @@ pub(crate) struct Selection {
     /// refused, for either of the two reasons that function refuses for: the
     /// rendering was not a strict token win, or the win was under `min_saving_bps`.
     ///
-    /// `false` only when nothing reached the gate to be refused — `enabled` was
-    /// empty, or every encoder in it declined to render (returned `None`) or had its
-    /// rendering kept. Note that "the input was already minimal" is *not* one of the
-    /// `false` cases: E1 renders such an input anyway, the framed rendering then
-    /// fails the strict comparison, and the flag goes up. Set independently of the
-    /// outcome — a candidate can be refused while a later one still wins.
+    /// `false` only when nothing reached the gate to be refused: `enabled` held no
+    /// encoder that [`select`] tries as a candidate — it was empty, or held nothing
+    /// but [`Encoder::Passthrough`], which `select` skips because it is the fallback
+    /// — or every candidate it did try either declined to render (returned `None`)
+    /// or had its rendering kept. Note that "the input was already minimal" is *not*
+    /// one of the `false` cases: E1 renders such an input anyway, the framed
+    /// rendering then fails the strict comparison, and the flag goes up. Set
+    /// independently of the outcome — a candidate can be refused while a later one
+    /// still wins. Each `false` case above is driven by
+    /// `the_gate_flag_separates_a_refusal_from_nothing_to_refuse`.
     pub gate_rejected_candidate: bool,
 }
 
@@ -620,6 +624,32 @@ mod tests {
         );
         assert_eq!(lost.encoder, Encoder::Passthrough);
         assert!(lost.gate_rejected_candidate);
+
+        // (e) `enabled` is non-empty but holds only the fallback, which `select`
+        // skips rather than pricing against the input, so again nothing reached the
+        // gate. Without this case the flag's documented `false` set would be
+        // "`enabled` was empty", which is one case short.
+        let only_fallback = select(
+            &t,
+            &input,
+            &HeuristicEstimator,
+            &[Encoder::Passthrough],
+            10_000,
+        );
+        assert_eq!(only_fallback.encoder, Encoder::Passthrough);
+        assert!(!only_fallback.gate_rejected_candidate);
+
+        // (f) An encoder that declines to render this input: E2 needs an array of
+        // uniform objects and gets a flat one, so no candidate reaches the gate.
+        let declined = select(
+            &t,
+            &input,
+            &HeuristicEstimator,
+            &[Encoder::E2Tabular],
+            10_000,
+        );
+        assert_eq!(declined.encoder, Encoder::Passthrough);
+        assert!(!declined.gate_rejected_candidate);
     }
 
     #[test]

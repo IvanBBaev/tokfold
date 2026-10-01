@@ -1,0 +1,1 @@
+P{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"tokfold_compress","arguments":{"text":"[{\"id\":1,\"name\":\"a\",\"ok\":true},{\"id\":2,\"name\":\"b\",\"ok\":false},{\"id\":3,\"name\":\"c\",\"ok\":true},{\"id\":4,\"name\":\"d\",\"ok\":null}]","profile":"aggressive"}}}

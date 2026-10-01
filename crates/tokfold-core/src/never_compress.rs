@@ -11,13 +11,19 @@
 //! Matching is a **case-folded literal substring** test, never a regular
 //! expression. Regex over attacker-influenced input is a denial-of-service
 //! surface: a pathological pattern/input pair can cost super-linear time
-//! (catastrophic backtracking). Every rule here is a fixed literal, so a match is
-//! a bounded, linear scan of the line and the crate takes no regex dependency.
+//! (catastrophic backtracking). Every rule here is a fixed literal, so the cost of
+//! testing one is bounded by the line length times that literal's length — the
+//! case-insensitive arm is a naive window scan, the case-sensitive arm defers to
+//! `str::contains` — and the literals are a fixed table, so the work per line is
+//! linear in the line with a constant the table fixes, never super-linear in the
+//! input. The crate also takes no regex dependency.
 //!
 //! Case folding is **ASCII-only**, which is sufficient because every literal is
-//! ASCII: a UTF-8 continuation byte (`>= 0x80`) can never equal an ASCII byte
-//! under ASCII case folding, so folding cannot produce a spurious match inside a
-//! multi-byte character.
+//! ASCII (pinned by `every_literal_is_ascii`): every byte of a multi-byte UTF-8
+//! character is `>= 0x80` — the lead byte as much as the continuation bytes — and
+//! `eq_ignore_ascii_case` folds only ASCII letters, so no byte of a multi-byte
+//! character can compare equal to a byte of an ASCII literal and no match window
+//! can overlap one.
 //!
 //! # The verbatim-with-position contract
 //!
@@ -112,8 +118,10 @@ pub struct NeverCompressRule {
     /// Semantic category, e.g. `"compiler"` or `"certificate"`. Groups the table
     /// for auditing and per-class tests; carries no matching behaviour.
     pub class: &'static str,
-    /// The fixed substring to search for. Always non-empty (asserted in tests):
-    /// an empty literal would match every line and disable compression entirely.
+    /// The fixed substring to search for. Always non-empty — asserted by
+    /// `no_rule_has_empty_fields`, which also drives the stated reason: an empty
+    /// literal matches every line under either case policy, so one in the table
+    /// would disable compression entirely.
     pub literal: &'static str,
     /// When `true`, match byte-for-byte; when `false`, fold ASCII case. Symbolic
     /// constants such as `EACCES` are case-sensitive; human-readable phrases are
@@ -523,12 +531,33 @@ mod tests {
     }
 
     /// No rule may carry an empty literal or class.
+    ///
+    /// The second half drives the reason the field doc gives for the first. An empty
+    /// literal is not merely suspicious: it matches every line, under both case
+    /// policies (`str::contains` and `contains_ascii_case_insensitive` each answer
+    /// `true` for an empty needle), so a single such rule would protect the whole
+    /// input and leave nothing to compress.
     #[test]
     fn no_rule_has_empty_fields() {
         for rule in rules() {
             let NeverCompressRule { class, literal, .. } = rule;
             assert!(!literal.is_empty(), "empty literal in class {class:?}");
             assert!(!class.is_empty(), "empty class for literal {literal:?}");
+        }
+
+        for case_sensitive in [false, true] {
+            let empty = NeverCompressRule {
+                class: "test",
+                literal: "",
+                case_sensitive,
+            };
+            for line in ["", "nothing protected here", "\u{e9}\u{4e2d}", "\0"] {
+                assert!(
+                    empty.matches_line(line),
+                    "an empty literal did not match {line:?} at case_sensitive \
+                     {case_sensitive}"
+                );
+            }
         }
     }
 

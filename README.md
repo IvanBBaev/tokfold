@@ -34,12 +34,17 @@ for the command line.
   request to get a gate.
 - The engine crate is `tokfold-core`; the CLI binary is `tokfold`; the MCP
   integration (`tokfold-mcp`) serves the engine as tools over stdio and is
-  **experimental and unhardened** — it sees everything passed through it.
+  **experimental and unhardened** — it sees everything passed through it. Its
+  [Quickstart](crates/tokfold-mcp/README.md#quickstart) covers installing it,
+  connecting Claude Code or another stdio client, and a first session.
 - **A recovery archive is not a protective wrapper.** At v0.0.1 every archive is a
   passthrough blob: a `TKFD` header of 43 to 46 bytes (47 for an original of
   2^28 bytes or more, which needs a raised `max_input_bytes`) followed by **the original
   bytes verbatim** — not encrypted, not encoded, not obfuscated. An archive is exactly as
-  sensitive as its plaintext; store it with the same care.
+  sensitive as its plaintext; store it with the same care. Nor is the header's SHA-256
+  a tamper check: it is unkeyed and travels inside the archive it covers, so it
+  detects corruption, not tampering — anyone who can modify an archive can recompute
+  the digest to match (`tokfold-core`'s `format` module docs).
 
 This README describes what the project *is* and what it *refuses to claim*. It
 contains no benchmark numbers on purpose — see [Benchmarks](#benchmarks).
@@ -67,7 +72,9 @@ Canonicalized (deliberately **not** preserved):
 - **Insignificant whitespace.** Reproducing the exact whitespace would mean
   preserving the very bytes we are paid to delete.
 - **String escape style.** Strings are compared *after* unescaping, so `"é"` and
-  `"\u00e9"` are the same string; decompression emits one canonical escaping.
+  `"\u00e9"` are the same string, and the contract lets a decoder canonicalize
+  escapes. None does yet: every 0.0.1 archive is a passthrough blob, so the original
+  escaping comes back.
   Lone-surrogate `\uXXXX` escapes are retained as raw lexemes so they survive a
   round trip even though they cannot be unescaped to valid UTF-8.
 
@@ -260,10 +267,12 @@ encoders (passthrough, whitespace minification, shape-deduplicated tabular
 re-encoding). An opt-in, non-default `tiktoken` feature adds exact GPT tokenizer
 estimators (`cl100k_base`, `o200k_base`) for the do-no-harm gate; it embeds megabytes
 of BPE tables and is off by default, so it never changes the archive format. An
-experimental MCP server (`tokfold mcp`) exposes compress, decompress, and estimate as
-tools over stdio; it is unhardened and unaudited. It shipped in `0.0.1` in that
-state, labelled rather than held back — hardening is a milestone still owed, not one
-this release passed.
+experimental MCP server (`tokfold mcp`) exposes the engine over stdio as three tools —
+`tokfold_compress`, `tokfold_decompress` and `tokfold_estimate`. That is the whole
+catalogue: `tools::NAMES` in `tokfold-mcp`, whose length and order the unit test
+`the_catalogue_lists_every_tool_in_a_fixed_order` pins. The server is unhardened and
+unaudited. It shipped in `0.0.1` in that state, labelled rather than held back —
+hardening is a milestone still owed, not one this release passed.
 Reserved but **not implemented**: legend folding, Hugging Face tokenizer backends,
 language bindings, and the MCP *proxy* shape — an upstream connection and a
 content-addressed archive store, which needs its own threat model. This is a skeleton;

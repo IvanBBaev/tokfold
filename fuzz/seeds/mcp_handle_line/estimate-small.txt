@@ -1,0 +1,1 @@
+P{"jsonrpc":"2.0","id":"e","method":"tools/call","params":{"name":"tokfold_estimate","arguments":{"text":"{\n  \"items\": [\n    {\"k\": 1.5e3, \"v\": -0.0},\n    {\"k\": 2, \"v\": \"two\"}\n  ],\n  \"dup\": 1,\n  \"dup\": 2\n}\n"}}}

@@ -48,10 +48,13 @@ and whitespace dominate. Embed the returned `rendering` in context and keep the 
 `archive`; `tokfold_decompress` recovers the original bytes exactly. Call \
 `tokfold_estimate` first when you want to know whether compressing is worth it. \
 Input is never dropped silently: input the engine declines (not JSON, nested too \
-deep, too large) comes back unchanged with `compressed: false` and a `reasonCode`, \
+deep) comes back unchanged with `compressed: false` and a `reasonCode`, \
 JSON with nothing to save comes back verbatim after a \
 `⟦tkfd:v1:raw⟧` marker line, and a reply too large for the message limit (32 MiB by \
-default) is an error rather than a truncated answer.";
+default) is an error rather than a truncated answer. That last case is the one to \
+expect from `tokfold_compress` for text from roughly 16 MiB upwards — sooner when the \
+text needs JSON escaping — because a declined call echoes the input back twice. \
+`tokfold_estimate` still answers there: it reports numbers and never the input.";
 
 /// The protocol state machine.
 ///
@@ -243,34 +246,74 @@ impl Server {
     /// The two are not ordered by the limit. Each member's refusal is chosen as the
     /// widest form that fits the room left *at that member* — addressed when its id fits,
     /// id-less otherwise — and nothing is reserved for the members after it. So a larger
-    /// limit can collapse a batch that a smaller one answered: for `[ping, tools/list
-    /// with a 300-byte string id, ping]`, a limit of 576 answers both pings and refuses
-    /// the middle member id-less (143 + 123 + 143 + 4 framing bytes = 413 needed), while
-    /// 577 through 700 collapse the whole batch, because at 577 the 431-byte addressed
-    /// refusal first fits the remainder (143 + 431 + 3) and then starves the last member.
-    /// At 701 (143 + 431 + 123 + 4) the last ping's own id-less refusal fits again, so
-    /// one ping is answered, and from 721 (143 + 431 + 143 + 4) both are. The same step
+    /// limit can collapse a batch that a smaller one answered.
+    ///
+    /// The widths that drive that are not constants. The oversize error spells out two
+    /// decimal numbers — the room left at that member, and the limit — so every form
+    /// grows with their digits, exactly as the single-reply forms do in
+    /// [`Server::with_max_message_bytes`] — which is where the `93 + digits(max)`
+    /// id-less frame and its seven-byte `"id":1,` field are derived. A member refusal
+    /// names the second number as well, so its id-less form is
+    /// `117 + digits(room) + digits(limit)`: the same 93 plus the 24 bytes by which
+    /// `does not fit the N bytes left of the M byte frame limit` is the longer message.
+    /// Add `7` for a one-digit numeric id, or `308` for a 300-byte string id
+    /// (`"id":` + 302 + `,`). Re-derive from that rather than from the byte counts in
+    /// the next paragraph, which are the three-digit case — the second window's
+    /// boundaries are four-digit and do not follow from them.
+    ///
+    /// For `[ping, tools/list with a 300-byte string id, ping]`, a limit of 576 answers
+    /// both pings and refuses the middle member id-less (143 + 123 + 143 + 4 framing
+    /// bytes = 413 needed), while 577 through 700 collapse the whole batch, because at
+    /// 577 the 431-byte addressed refusal first fits the remainder (143 + 431 + 3) and
+    /// then starves the last member. At 701 (143 + 431 + 123 + 4) the last ping's own
+    /// id-less refusal fits again, so one ping is answered, and from 721
+    /// (143 + 431 + 143 + 4) both are. Below that the array is not always addressable:
+    /// at 393 (143 + 123 + 123 + 4) one ping is answered and *both* remaining members
+    /// are refused id-less, and the last of them first affords its own `"id":3` at 400
+    /// — a seven-byte step that no collapse boundary marks. There are three such steps
+    /// in this range and none of them is a boundary of anything else: the last ping's
+    /// refusal gains its id at 400, again at 708 once the middle member's addressed
+    /// refusal is in the frame, and again at 3 100 once its real answer is. The
+    /// starvation itself
     /// happens a second time when the middle member's *real* answer first fits: this
     /// build collapses again at every limit from 2 968 through 3 092, answers the
-    /// middle member and the first ping from 3 093 (the last ping refused id-less), and
-    /// all three from 3 112 (the published 0.0.1 binary, with its shorter tool
-    /// catalogue, collapses at 2 858 through 2 953). The same three members with the wide one last never
-    /// collapse above 412 (swept to 8 000). At the default 32 MiB
-    /// limit the same shape is reached through the id's width rather than the limit:
-    /// around the later window each step is taken exactly where the reply would exceed
-    /// the limit by one byte, so a wider middle id first costs the last ping its answer, then collapses
-    /// the batch, and then, once the addressed refusal no longer fits on its own, gets
-    /// both pings answered again beside the id-less refusal. Measured on macOS arm64
-    /// with ids of `x`, and twice over for the same reason as at small limits: this
-    /// build collapses for a middle id 33 551 636 to 33 551 764 bytes wide (the real
-    /// catalogue answer starving the last ping) and again for 33 554 017 to 33 554 145
-    /// (the addressed refusal doing so); the published 0.0.1 binary, which renders
-    /// members without this running budget, has the same shape at 33 551 779 to
-    /// 33 551 874 and at 33 554 082 to 33 554 177. Reserving room
+    /// middle member and the first ping from 3 093 (the last ping refused id-less, and
+    /// at 124 bytes rather than 123 only because the limit now has four digits — the
+    /// formula above, not a second form), and all three from 3 112 (the published
+    /// 0.0.1 binary, with its shorter tool catalogue and a message naming one number
+    /// instead of two, collapses at 2 858 through 2 953). The same three members with
+    /// the wide one last never collapse above 412 (swept to 8 000). At the default 32 MiB
+    /// limit the same shape is reached through the id's width rather than the limit.
+    /// Measured on macOS arm64 with ids of `x`, and twice over for the same reason as
+    /// at small limits: this build collapses for a middle id 33 551 636 to 33 551 764
+    /// bytes wide (the real catalogue answer starving the last ping) and again for
+    /// 33 554 017 to 33 554 145 (the addressed refusal doing so); the published 0.0.1
+    /// binary, which runs the same running budget (since `36b771e`) but whose member
+    /// refusal names one number instead of two, has the same shape at 33 551 779 to
+    /// 33 551 874 and at 33 554 082 to 33 554 177. In both windows each step *into* the
+    /// collapse — the last ping losing its answer, then its id, then the batch — is
+    /// taken exactly where the reply would exceed the limit by one byte (at the width
+    /// before each window the reply is exactly 33 554 432 bytes). The step *out* of the
+    /// later window is not: it is taken where the middle member's addressed refusal
+    /// first exceeds its own budget — the limit less the frame so far and the comma the
+    /// next member needs — by one byte, after which that member is refused id-less and
+    /// both pings are answered beside it. Each window is one width wider than the range
+    /// of budgets the last ping's id-less refusal cannot fit: 0.0.1's names one number,
+    /// `93 + digits(b)` bytes, which misses every budget `b` from 0 to 94, so 96 widths;
+    /// this build's names two, `117 + digits(b) + 8`, which misses 0 to 127, so 129.
+    /// The extra width is the one at which the budget saturates at 0. Reserving room
     /// for the tail would change what reaches the wire, so it is an open contract
     /// question, not a fix made here. The test
     /// `a_larger_limit_can_collapse_a_batch_that_a_smaller_one_answered` pins both
-    /// small-limit windows at every limit up to 3 200; the 32 MiB widths are a measurement no test holds.
+    /// small-limit windows at every limit from 95 to 3 200 — for this batch and for the
+    /// same members with the wide one last, whose single window is 95 through 412 — and
+    /// pins the two forms the last refusal takes across all three id steps; over most of
+    /// that range it compares only whether the batch collapsed, so it is not a claim
+    /// about which members were answered.
+    /// 95 is the floor of the limit itself, not of this batch —
+    /// [`Server::with_max_message_bytes`] derives it — so below it the frame is wider
+    /// than the limit and a collapse cannot be told from a refusal that overflowed.
+    /// The 32 MiB widths are a measurement no test holds.
     ///
     /// Each member is handled before it is known whether its answer will fit, and the
     /// batch is abandoned at the first member whose answer does not: a batch refused at
@@ -1448,7 +1491,10 @@ mod tests {
         );
     }
 
-    /// One outsized member of a batch fails alone; the rest keep their real answers.
+    /// Here one outsized member of a batch fails alone and the rest keep their real
+    /// answers. That is a property of this fixture's room, not of every batch —
+    /// `a_larger_limit_can_collapse_a_batch_that_a_smaller_one_answered` pins limits
+    /// at which a refusal that fits starves the member after it.
     ///
     /// This is the whole reason the batch path fills against a running budget instead of
     /// rendering the array and checking its length: collapsing the batch would make a
@@ -1611,8 +1657,10 @@ mod tests {
     /// The batch degradation is not monotonic in the limit, and this pins the two
     /// windows the `handle_batch` doc derives: one byte more collapses a batch whose two
     /// small members were answered, because the wider addressed refusal — and later the
-    /// wider real answer — starves the member after it. It also pins the tool catalogue's width as a batch member, which the
-    /// test above quotes.
+    /// wider real answer — starves the member after it. It also pins the tool
+    /// catalogue's width as a batch member, which
+    /// `one_oversized_member_of_a_batch_is_refused_without_taking_the_others_down`
+    /// quotes.
     #[test]
     fn a_larger_limit_can_collapse_a_batch_that_a_smaller_one_answered() {
         let wide = "x".repeat(300);
@@ -1638,8 +1686,24 @@ mod tests {
                 (members.len(), results, refused)
             })
         };
+        // The id of every refused member, in order — `shape` reports only the first.
+        let refusals = |line: &str, max: usize| {
+            let frame = Server::new()
+                .with_max_message_bytes(max)
+                .handle_line(line)
+                .expect("a batch of requests is answered");
+            parse(&frame)
+                .unwrap()
+                .as_array()
+                .expect("an array")
+                .iter()
+                .filter(|m| m.get("error").is_some())
+                .map(|m| m.get("id").cloned())
+                .collect::<Vec<_>>()
+        };
         let idless: Option<Option<Value>> = Some(None);
-        let addressed = Some(Some(Value::Str(wide)));
+        let wide_id = Value::Str(wide);
+        let addressed = Some(Some(wide_id.clone()));
 
         assert_eq!(shape(&middle, 392), None);
         assert_eq!(shape(&middle, 393), Some((3, 1, idless.clone())));
@@ -1660,21 +1724,38 @@ mod tests {
         assert_eq!(shape(&middle, 3_092), None);
         assert_eq!(shape(&middle, 3_093), Some((3, 2, idless.clone())));
         assert_eq!(shape(&middle, 3_112), Some((3, 3, None)));
-        // Every limit, not a sample: within 393..=3 200 the batch collapses at exactly
-        // 577..=700 and 2 968..=3 092, and with the wide member last it never does.
-        for max in 393..=3_200 {
+        // The three seven-byte steps at which the last ping's refusal first carries its
+        // own id. None of them is a boundary of anything else, so nothing above marks
+        // them: the batch collapses at none of these limits and answers no more members
+        // after the step than before it.
+        let three = Value::Int(3);
+        assert_eq!(refusals(&middle, 399), vec![None, None]);
+        assert_eq!(refusals(&middle, 400), vec![None, Some(three.clone())]);
+        assert_eq!(refusals(&middle, 707), vec![Some(wide_id.clone()), None]);
+        assert_eq!(
+            refusals(&middle, 708),
+            vec![Some(wide_id), Some(three.clone())]
+        );
+        assert_eq!(refusals(&middle, 3_099), vec![None]);
+        assert_eq!(refusals(&middle, 3_100), vec![Some(three)]);
+        // Every limit, not a sample, and swept from the floor of the limit itself rather
+        // than from the first limit this batch answers: over 95..=3 200 it collapses at
+        // exactly 577..=700, at 2 968..=3 092, and at everything below 393, where the
+        // array does not fit at all. With the wide member last the collapse window is a
+        // single interval, 95..=412. Starting this sweep at 393 is what let the comment
+        // it replaces assert that the wide-member-last batch "never" collapses: the old
+        // floor sat inside the one window where it does.
+        for max in 95..=3_200 {
             assert_eq!(
                 shape(&middle, max).is_none(),
-                (577..=700).contains(&max) || (2_968..=3_092).contains(&max),
-                "{max}"
+                max < 393 || (577..=700).contains(&max) || (2_968..=3_092).contains(&max),
+                "middle {max}"
             );
+            assert_eq!(shape(&at_end, max).is_none(), max < 413, "at_end {max}");
         }
         for max in 413..=1_000 {
             let refused = if max < 721 { &idless } else { &addressed };
             assert_eq!(shape(&at_end, max), Some((3, 2, refused.clone())), "{max}");
-        }
-        for max in 1_001..=3_200 {
-            assert!(shape(&at_end, max).is_some(), "{max}");
         }
 
         let catalogue = Server::new()

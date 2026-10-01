@@ -130,7 +130,11 @@ const TENTHS_SCALE: usize = 10;
 
 /// Shortest whitespace run that costs a token. A lone separator (one space) is
 /// free — `cl100k` folds it into the adjacent word token — while a run of two or
-/// more (indentation, blank lines) maps to a dedicated indentation token.
+/// more (indentation, blank lines) is charged one token *whatever its length*. That
+/// matches the tokenizer only for short runs: the first run that really costs two
+/// tokens is 82 characters in `cl100k` and 80 in `o200k` (pinned in the tests), and
+/// a long run costs many, so a whitespace-bloated input is under-counted without
+/// bound — see the **Accuracy** paragraph on [`HeuristicEstimator`].
 const WHITESPACE_RUN_MIN_TOKENIZED: usize = 2;
 
 /// Token cost of a single ASCII punctuation, symbol or control byte.
@@ -174,7 +178,8 @@ const fn non_ascii_run_tokens(bytes: usize) -> usize {
 /// * **ASCII alphanumeric** — `ceil(len / 3.7)` tokens (at least one), the density
 ///   `cl100k` achieves on identifiers and words.
 /// * **Whitespace** — free for a lone separator, one token for a run of two or more
-///   (`cl100k` has dedicated indentation tokens); see `WHITESPACE_RUN_MIN_TOKENIZED`.
+///   of any length (`cl100k` has dedicated indentation tokens, but only for runs
+///   shorter than 82 characters); see `WHITESPACE_RUN_MIN_TOKENIZED`.
 /// * **ASCII punctuation, symbols and controls** — one token each.
 /// * **Non-ASCII** — `ceil(bytes / 2)`, reflecting multi-byte UTF-8 fragmenting
 ///   into several BPE tokens.
@@ -199,8 +204,15 @@ const fn non_ascii_run_tokens(bytes: usize) -> usize {
 /// four sizes, both tokenizers — exactly half of the 48 cases *under*-count, by 18% to
 /// 49%: SHA-256 digests sit at −43%, base64 blobs at −37% to −49% and UUIDs at −18% to
 /// −21%, while prose runs +63% to +76%, word-shaped key/value objects +87% to +89% and
-/// file paths +122% to +124%. `estimate` is therefore neither an upper nor a lower
-/// bound on real tokens.
+/// file paths +122% to +124%. That survey has no whitespace family, and whitespace is
+/// where the under-count is widest: every run of two or more characters is one token
+/// here however long it is, so `[` followed by 5 000 spaces and `1]`, and `[` followed
+/// by 100 000 repetitions of `" \n\t"` and `1]`, both estimate at 4 tokens, and under
+/// the default configuration both were measured to pass through uncompressed: minify
+/// would remove all of it, but has at most the one estimated token of the run to
+/// save. Ordinary pretty-printed indentation is far below the 82 characters at which
+/// `cl100k` first spends a second token. `estimate` is therefore
+/// neither an upper nor a lower bound on real tokens.
 ///
 /// What the engine relies on is narrower and does hold: selection compares two
 /// estimates produced by this same model, so most of that bias cancels. The residual

@@ -2,9 +2,13 @@
 //!
 //! Two rules govern this module:
 //!
-//! * **Compress errors are recoverable by design.** On any [`CompressError`] the
-//!   caller passes the original bytes through unmodified. The tool must never eat
-//!   an agent's tool output.
+//! * **Compress errors are recoverable by design.** Every [`CompressError`] leaves
+//!   the input untouched — core never consumes or rewrites the buffer it rejects —
+//!   so the caller can forward the original bytes unmodified rather than fail. The
+//!   tool must never eat an agent's tool output. What core promises is that the
+//!   bytes are still there to forward; whether forwarding them then succeeds is the
+//!   caller's I/O, and the CLI says so separately when it does not (the messages are
+//!   quoted on `every_compress_error_prints_the_numbers_it_carries` below).
 //! * **Decompress errors are contract violations.** They fail loudly and never
 //!   return a best-effort guess.
 //!
@@ -12,7 +16,8 @@
 
 /// Failure while compressing an input buffer.
 ///
-/// Every variant is recoverable: the caller forwards the original input untouched.
+/// Every variant is recoverable: the input is left untouched, so the caller can
+/// forward the original bytes.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum CompressError {

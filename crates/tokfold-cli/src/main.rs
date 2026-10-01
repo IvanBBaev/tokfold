@@ -418,37 +418,27 @@ fn identity_of(meta: &fs::Metadata) -> Option<(u64, u64)> {
     }
 }
 
-/// The identity of whatever `path` resolves to, or `None` if it cannot be reached.
+/// The `stat` identity of whatever `path` resolves to, or `None` if it cannot be
+/// reached.
 ///
-/// A regular file reached through `/dev` is asked through an open descriptor rather
-/// than through `stat`. macOS reports `/dev/stdin`, `/dev/stdout` and `/dev/fd/N` with
-/// the inode of the file behind the descriptor but the device number of its `fdesc`
-/// filesystem, so the `stat` identity of `--archive /dev/stdout` never equals the
-/// identity of the file standard output is redirected to, and every guard comparing
-/// the two was blind to that spelling. Opening such a path duplicates the descriptor,
-/// and the duplicate's metadata carries the real device. The open is tried read-only
-/// and then write-only — without create or truncate — because the descriptor's own
-/// access mode decides which one succeeds; if neither does, the `stat` identity
-/// stands. Only a regular file is opened, and only under `/dev/fd`, where nothing a
-/// caller can create is a FIFO that an open would block on.
+/// Its one caller, [`removal_is_still_the_inspected_file`], passes the canonical
+/// target of an [`ArchiveSlot::Archive`], and [`inspect_archive_slot`] has already
+/// routed every target under `/dev/fd` to the descriptor path, so this never sees a
+/// descriptor spelling — the guards that compare two sides ask each side the way its
+/// own operation reaches it, through [`input_identity`] and [`archive_identity`]. Should
+/// a swap between the inspection and the unlink put a `/dev/fd` spelling there, its
+/// `stat` identity carries the `fdesc` device on macOS, never equals the inspected
+/// identity, and the removal is refused.
 fn file_identity(path: &Path) -> Option<(u64, u64)> {
-    let meta = fs::metadata(path).ok()?;
-    if meta.is_file() && is_reached_through_dev(path) {
-        if let Some(identity) = opened_identity(path) {
-            return Some(identity);
-        }
-    }
-    identity_of(&meta)
+    identity_of(&fs::metadata(path).ok()?)
 }
 
 /// The identity of `path` as the input read reaches it, or `None` if that read
 /// cannot reach it.
 ///
-/// [`file_identity`] opens a `/dev` spelling whichever way its descriptor allows, so it
-/// answers for a write-only descriptor the input read can never open. That read opens
-/// read-only, and so does this: `-i /dev/stdin 0>>a.tkfd` has no input to protect, and
-/// the honest failure is the one the read itself reports. Any other path is its `stat`
-/// identity, as in [`file_identity`].
+/// The input read opens read-only, and so does this, so a write-only descriptor the
+/// read can never open is not an input to protect: `-i /dev/stdin 0>>a.tkfd` fails
+/// with the error the read itself reports. Any other path is its `stat` identity.
 fn input_identity(path: &Path) -> Option<(u64, u64)> {
     reached_identity(path, |path| fs::File::open(path))
 }
@@ -488,14 +478,6 @@ fn reached_identity(
 /// rejected pass named as its own input deleted that input.
 fn is_reached_through_dev(path: &Path) -> bool {
     fs::canonicalize(path).is_ok_and(|resolved| resolved.starts_with("/dev/fd"))
-}
-
-/// The identity of the file an open of `path` yields, read-only or else write-only.
-fn opened_identity(path: &Path) -> Option<(u64, u64)> {
-    let file = fs::File::open(path)
-        .or_else(|_| fs::OpenOptions::new().write(true).open(path))
-        .ok()?;
-    file.metadata().ok().as_ref().and_then(identity_of)
 }
 
 /// The identity of the regular file standing behind standard input, or `None` when
@@ -1405,7 +1387,9 @@ struct CompressArgs {
     /// can -- it replaces a regular file whatever it contains but refuses a FIFO, a
     /// socket or a device, refuses a path whose opening does not empty it (on macOS, a
     /// /dev/fd/N, /dev/stdin, /dev/stdout or /dev/stderr spelling of a descriptor
-    /// already open on a file), and exits 2 on a path it cannot write -- and a pass the passthrough
+    /// already open on a file that has bytes in it; the same spelling over an empty
+    /// file, as 3>fresh.tkfd leaves it, is written like any other), and exits 2 on a
+    /// path it cannot write -- and a pass the passthrough
     /// encoder wins is a successful pass: it still writes an archive. Only a pass the
     /// engine
     /// *rejects* writes none, and that pass deletes what is there when the file opens
@@ -1419,8 +1403,12 @@ struct CompressArgs {
     /// writing the passthrough to standard output. Because a successful pass
     /// overwrites the path, it may not name the same file as --input, nor (on Unix) the
     /// regular file standard input reads from or the regular file standard output
-    /// writes to, whether spelled as its own path or as a /dev/stdin, /dev/stdout or /dev/fd/N
-    /// path; each is refused with exit 2 before tokfold reads or writes anything. A
+    /// writes to, whether spelled as its own path or as a /dev/stdin, /dev/stdout or
+    /// /dev/fd/N path the archive write can open; each of those is refused with exit 2
+    /// before tokfold reads or writes anything. A spelling that write cannot open is
+    /// not compared at all: --archive /dev/stdin over a read-only standard input is
+    /// left alone and the input passed through when the engine rejects it, and fails
+    /// at the archive write with the platform's Permission denied when it does not. A
     /// `>` redirect has already emptied its file by then -- the shell truncates it
     /// before tokfold starts -- so the refusal saves a `>>` or `1<>` target and the rest
     /// of the run, not the bytes `>` removed. A pipe carries bytes and no file, so `cat

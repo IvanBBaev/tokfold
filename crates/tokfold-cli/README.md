@@ -139,8 +139,10 @@ never a payload byte, so the number is only useful next to the layout:
 | after the checksum | rest | payload |
 
 An archive of 4 to 9 bytes is cut short at or inside a fixed field and is reported
-at the field it cuts short (4, 5, 6 or 8); one shorter than the 4-byte magic is reported as a
-bad magic. Otherwise `archive corrupted at byte 8` is a flag bit this build knows
+at the field it cuts short (4, 5, 6 or 8); one of 1 to 3 bytes is reported as a bad
+magic, and an empty one as empty rather than as corruption -- measured at 0, 1, 2 and 3
+bytes, and stated the same way in the `expand` bullet above. Otherwise `archive
+corrupted at byte 8` is a flag bit this build knows
 and never sets, not a damaged payload; byte 4 is a version `0`, and a *higher* version
 reports `format version N > supported 1` instead; byte 5 or 6 is a metadata field
 that disagrees with what `0.0.1` emits; byte 10 is the length field disagreeing with
@@ -188,9 +190,16 @@ outcome of the pass:
   for writing, so it replaces a document of any kind, but it refuses a path that is
   not a regular file or a directory, and it fails with exit `2` on a file it lacks
   write permission for. It also refuses, with exit `2`, a path whose opening does not
-  empty it: on macOS `/dev/fd/N`, `/dev/stdin`, `/dev/stdout` and `/dev/stderr` hand back a
+  empty it, because the archive would land after whatever the file already held: on
+  macOS `/dev/fd/N`, `/dev/stdin`, `/dev/stdout` and `/dev/stderr` hand back a
   duplicate of a descriptor that is already open, keeping its offset and its append
-  mode, so the archive would land after whatever that file already held. It is not unconditional, and it is not a superset of what the
+  mode. **The spelling is not itself the refusal**; bytes behind the descriptor are.
+  A descriptor open on an *empty* file is written like any other regular file and
+  exits `0` with a valid archive: `--archive /dev/fd/3 3>fresh.tkfd` (which the shell
+  emptied before tokfold started), the same with `3>>` onto an empty file, and
+  `--archive /dev/stderr 2>fresh.tkfd` were each measured doing so, while the same
+  `/dev/fd/3` spelling over a file with bytes in it (`3<>notes.bin`) is refused.
+  It is not unconditional, and it is not a superset of what the
   rejected pass does to the same path — see "The rejected pass is not contained by
   the successful one" below.
   A pass the *passthrough encoder* wins is a successful pass and writes an archive
@@ -221,9 +230,13 @@ outcome of the pass:
 - A pass the engine rejects **leaves any other readable file alone**, byte for byte,
   and reports that on standard error instead. "Readable" is load-bearing: a file the
   slot check cannot open at all — no read permission, an unsearchable parent — is
-  equally untouched, but there is no report and no passthrough either, because the
-  check fails before the payload is written and the command exits `2` (see the last
-  bullet). A file whose opening bytes are not the
+  equally untouched, but there is no `left ... untouched` report and no passthrough
+  either -- stderr names the path and the platform's own error instead, and stdout is
+  empty -- because the check fails before the payload is written and the command exits
+  `2`. A `chmod 000` slot on a rejected input was measured printing `the input was
+  rejected (...) and not passed through: inspecting the archive path ...: Permission
+  denied (os error 13)` with 0 bytes on stdout; the rule is the one in the bullet
+  beginning "If the path cannot even be read". A file whose opening bytes are not the
   magic, or that is too short to carry it, is not tokfold's to delete: `compress
   --archive notes.md` on a rejected input does not touch `notes.md`. No stale
   document survives that restraint, because `expand` fails closed with exit `3` on
@@ -303,9 +316,14 @@ outcome, and its message says only that: it is also given where neither outcome 
 have touched the file — a read-only (`chmod 444`) input, which `0.0.1` refused to
 overwrite with "Permission denied" and, when it opened with the magic and was
 rejected, passed through with exit `0`; and on macOS a non-empty input reached through
-a `/dev/fd/N` or `/dev/stdin` spelling, which a successful pass refuses to write
-because opening it does not empty it. The two are compared by the identity the
-operating system gives the files (device and inode on Unix), so a symlink, a
+a **read-write** `/dev/fd/N` or `/dev/stdin` spelling (`3<>`, `0<>`), which a successful
+pass refuses to write because opening it does not empty it. A read-only spelling of the
+same file is not compared at all: `--input /dev/stdin --archive /dev/stdin < log.json`
+draws no same-file refusal, it reads the input and then fails at the archive write with
+the platform's `Permission denied`. That is the rule stated in the sentence "a spelling
+that operation cannot open is not compared", not an exception to it. The two are
+compared by the identity the operating system gives the files (device and inode on
+Unix), so a symlink, a
 relative spelling and a second hard link to the same file are all caught: `--input
 ./log.json --archive log.json` is refused, and so is `--archive` naming a hard link
 to the input. Where no such identity is available the comparison falls back to the
@@ -363,7 +381,10 @@ from also deleting the archive at `--archive`.
 ## Licence
 
 Dual-licensed under either of MIT ([LICENSE-MIT](https://github.com/IvanBBaev/tokfold/blob/main/LICENSE-MIT)) or Apache
-License 2.0 ([LICENSE-APACHE](https://github.com/IvanBBaev/tokfold/blob/main/LICENSE-APACHE)) at your option. Both texts
-also travel inside the published tarball, next to this file.
+License 2.0 ([LICENSE-APACHE](https://github.com/IvanBBaev/tokfold/blob/main/LICENSE-APACHE)) at your option. The two files
+are symlinks here to the workspace root, and `cargo package` resolves them: the
+tarball it builds carries their texts as regular files beside this README, byte-identical
+to the root copies (`cargo package --list -p tokfold-cli`, then `tar tvzf` the
+`.crate`). Nothing has published that tarball: crates.io is still on hold.
 
 Minimum supported Rust version: 1.85 (edition 2024).

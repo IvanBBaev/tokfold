@@ -173,9 +173,18 @@ enum State {
 /// - [`CompressError::InvalidJson`] for anything the grammar rejects, carrying the
 ///   byte offset of the rejection. Every rejection in this file is built by one private
 ///   helper, so that offset is always a byte position and never a token or line
-///   number. It is the offending byte itself except for a malformed `true`, `false` or
-///   `null`, which is reported at the literal's first byte: `[trux]` and `[nul` are
-///   both rejected at byte 1.
+///   number. It is the offending byte itself, except as follows. A rejection that ran
+///   out of input has no offending byte, and is reported at `input.len()` -- one past
+///   the last byte, so not an index into the input at all (`"\` is rejected at 2,
+///   `{"a":1` at 6), pinned by
+///   `every_early_end_rejection_is_reported_at_the_input_length`. Two further kinds
+///   name a byte that is neither the offending one nor the end:
+///   - a malformed or truncated `true`, `false` or `null` is reported at the literal's
+///     first byte -- `[trux]` and `[nul` are both rejected at byte 1, so a truncated
+///     literal is the one early end that is not reported at `input.len()`
+///     (`rejects_same_length_wrong_literals`);
+///   - a number with a leading zero is reported at the zero rather than at the digit
+///     that makes it illegal: `01` at 0, `-01` at 1 (`rejects_leading_zeros`).
 /// - [`CompressError::DepthExceeded`] when nesting passes `max_depth`.
 /// - [`CompressError::InputTooLarge`] when the input cannot be addressed by the `u32`
 ///   offsets a [`Span`] holds. Its `limit` is then `u32::MAX` — a structural ceiling of
@@ -1042,10 +1051,11 @@ mod tests {
     #[test]
     fn depth_past_u16_max_is_reported_exactly_not_saturated() {
         // The field was a `u16` until this change -- and still is in the `0.0.1` on
-        // npm -- so everything from 65 535 down-nested reported 65 535. The test
-        // above would have passed unchanged throughout: it asserts the node *count*,
-        // which saturation never touched. Assert the depth values themselves, on both
-        // sides of the old ceiling.
+        // npm -- so everything from 65 535 down-nested reported 65 535
+        // (`to_u16` there saturates). `deep_valid_input_parses_iteratively` would have
+        // passed unchanged throughout: it asserts the node *count* and the first
+        // node's kind, neither of which saturation touched. Assert the depth values
+        // themselves, on both sides of the old ceiling.
         let depth = 70_000;
         let input = format!("{}{}", "[".repeat(depth), "]".repeat(depth));
         let t = parse(&input, depth).unwrap();
@@ -1092,6 +1102,39 @@ mod tests {
         assert_invalid("tru");
         assert_invalid("nul");
         assert_invalid("{\"a\"");
+    }
+
+    /// Every rejection that runs out of input is reported at `input.len()` -- one past
+    /// the last byte, an offset that is not an index into the input -- because there is
+    /// no byte to point at. The inputs below reach every early-end arm the parser has:
+    /// the value state (empty, whitespace-only, and after a comma), both array states,
+    /// all three object states, the colon after a key, the string scanner, its two
+    /// escape forms, and all four number arms. A truncated literal is the one early end
+    /// that lands elsewhere; `rejects_same_length_wrong_literals` pins it at the
+    /// literal's first byte.
+    #[test]
+    fn every_early_end_rejection_is_reported_at_the_input_length() {
+        for input in [
+            "",          // value state, empty input
+            "   ",       // value state, whitespace only
+            "[1,",       // value state, after a comma
+            "[",         // array, first element
+            "[1",        // array, ',' or ']'
+            "{",         // object, first key
+            "{\"a\":1,", // object, key after ','
+            "{\"a\":1",  // object, ',' or '}'
+            "{\"a\"",    // the ':' after a key
+            "\"",        // unterminated string
+            "\"\\",      // unterminated escape
+            "\"\\u",     // unterminated unicode escape, no digits
+            "\"\\uAB",   // unterminated unicode escape, two digits
+            "-",         // number: a digit must follow '-'
+            "1.",        // number: a digit must follow '.'
+            "1e",        // number: a digit must follow 'e'
+            "1e+",       // number: a digit must follow the exponent sign
+        ] {
+            assert_invalid_at(input, input.len());
+        }
     }
 
     #[test]

@@ -98,6 +98,16 @@ pub use server::Server;
 /// costs several copies of itself in memory before the refusal reaches the client.
 /// Sizing this well above what core accepts buys no capability and multiplies that cost.
 ///
+/// The two ceilings overlap, and the consequence is visible to a client. A declined
+/// `tokfold_compress` carries the input twice, so for text that JSON escaping does not
+/// expand the frame is `338 + 2T` bytes and reaches this limit at `T = 16_777_047`;
+/// core declines for size only above `16 * 1024 * 1024`, first at `16_777_217`. Every
+/// input core would call too large is therefore already too wide to frame, so what
+/// arrives is the `-32602` refusal and never the `input_too_large` `reasonCode` --
+/// which only `tokfold_estimate`, reporting numbers without the payload, can deliver.
+/// Pinned by `the_engines_own_size_ceiling_is_unreachable_through_the_echoing_tool` in
+/// `tests/contract.rs`, as the equation rather than as the two numbers.
+///
 /// # This bounds bytes, not memory
 ///
 /// Worth stating plainly, because the opposite was once written here: capping the line
