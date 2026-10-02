@@ -154,8 +154,33 @@ fn main() -> ExitCode {
 /// anything else goes to [`usage_failure`], which is this branch's mirror on standard
 /// error. clap prints through `io::stdout()`, which treats `EBADF` as success, so
 /// `tokfold --help 1<file` exited `0` having printed nothing; through [`write_stdout`]
-/// that is a write failure and exits `2`. A terminal opened read-only as stdout
-/// (`tokfold --help 1</dev/tty`) still takes clap's path and is not reported.
+/// that is a write failure and exits `2`.
+///
+/// One carve-out survives, and it belongs to clap's printer rather than to terminals in
+/// general. A *terminal* opened read-only as stdout still takes clap's path, so the help
+/// or version text is lost and nothing is reported. Measured on macOS arm64 against the
+/// release binary built from source fingerprint `9ee10cd2` by `cargo build --release
+/// --workspace --all-features` (binary SHA-1 `ca2cfc4a`, 2026-10-01) through
+/// `openpty()` plus a read-only `open()` of `ttyname(slave)`:
+/// `--help` and `--version` exit `0` with no byte on the master and nothing on standard
+/// error, with `TERM` unset and with `TERM=xterm-256color` alike. `compress` and `stats`
+/// fed a real document through that same read-only pty exit `2` and name the stream
+/// (`writing to standard output: Bad file descriptor (os error 9)`), exactly as they do
+/// through a read-only regular file, so the carve-out does not widen to the commands
+/// that write a payload.
+///
+/// The two printers are not interchangeable, which is what the terminal branch is for.
+/// On a read-write pty `--help` renders 1 185 bytes with `TERM` unset: the 1 167 of the
+/// [`write_stdout`] path plus the 18 `\r` the pty's `ONLCR` inserts, byte-identical once
+/// those are removed. With `TERM=xterm-256color` it renders 1 301, whose 1 283 carry
+/// ANSI escapes the [`write_stdout`] path never emits. A rendering measured without its
+/// `TERM` is a claim about one environment, not about the branch.
+///
+/// No test reaches the carve-out. Driving it needs a pty, so it needs `openpty`, so it
+/// needs a `libc` dev-dependency on this crate, and that is the owner's call; the probe
+/// is described here so it can be rebuilt without rediscovering its shape. The spelling
+/// `tokfold --help 1</dev/tty` is *not* what was measured: it needs a controlling
+/// terminal, which a test harness does not have.
 fn parse_failure(err: &clap::Error) -> ExitCode {
     use clap::error::ErrorKind;
     use std::io::IsTerminal as _;

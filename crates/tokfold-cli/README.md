@@ -189,11 +189,19 @@ outcome of the pass:
 - A successful pass **overwrites** what is at `PATH` when it can: it opens the file
   for writing, so it replaces a document of any kind, but it refuses a path that is
   not a regular file or a directory, and it fails with exit `2` on a file it lacks
-  write permission for. It also refuses, with exit `2`, a path whose opening does not
-  empty it, because the archive would land after whatever the file already held: on
-  macOS `/dev/fd/N`, `/dev/stdin`, `/dev/stdout` and `/dev/stderr` hand back a
-  duplicate of a descriptor that is already open, keeping its offset and its append
-  mode. **The spelling is not itself the refusal**; bytes behind the descriptor are.
+  write permission for. A **directory** is outside that classification on purpose —
+  the rejected pass opens one so it can report the platform's own error instead of
+  claiming there is nothing to clear — but it is no more writable for that: an
+  accepted input with `--archive adir` exits `2` saying `writing archive to adir: Is
+  a directory`, the platform's own diagnostic rather than the refusal above (`os
+  error 21` where the measurement was taken, macOS; the test pins the sentence
+  without the number, which is the platform's to choose). Both outcomes are exit `2`
+  with nothing on standard output; only the message differs. It also refuses, with
+  exit `2`, a path whose opening does not empty it, because the archive would land
+  after whatever the file already held: on macOS `/dev/fd/N`, `/dev/stdin`,
+  `/dev/stdout` and `/dev/stderr` hand back a duplicate of a descriptor that is
+  already open, keeping its offset and its append mode. **The spelling is not itself
+  the refusal**; bytes behind the descriptor are.
   A descriptor open on an *empty* file is written like any other regular file and
   exits `0` with a valid archive: `--archive /dev/fd/3 3>fresh.tkfd` (which the shell
   emptied before tokfold started), the same with `3>>` onto an empty file, and

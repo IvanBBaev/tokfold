@@ -1242,10 +1242,20 @@ fn table_of_exact_len(len: usize) -> String {
 ///
 /// It carried `#[ignore = "slow"]` until it was timed, and in this repo an ignored
 /// test is an absent one: no gate leg passes `--ignored`, so the only case that
-/// reaches the default cap exactly never ran. Timed over two runs on 2026-09-30 (macOS
-/// 27.0.0 arm64, stable 1.97, one 16 MiB document through every encoder and the
-/// oracle) it takes 11.0–11.4 s in a debug build and 1.06–1.12 s under `--release`,
-/// against 27.19 s and 6.45 s for the whole workspace leg. Both legs run it now.
+/// reaches the default cap exactly never ran. Re-timed 2026-10-02 (macOS 27.0.0
+/// arm64, stable 1.97, 10 cores, warm target directory, two runs per figure; one
+/// 16 MiB document through every encoder and the oracle). Run on its own — `cargo
+/// test -p tokfold-core --all-features --test hostile <this name> -- --exact` — it
+/// takes 10.64 s in a debug build and 1.03 s under `--release`; the first run of
+/// either profile is inflated (12.09 s and 3.94 s), so the second is the steady
+/// state. Those are single-target wall clocks, which is not what it costs a gate
+/// leg. Its marginal cost inside the parallel workspace leg is the difference
+/// against `--skip <this name>`: 10.11–17.42 s in debug (leg 26.64–33.19 s, leg
+/// minus it 15.77–16.53 s) and 0.91–1.14 s under `--release` (leg 2.85–3.16 s,
+/// minus it 1.94–2.02 s). The debug spread is the leg's own run-to-run noise,
+/// wider than the gap between its two figures. `--report-time` would answer this
+/// directly but is nightly-only on a stable toolchain, so the difference is the
+/// measurement. Both legs run it now.
 /// Re-time it before adding a second document of this size — the cost is linear in
 /// the document — and if it ever has to be skipped again, skip it behind a `cfg` a
 /// gate leg still exercises, not behind `#[ignore]`.
