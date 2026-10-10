@@ -733,6 +733,21 @@ released says so, and names what `0.0.1` does in the same case.
 
 ### Documentation
 
+- **A count of the committed READMEs went stale the moment one was added.** The
+  reason `compress --help` carries the plaintext warning is written in the rustdoc of
+  `compress_help_says_what_an_archive_actually_holds` and in this file: "three of the
+  six committed READMEs" carried it while the crate documenting `--archive` did not.
+  Both halves were true when `0f759f6` wrote them — the root README,
+  `tokfold-core`'s and the npm launcher's each state that an archive is a `TKFD`
+  header followed by the original bytes, and the exact phrase is split across lines in
+  one of them, so a single-line grep finds one site and not three — but `df6a0fc`
+  added `fuzz/README.md` and the repository has had seven since. Both sites now date
+  the count to `0f759f6^` and say the set moves, and note that the CLI README has
+  since grown the warning in its own words, which makes four today. **A count of
+  files in the repository is a claim with a date on it: anchor it to a commit, or a
+  later commit falsifies prose nobody was editing.** Re-derive with
+  `git ls-files | grep -i readme`.
+
 - **An error-code list with a member no input reaches, under a heading that fits three
   others badly.** `crates/tokfold-mcp/README.md`, under *The tools*, said "A damaged
   archive is a tool error (`isError: true`) whose `structuredContent.code` is one of
@@ -1338,9 +1353,9 @@ released says so, and names what `0.0.1` does in the same case.
   `fuzz` is the ninth gate and has none, and the other four are `test`, `audit`,
   `release-test` and `nightly`) and `grep -n '^        if:'` for the step level (three
   lines, all `if: failure()` — in `fuzz`, `test` and `release-test`, so `fuzz` is the
-  only one of the nine that has one). The same shortening stands in a
-  dated `WORKLOG.md` record and is left there: the argument it supports is about which
-  trigger runs the job, which a step-level `if:` cannot affect.
+  only one of the nine that has one). The same shortening stands in a dated record
+  kept outside this repository and is left there: the argument it supports is about
+  which trigger runs the job, which a step-level `if:` cannot affect.
 - **`fuzz/README.md` publishes per-selector seed counts that the obvious command
   refutes.** The hand-built table gives `seeds/roundtrip/` 28 files as 7 documents x 4
   selectors, and `find seeds/roundtrip -name '*-01.json'` gives eight: an imported
@@ -1977,7 +1992,8 @@ documentation a previous fix falsified.
   paragraph explaining the publish flags introduced the tally variable instead.
   Split back apart, each above the line it describes.
 - **The CLI README never said that a recovery archive is plaintext, and neither did
-  `--archive` itself.** Three of the six committed READMEs carried the warning: the
+  `--archive` itself.** Three of the six READMEs committed at `0f759f6^` carried the
+  warning — the set is not fixed, and `df6a0fc` later added a seventh: the
   root README, `tokfold-core`'s and the npm launcher's all state that an archive is a
   `TKFD` header followed by the original bytes verbatim, and is therefore exactly as
   sensitive as the input it came from. The one README that actually documents

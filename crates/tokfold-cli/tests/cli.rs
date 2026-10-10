@@ -3100,9 +3100,12 @@ fn help_states_the_stream_and_exit_code_contract() {
 }
 
 /// An archive holds the input in the clear, and the surface where that matters is the
-/// one where a path is chosen: `compress --help`. Three of the six committed READMEs
-/// carried the "exactly as sensitive as its plaintext" warning and the one crate
-/// documenting `--archive` did not. Matched against the flattened screen, because clap re-wraps long help to the
+/// one where a path is chosen: `compress --help`. Three of the six READMEs committed at
+/// `0f759f6^` carried the "exactly as sensitive as its plaintext" warning — the root
+/// one, `tokfold-core`'s and the npm launcher's — and the one crate documenting
+/// `--archive` did not. The count is dated because the set moves: `df6a0fc` added a
+/// seventh README, and the CLI README now carries the warning too, in its own words.
+/// Matched against the flattened screen, because clap re-wraps long help to the
 /// terminal width and a phrase that sits on one line in the source need not sit on one
 /// here.
 #[test]
