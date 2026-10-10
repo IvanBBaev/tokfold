@@ -369,10 +369,16 @@ fn write_uleb128(mut value: u64, out: &mut Vec<u8>) {
 ///
 /// Rejects, all as [`DecompressError::Corrupt`]:
 ///
-/// * a varint that runs off the end of `archive`;
-/// * an overlong encoding (a trailing zero group that a canonical encoder omits);
-/// * a value that does not fit in `u64` (overflow), including one that fails to
-///   terminate within [`ULEB128_MAX_BYTES`] bytes.
+/// * a varint that runs off the end of `archive`, reported at the offset it could
+///   not read;
+/// * an overlong encoding (a trailing zero group that a canonical encoder omits),
+///   reported at that terminating zero byte;
+/// * a value that does not fit in `u64`, reported at the byte whose value bits
+///   would be shifted off the top;
+/// * a field that does not terminate within [`ULEB128_MAX_BYTES`] bytes, reported
+///   one past the field. This one is not an overflow and not a missing byte: ten
+///   `0x80` bytes carry no value bits at all, so nothing about them overflows, and
+///   the error is raised after the loop without reading the offset it names.
 fn read_uleb128(archive: &[u8], start: usize) -> Result<(u64, usize), DecompressError> {
     let mut result: u64 = 0;
     for i in 0..ULEB128_MAX_BYTES {
@@ -897,8 +903,11 @@ mod tests {
         // Tenth byte carries value bits above bit 63: overflow, reported at that byte.
         assert_eq!(corrupt_at(&nine_then(0x02)), Some(TENTH));
 
-        // Ten bytes that never clear the continuation bit and never overflow: the
-        // decoder needed an eleventh byte, so it reports one past the field.
+        // Ten bytes that never clear the continuation bit and never overflow: the loop
+        // spends all ten and the error is raised after it, at one past the field. No
+        // eleventh byte is read, and in these fixtures byte 20 is present (the first
+        // checksum byte) -- the offset is the width the field reached, not a byte the
+        // archive was missing.
         assert_eq!(corrupt_at(&nine_then(0x81)), Some(ONE_PAST));
         assert_eq!(corrupt_at(&nine_then(0x80)), Some(ONE_PAST));
 

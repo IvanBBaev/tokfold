@@ -733,6 +733,99 @@ released says so, and names what `0.0.1` does in the same case.
 
 ### Documentation
 
+- **A mechanism given for an offset, false at the one offset it was written about.**
+  `crates/tokfold-cli/README.md`'s *Reading `archive corrupted at byte N`* closed with
+  "An offset at or past the end of the file means the decoder needed a byte the archive
+  does not have". Byte 20 is where that parts company with the code, and byte 20 is the
+  offset the same section's own sentence about a non-terminating length field names.
+  `read_uleb128` raises `Corrupt { byte_offset: start + ULEB128_MAX_BYTES }` *after* the
+  loop, having read all ten bytes of the field and asked for nothing further; it never
+  reads the offset it reports. On a 20-byte archive that offset happens to be the end of
+  the file, which is why the sentence read true for weeks. Measured on 2026-10-10
+  against `target/debug/tokfold` (`cargo build -p tokfold-cli`): a 20-byte archive whose
+  length field is ten `0x80` bytes exits `3` with `archive corrupted at byte 20`, and the
+  same ten bytes followed by twenty more -- a 40-byte file -- report byte 20 as well,
+  well inside it. The README now gives the mechanism as the field reaching its maximum
+  width, with that pair as the derivation, and keeps "a position in the format, not an
+  index into your file".
+- **The same framing in two more places, one of them filing non-termination under
+  overflow.** `read_uleb128`'s rustdoc listed three rejections and put a field that never
+  terminates among "a value that does not fit in `u64`". Ten `0x80` bytes carry no value
+  bits at all -- the value under them is `0`, which fits perfectly -- so nothing about
+  them overflows and the overflow arm (`payload > (u64::MAX >> shift)`) never fires. The
+  rustdoc now lists four rejections, each with the offset it reports: the missing byte at
+  the offset it could not read, the overlong terminator at that zero byte, the overflow at
+  the byte whose value bits would be shifted off the top, and non-termination one past the
+  field, flagged as neither an overflow nor a missing byte. And the comment over
+  `leb128_overflow_rejected`'s two `ONE_PAST` fixtures said "the decoder needed an
+  eleventh byte, so it reports one past the field" -- in that very fixture byte 20 is
+  present, as the first of the 32 checksum bytes `archive_with_len_bytes` appends to a
+  52-byte file. The comment now states the width mechanism and says byte 20 is there.
+- **A quoted output line, wrong in its whitespace at three sites.** `tokfold stats` pads
+  every label to `STATS_LABEL_WIDTH` (20) columns, so a value opens at column 21 and never
+  after a single space. Three documents quoted the row as `encoder: passthrough (id 0)`:
+  the CLI README's `--archive` passage on telling a passthrough win from a rejection, and
+  two `[Unreleased]` entries here, both in this section -- the one on `compress --help`
+  crediting the archive deletion to the wrong outcome, and the one on the README's
+  `--archive` section never saying that a passthrough win is a success. None of the three
+  is history: `git log -S` places `STATS_LABEL_WIDTH: usize = 20` in the initial commit
+  `9e1e1f5`, so the report has never printed what they quote, and the two entries were
+  false on the day they were written. All three now describe the value of the `encoder:`
+  row instead of quoting a row, and the README names the column.
+- **An exclusivity claim about one error kind where two apply.** The CLI README's
+  `compress` bullet failed the command on "any I/O error other than a reader closing the
+  pipe early". `is_reader_gone` is
+  `matches!(kind, io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset)`, so the
+  exemption is two kinds, and the second is how a platform reports a socket peer's reset.
+  `crates/tokfold-cli/src/main.rs` carried the single-kind version in two rustdocs as well
+  -- the crate-root module doc and `cmd_compress` -- and all three now name the pair, the
+  rustdocs through an intra-doc link to `is_reader_gone` so a change to the set is visible
+  from them.
+- **"A stale archive left at `--archive` by an earlier run, and only such an archive"
+  named an intent, not the condition.** What a rejected pass clears is any file at that
+  path whose first four bytes are the `TKFD` magic: an earlier run's archive, a damaged
+  one, or an unrelated file that happens to open with those bytes. Nothing on that path
+  reads the name, so the sibling claim in the same README -- "`compress --archive
+  notes.md` on a rejected input does not touch `notes.md`" -- held for the extension and
+  not for the file. Both now state the condition on the bytes, and the second says the
+  extension is not what spares it.
+- **"Every failure names the file (or standard input) it read" was a claim about the
+  output write too.** The `expand` bullet's promise holds for the decoding failures it was
+  written about; a failure writing the reconstructed document has no input to name and
+  names the stream, exiting `2`. Narrowed to decoding failures, with the output-write case
+  stated beside it.
+- **"`stats` exits `2` with the same explanation" shared the engine's text, not the
+  line.** Both commands render the same `CompressError`, behind different prefixes:
+  `compress` prints `tokfold: passing input through uncompressed: {err}` and `stats`
+  prints `tokfold: cannot compute stats: {err}`. *The size ceiling is 16 MiB, and reaching
+  it is quiet* now says the explanation is the same and the line it sits on is not, and
+  names both prefixes.
+- **A refusal's reason, given as the hazard instead of the check.** The README said a
+  `--archive` file carrying the magic behind a descriptor spelling "is refused with exit
+  `2` and no output, because it would survive and still verify". That is why refusing is
+  the right answer, not what the check reached: on macOS the path names a descriptor
+  rather than a file, so there is no name to unlink and the archive cannot be removed,
+  which is what stderr says. Stated as the check, with the hazard kept as the reason --
+  the distinction the same-file refusals of commit `0f759f6` already draw, where a guard
+  states the rule it checked (`the archive may not be aimed at its own input`) rather than
+  an outcome it did not wait for.
+- **One outcome documented for a case that has two.** The README's account of a read-only
+  spelling named as its own archive said `--input /dev/stdin --archive /dev/stdin <
+  log.json` "reads the input and then fails at the archive write with the platform's
+  `Permission denied`". That is one of two branches, and the other never reaches the write
+  the sentence is about. Measured on 2026-10-10 against `target/debug/tokfold`: an input
+  the engine accepts exits `2` with
+  `tokfold: writing archive to /dev/stdin: Permission denied (os error 13)`, while a
+  rejected one exits `0`, reports `left /dev/stdin untouched: it cannot be opened for
+  writing` and `no recovery archive written`, and never attempts it. Both branches are now
+  stated, with which of them reaches the archive.
+- **`tokfold stats` stood bare in a list of complete command lines.** The enumeration of
+  what is refused when standard output is redirected into its own input reads
+  `tokfold compress -i log.json >> log.json`, `tokfold expand < a.tkfd >> a.tkfd`,
+  `tokfold stats` and `tokfold mcp < requests >> requests`: three members carry the
+  redirect that makes them dangerous and one carries none, leaving the only command a
+  reader cannot try as written. It is now `tokfold stats < notes.txt >> notes.txt`, the
+  spelling the section's own `0.0.1` comparison already uses.
 - **A rule about the request id's cost, false against the parenthetical that followed
   it.** `crates/tokfold-mcp/README.md`'s *Limits* said the reply to a declined
   `tokfold_compress` "is 338 bytes plus twice the text for a one-digit request id" and
@@ -1326,7 +1419,8 @@ documentation a previous fix falsified.
 - **`compress --help` credited the archive deletion to the wrong outcome.** It said
   "a pass that falls back to passthrough deletes what is there" — but the passthrough
   *encoder* winning is a success, and a successful pass **writes** an archive;
-  `tokfold stats` prints `encoder: passthrough (id 0)` for exactly that case. Only an
+  `tokfold stats` reports `passthrough (id 0)` as the value of its `encoder:` row for
+  exactly that case. Only an
   input the engine *rejects* deletes. A reader whose input took the passthrough
   encoder would have expected an empty slot and found a valid archive from that same
   run (43 header bytes plus the input: 50 for a 7-byte input). Both READMEs and the crate rustdoc already said "rejects"; only the
@@ -1346,8 +1440,8 @@ documentation a previous fix falsified.
   pass overwrites" and "a pass the engine rejects deletes" and left the reader to
   work out for themselves which of those a passthrough selection is — and the help
   screen is the evidence that a reader does not. The section now says so outright,
-  including how to tell the two apart from outside: `stats` prints
-  `encoder: passthrough (id 0)` for the first and exits `2` on the second.
+  including how to tell the two apart from outside: `stats` reports `passthrough (id 0)`
+  as the value of its `encoder:` row for the first and exits `2` on the second.
 - **The exit-code line on the `compress` help screen contradicted the binary.** It
   read "2 bad input or usage", and it is appended to `compress`, where a rejected
   input exits `0` and forwards the bytes unchanged. `2` covers usage, I/O, and an
@@ -2805,6 +2899,30 @@ documentation a previous fix falsified.
 
 ### Tests
 
+- `every_stats_row_begins_its_value_at_column_21` pins the layout three documents quoted
+  wrongly. `stats_reports_the_expected_fields` asks only whether each of the eight labels
+  appears in the report, which stays true at any spacing, so nothing could have caught a
+  quotation that lost twelve spaces. The new test reads the report for
+  `--profile conservative` over the existing `COMPRESSIBLE_JSON` fixture -- the cheapest
+  input that renders `passthrough (id 0)` -- asserts the row count, and for every row
+  asserts that the label column holds the whole label, that it ends in a space and that
+  the value does not begin with one. It then compares the row the CLI README and two
+  `[Unreleased]` entries quote, verbatim and whole, against the report; a `find` on that
+  literal guards the test's own copy of it, so a space lost from the fixture fails rather
+  than weakening the comparison.
+- `stats_rejects_invalid_json_with_exit_2` now asserts that stderr starts with
+  `tokfold: cannot compute stats: `. The documented pair of prefixes rested on one half:
+  `compress`'s `tokfold: passing input through uncompressed:` is held at four sites in
+  this suite and `stats`'s own prefix was held by none, so a change to it would have left
+  every test green while the README sentence that names both went false.
+- `expand_names_the_corrupt_offsets_the_readme_quotes` gains an eleventh row, a length
+  field of ten `0x80` bytes reported at byte 20. Its ten rows already held the other
+  spelling of a non-terminating field, nine `0x80` bytes and a `0x81`, but not the one
+  every corrected document now argues from: a `0x81` carries a value bit, while ten `0x80`
+  bytes carry none at all, which is what shows the rejection to be about the field's width
+  rather than an overflow. The fixture is 65 bytes, so byte 20 is present in it -- the
+  first checksum byte -- and the row is a check of the mechanism and not only of the
+  number.
 - `mcp_prints_the_experimental_notice_and_exits_zero_on_empty_input` compares the whole
   of stderr with `tokfold_mcp::EXPERIMENTAL_NOTICE` plus the one newline the CLI
   appends, where it matched `contains("EXPERIMENTAL")`. The claim it is named after

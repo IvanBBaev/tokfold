@@ -260,7 +260,7 @@ fn expand_names_the_corrupt_offsets_the_readme_quotes() {
         bytes
     };
 
-    let cases: [(&str, Vec<u8>, usize); 10] = [
+    let cases: [(&str, Vec<u8>, usize); 11] = [
         ("cut to 20 bytes", good[..20].to_vec(), 11),
         ("cut to 43 bytes", good[..43].to_vec(), 10),
         ("version 0", version_zero, 4),
@@ -271,6 +271,10 @@ fn expand_names_the_corrupt_offsets_the_readme_quotes() {
         ("overlong length", spliced_length(&[0x8D, 0x00]), 11),
         ("nine 0x80 and a 0x82", tenth(0x82), 19),
         ("nine 0x80 and a 0x81", tenth(0x81), 20),
+        // The archive the README's byte-20 paragraph is written about. Byte 20 is
+        // present here -- it is the first checksum byte of a 65-byte file -- so the
+        // offset is the width the length field reached, not a byte that is missing.
+        ("ten 0x80", tenth(0x80), 20),
         ("ten 0xFF", spliced_length(&[0xFF; 10]), 19),
     ];
     for (name, bytes, offset) in cases {
@@ -362,6 +366,13 @@ fn stats_rejects_invalid_json_with_exit_2() {
     assert!(
         out.stdout.is_empty(),
         "stats must not emit a report on error"
+    );
+    // `compress` and `stats` render the same engine error behind different prefixes.
+    // Only `compress`'s was held by a test, so the documented pair rested on one half.
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.starts_with("tokfold: cannot compute stats: "),
+        "stats must name its own step: {stderr}"
     );
 }
 
@@ -476,6 +487,46 @@ fn stats_report(profile: &str, input: &[u8]) -> String {
         String::from_utf8_lossy(&out.stderr)
     );
     String::from_utf8(out.stdout).expect("stats report is utf-8")
+}
+
+/// Three documents quoted an `encoder:` row with a single space before its value. The
+/// report prints no such row: every label is padded to a fixed column, so the value
+/// begins at column 21. Nothing could catch that -- `stats_reports_the_expected_fields`
+/// asks only whether each label appears, which stays true at any spacing -- so this
+/// pins the column for every row, and the whole row in the spelling the docs quote.
+#[test]
+fn every_stats_row_begins_its_value_at_column_21() {
+    const VALUE_COLUMN: usize = 20;
+    let report = stats_report("conservative", COMPRESSIBLE_JSON);
+    assert_eq!(report.lines().count(), 8, "the stats report lost a row");
+    for line in report.lines() {
+        assert!(
+            line.len() > VALUE_COLUMN,
+            "a row shorter than the label column: {line:?}"
+        );
+        let (label, value) = line.split_at(VALUE_COLUMN);
+        assert!(
+            label.trim_end().ends_with(':'),
+            "the label column must hold the whole label: {line:?}"
+        );
+        assert!(
+            label.ends_with(' ') && !value.starts_with(' '),
+            "the label is padded and the value opens the next column: {line:?}"
+        );
+    }
+
+    // The row the CLI README and two CHANGELOG entries quote, verbatim. The first
+    // assertion catches a space lost from this quotation itself.
+    let quoted = "encoder:            passthrough (id 0)";
+    assert_eq!(
+        quoted.find("passthrough"),
+        Some(VALUE_COLUMN),
+        "this quotation lost a space"
+    );
+    assert!(
+        report.lines().any(|line| line == quoted),
+        "the quoted row is not what the report prints: {report}"
+    );
 }
 
 /// The `--profile` flag has to reach the engine, and the report has to name the

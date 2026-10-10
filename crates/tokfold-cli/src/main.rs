@@ -15,9 +15,9 @@
 //!   was found and reported on stderr. Clearing the slot can still fail the command: if the
 //!   slot cannot be inspected or cleared, nothing is emitted and the exit
 //!   is `2`, the same rule as a failed archive write. It is not the only thing that
-//!   can — writing the passthrough to stdout can too, on any I/O error that is not a
-//!   reader closing the pipe early. What survives a `CompressError` is the *payload*,
-//!   not the command.
+//!   can — writing the passthrough to stdout can too, on any I/O error that does not
+//!   mean the reader has gone, which is two kinds and not one: see [`is_reader_gone`].
+//!   What survives a `CompressError` is the *payload*, not the command.
 //! * `expand` — reconstruct the exact original from a recovery archive. Fail-closed:
 //!   any integrity error exits `3` and emits nothing.
 //! * `stats` — report what a compression pass would achieve, without emitting the
@@ -273,8 +273,9 @@ fn run(cli: &Cli) -> Result<ExitCode> {
 /// than shipping it uncompressed. What a `CompressError` cannot fail is the payload;
 /// it can still fail the command. [`clear_stale_archive`] runs before the passthrough
 /// is written, so a slot that cannot be inspected or cleared exits `2` and emits
-/// nothing, and [`write_stdout`] itself returns an error for any I/O failure that is
-/// not a reader closing the pipe early. The stderr line that announces the
+/// nothing, and [`write_stdout`] itself returns an error for any I/O failure that
+/// does not mean the reader has gone — the two kinds [`is_reader_gone`] names, not
+/// the pipe case alone. The stderr line that announces the
 /// passthrough is written only after the passthrough write has returned, so a run
 /// that exits `2` never claims one; its error carries the rejection reason instead.
 /// A reader that closed early counts as a returned write, so the announcement can
