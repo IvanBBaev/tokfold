@@ -398,8 +398,11 @@ They are listed so that nobody mistakes them for undiscovered defects.
     glibc 2.39) the measurement was narrower: descriptors 3 and 4 were found closed,
     which is not the same claim as "only 0–2 reach it".
 
-  All of these are documented in the header comments of `npm/tokfold/bin/tokfold`
-  and, at more length, in `npm/tokfold/README.md` under *Exit codes*.
+  All four are in the header comments of `npm/tokfold/bin/tokfold`. Three of them
+  are also in `npm/tokfold/README.md` under *Exit codes*, at more length. The
+  descriptor one is not an exit-code matter and is not in that section: it is under
+  *The `--archive` path belongs to tokfold* there, which is also where the paths it
+  affects are described.
 - **The npm launcher can hang after the binary has exited, on Node 18 under macOS.**
   `npm/tokfold/bin/tokfold` labels this "Known issue, not fixed", so it belongs on
   this list. One measurement on macOS arm64 with Node v18.20.8 saw 32 of 300

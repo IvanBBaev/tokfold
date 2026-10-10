@@ -32,10 +32,16 @@
 //! because the offset is taken modulo the archive length and so drops at least one
 //! byte. The assertions read the bytes and not the arm, so a replacement that happens
 //! to equal what it overwrites counts as unchanged too. What that buys is `Ok`.
-//! Arbitrary bytes reach every *rejection*, `ChecksumMismatch` among them — measured
-//! 2026-09-30 from a hand-built header over a zeroed digest, and from all 255
-//! single-byte rewrites of a seed's last payload byte — but reaching an accepted
-//! archive asks the fuzzer for a correct SHA-256 of its own payload. It also makes the
+//! Arbitrary bytes reach every *rejection* `decompress` can return — `BadMagic`,
+//! `UnsupportedVersion`, `Corrupt`, `ChecksumMismatch` and `ReservedBitsSet`, one
+//! hand-built fixture each in
+//! `every_decompress_rejection_is_reachable_from_hand_built_bytes` in the crate's own
+//! suite, none of them produced by calling `compress` — but reaching an accepted
+//! archive asks the fuzzer for a correct SHA-256 of its own payload, which that test
+//! pins from the other side: the same framing over the recorded digest is accepted.
+//! Its `match` is exhaustive over a `#[non_exhaustive]` enum, which binds other
+//! crates and not the one declaring it, so a sixth variant stops it compiling instead
+//! of leaving this sentence wider than its fixtures. The second half also makes the
 //! fail-closed invariant checkable against a known original in one direction: an edit
 //! that changed no byte must be accepted, so a rejection proves the bytes differ from
 //! the ones `compress` wrote.

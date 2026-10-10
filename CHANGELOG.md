@@ -733,6 +733,65 @@ released says so, and names what `0.0.1` does in the same case.
 
 ### Documentation
 
+- **A cross-document pointer naming a section that holds three of the four things it
+  covers.** `docs/threat-model.md` closed its four npm-launcher signal findings with
+  "All of these are documented in the header comments of `npm/tokfold/bin/tokfold` and,
+  at more length, in `npm/tokfold/README.md` under *Exit codes*". The header half holds
+  for all four. The README half does not: the descriptor finding -- that on macOS only
+  fds 0, 1 and 2 reach the binary, so `--archive /dev/fd/3` fails with `Bad file
+  descriptor` -- is in that README under *The `--archive` path belongs to tokfold*,
+  because it is not an exit-code matter, and a reader sent to *Exit codes* for it finds
+  nothing. The sentence now says which three are there and where the fourth is. Naming a
+  section is narrower than naming a file and fails in a way naming the file would not:
+  the text can be correct, present and complete and the pointer still wrong, so a
+  pointer carries its own heading as a claim.
+
+- **A category claim over five variants whose one cited measurement came from the half
+  it was arguing against.** `fuzz/README.md` and the `decompress` target's module doc
+  said arbitrary bytes reach every rejection `decompress` can return and named
+  `ChecksumMismatch` as the interesting member, citing a hand-built header over a zeroed
+  digest and a sweep of single-byte rewrites of an archive `compress` wrote -- which is
+  the target's second half, the half the sentence exists to say is not needed for
+  rejections. Both sites now enumerate the five variants, name the test that holds one
+  fixture each, and state the compile-time tripwire, so the prose cannot stay wider than
+  its fixtures. The two dated measurements are gone, and so is the clause "as the
+  target's module doc records": a description of another document is falsified by fixing
+  that document, and this one would have gone stale in the same edit.
+
+- **A property doc asserting a generator reach the generator did not have.** The claim
+  that the base64 alphabet reaches every rejection path covered four members and held
+  for three; the fourth was reached 68 times in 100 000 draws. Both base64 property docs
+  now point at the liveness test that counts each outcome and say what the rates were
+  measured to be, the one whose assertion lives inside `if let Ok(decoded)` says so, and
+  the alphabet is a named constant for the reason `ARBITRARY_LINE` already is -- a
+  liveness check certifies a strategy, and certifying a different regex certifies
+  nothing. The reach is a proportion, not a possibility: every one of these four paths
+  was *reachable* in principle before the change, which is why the sentence read as true
+  for as long as nobody counted.
+
+- **A changelog entry written from the working tree instead of from the commit it
+  describes.** The `### Tests` entry replaced in this release asserted that a test
+  assertion was new; `git log -S` refutes it, and `168d55d`'s own commit message carries
+  the same overstatement for the same reason. This changelog has previously been swept
+  for exactly this shape — entries written against intermediate, unreleased text — and
+  the sweep was followed by an entry written the same way. The commit is not amended:
+  the overstatement stays in the history where it can be checked against this
+  correction. **A changelog entry is a claim about a commit, so read the commit: `git
+  show <hash>:<file>`, never the tree you are standing in.**
+
+- **`MEASURED_OVER_CLAIM_BPS`'s coverage sentence claimed a test reached a profile the
+  test cannot build.** "pins the table and this paragraph, including which rows keep E1
+  at the bar" covered two sentences about the default `Profile::Balanced`, while every
+  config in that test came from a Conservative-only helper. The sentence now says which
+  claims the plateau test holds, says that it builds its configs through one
+  Conservative helper and therefore cannot reach the default-profile sentences, and
+  names the test that does. The Balanced claim itself was measured true before being
+  pinned, and sharpened while it was: the margin is weighed against each candidate
+  separately, so "the margin weighs E2's saving, not E1's" now reads as what was
+  measured — a bar that refuses every saving in the table's row band still keeps that
+  shape compressed, on E2's. **A test named in a coverage sentence is a claim about what
+  its inputs reach.**
+
 - **`b086731`'s cross-reference sweep was scoped to the five documents it opened, and
   published its count without that scope.** Its entry says "Thirteen cross-references
   identified their target by position alone" — a sentence with no scope in it, and so a
@@ -2617,24 +2676,91 @@ documentation a previous fix falsified.
 
 ### Tests
 
+- `every_decompress_rejection_is_reachable_from_hand_built_bytes` is new.
+  `fuzz/README.md` and the `decompress` fuzz target's module doc both rested on one
+  sentence -- that arbitrary bytes reach every rejection the reader can return, so the
+  target's second half, which edits an archive `compress` really wrote, buys an accepted
+  archive and no rejection the first half cannot reach. That is a category claim over
+  the five `DecompressError` variants, and the evidence cited for it was a dated hand
+  measurement plus a sweep of 255 single-byte rewrites of an archive `compress` wrote --
+  drawn from the very half the sentence argues is unnecessary. Every test in this crate
+  that reaches `ChecksumMismatch` starts from `compress`, and `format`'s four rejection
+  tests stop at `Header::decode` without reaching `Compressor::decompress`, so nothing
+  pinned the category and a sixth variant would have falsified the sentence silently.
+  One hand-built fixture per variant now holds it, not one of them calling `compress`,
+  and the same framing over the digest it records is asserted to be *accepted* -- which
+  measures which direction the digest costs instead of arguing it in prose. The `match`
+  is exhaustive over a `#[non_exhaustive]` enum, which binds other crates and not the
+  one declaring it, so a sixth variant stops the test compiling; an integration test
+  under `tests/` is downstream and could not hold that tripwire at all.
+
+- `the_generated_base64_reaches_every_decoder_outcome` is new, and a named
+  `arb_base64_text` replaces the inline regex that fed
+  `base64_decoding_arbitrary_text_never_panics`. That property's doc claimed its mixed
+  alphabet made the generator reach "every rejection path -- a bad length, an unknown
+  symbol, padding in the wrong place, and a final quartet whose discarded bits are set",
+  while its body asserts nothing at all and nothing measured the reach. Measured over
+  100 000 draws of the old alphabet: `BadLength` 74.3%, `BadSymbol` 12.8%,
+  `MisplacedPadding` 10.9% -- and `NonCanonical` 68 draws, an expected 0.17 hits over
+  proptest's default 256 cases, so roughly five runs in six exercised neither branch
+  that raises it. The liveness test already in this file records the lesson that "a
+  liveness check that a 0.07% hit rate satisfies certifies nothing"; this is that rate,
+  one property away. Two arms now build a padded tail on purpose -- nought to three
+  clean quartets, then the characters and padding that reach both `NonCanonical`
+  branches -- which over 20 000 draws gives accepted 4.7%, `BadLength` 55.9%,
+  `BadSymbol` 9.8%, `MisplacedPadding` 7.9%, `NonCanonical` 21.8%, and the floors
+  asserted are proportions well under those. Reverting the strategy to the old alphabet
+  alone turns the new test red. It also pins
+  `base64_accepts_only_the_canonical_spelling`, whose whole assertion sits inside `if
+  let Ok(decoded)` -- the arm a property dies of -- and which decoded 645 of 20 000
+  draws.
+
+- `the_default_profile_sends_the_row_array_to_e2_and_weighs_its_saving` is new. The
+  `MEASURED_OVER_CLAIM_BPS` doc ends its argument with two sentences about the *default*
+  profile — that `Profile::Balanced` sends the array-of-rows shape to E2 rather than E1,
+  and that the margin then rests on E2's saving — and said in the next breath that
+  `the_600_bps_bar_sits_just_above_the_flat_object_plateau` "pins the table and this
+  paragraph". That test cannot reach either sentence: every config it builds goes
+  through one helper that was hard-wired to `Profile::Conservative`, and `Balanced` and
+  `E2_TABULAR` appeared nowhere in the module but the prose. The helper now takes the
+  profile and the Conservative wrapper calls it, so the table keeps being measured
+  exactly as it was spelled.
+
+  The bar the module is named for cannot distinguish the two halves — 6.00 pp is below
+  both encoders' savings on this shape — so the test derives one that can. E1 claims the
+  table's 13.1%–16.0% band here and E2 claims 49.1%–56.2%, so 2 000 bps (20.00 pp) is
+  above every saving E1 can offer on this shape and below every saving E2 can. The gate
+  is applied per candidate, so at that bar E1 is refused under either profile:
+  `Conservative`, which enables nothing else, falls back to passthrough, while
+  `Balanced` keeps the shape on E2's saving alone. Both outcomes are asserted at 10, 200
+  and 2 000 rows, and both window edges are load-bearing — at 600 bps the passthrough
+  assertion fails because E1 still wins, at 6 000 the E2 assertion fails because the
+  winner is refused too. **A measurement carries its configuration**, and the one
+  sentence in that paragraph written about another configuration had nothing behind it.
+
 Defects in the suites themselves that no passing run could have shown — each
 established by mutation or by measurement before it was fixed, and re-established the
 same way afterwards — followed by the tests that pin this entry's fixes.
 
-- **`the_600_bps_bar_sits_just_above_the_flat_object_plateau` measured against a
-  constant it never read.** Every figure in it — the plateau band it spells to one
-  decimal, the rows that keep E1, the rows that fall back to passthrough — was measured
-  with `MEASURED_OVER_CLAIM_BPS` at 600, and the test reads the constant into `bar` and
-  passes it to `claimed` without ever asserting what it is. Changing the constant
-  re-measures the whole test: the assertions keep passing against the new value while
-  the bands and the "6.00 pp bar" they spell stop being about the bar the test names.
-  One `assert_eq!(bar, 600, …)` now holds it. **A number in a message is a claim**, and
-  nothing held the 600 these claims are about. Adding the line also located a boundary
-  worth knowing: written the way rustfmt writes an `assert_eq!` whose arguments exceed
-  `fn_call_width`, across four lines, it put the body at 101 lines and
-  `clippy::too_many_lines` failed the gate at `-D warnings` (100 allowed). The pin is
-  one line instead, which leaves the body at 98 — this test has room for two more lines
-  and then it has to be split.
+- **The entry that stood here claimed a pin that has existed since `0f759f6`.** It read
+  that `the_600_bps_bar_sits_just_above_the_flat_object_plateau` "measured against a
+  constant it never read" and that "one `assert_eq!(bar, 600, …)` now holds it". The
+  assertion was already there: `git log -S 'assert_eq!(bar, 600' --
+  crates/tokfold-core/src/estimator.rs` returns `0f759f6` and nothing else, `git show
+  0f759f6^:crates/tokfold-core/src/estimator.rs` does not contain it, and `git show
+  b086731:crates/tokfold-core/src/estimator.rs` carries it with the message "the numbers
+  below were measured against 600 bps". What `168d55d` changed is that message, because
+  "below" was one of the fifty-one cross-reference sites it fixed — so the change
+  belongs to that sweep, which already records it, and nothing was newly pinned.
+
+  The `clippy::too_many_lines` boundary the entry reported is real, and its cause was
+  not a new line. The reworded message pushed the `assert_eq!` past rustfmt's
+  `fn_call_width` of 60, rustfmt wrote the call across four lines, and those three extra
+  lines put the body at 101 against the 100 that `-D warnings` allows. The message fits
+  on one line again, and the headroom is measured rather than inferred: appending two
+  statements to the body leaves clippy silent, appending three reports `this function
+  has too many lines (101/100)`. So the body stands at 98, and this test has room for
+  exactly two more lines before it has to be split.
 
 - `a_directory_at_the_archive_path_of_a_rejected_pass_costs_the_passthrough` is new. It
   pins the member of "not a regular file" that costs the caller their document: a

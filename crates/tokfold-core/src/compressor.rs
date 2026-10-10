@@ -1637,6 +1637,99 @@ mod tests {
         );
     }
 
+    /// Pins the category claim `fuzz/README.md` and the `decompress` fuzz target
+    /// both rest on: every rejection a reader can return is reachable from bytes a
+    /// fuzzer could emit, so the target's second half — editing an archive
+    /// `compress` really wrote — buys an accepted archive and no rejection the first
+    /// half cannot reach.
+    ///
+    /// Nothing here calls `compress`. That is the whole point: every other test in
+    /// this crate that reaches `ChecksumMismatch` starts from an archive `compress`
+    /// wrote and then edits it, which is the second half, and the sentence those two
+    /// documents state is about the first. A mismatching digest is the cheap
+    /// direction — a zeroed checksum field over a payload of the recorded length
+    /// reaches it — while an *accepted* archive is what asks the fuzzer for a correct
+    /// SHA-256 of its own payload. The last assertion hands the same framing exactly
+    /// that, and gets the payload back, so which direction the digest costs is
+    /// measured here rather than argued in the two documents.
+    ///
+    /// The `match` is exhaustive on purpose. `DecompressError` is
+    /// `#[non_exhaustive]`, which binds other crates and not this one, so a sixth
+    /// variant stops this test compiling until it is given a fixture here — or until
+    /// the prose in those two files is narrowed to the variants that do have one.
+    #[test]
+    fn every_decompress_rejection_is_reachable_from_hand_built_bytes() {
+        fn label(err: &DecompressError) -> &'static str {
+            match err {
+                DecompressError::BadMagic => "BadMagic",
+                DecompressError::UnsupportedVersion { .. } => "UnsupportedVersion",
+                DecompressError::Corrupt { .. } => "Corrupt",
+                DecompressError::ChecksumMismatch => "ChecksumMismatch",
+                DecompressError::ReservedBitsSet => "ReservedBitsSet",
+            }
+        }
+
+        /// A header as `format` lays it out, followed by a payload of the length it
+        /// records — assembled from the two public pieces, never from `compress`.
+        fn hand_built(payload: &[u8], checksum: [u8; 32]) -> Vec<u8> {
+            let mut bytes = Vec::new();
+            let len = u64::try_from(payload.len()).unwrap();
+            Header::new(0, 0, Flags::default(), len, checksum).encode_into(&mut bytes);
+            bytes.extend_from_slice(payload);
+            bytes
+        }
+
+        // Framing this build accepts, over a digest it cannot: the only thing wrong
+        // with these bytes is the checksum.
+        const PAYLOAD: &[u8] = br#"{"a":1}"#;
+        let bad_digest = hand_built(PAYLOAD, [0u8; 32]);
+
+        let version = format::MAGIC.len();
+        let mut version_zero = bad_digest.clone();
+        version_zero[version] = 0;
+        let mut version_two = bad_digest.clone();
+        version_two[version] = 2;
+        let mut reserved = bad_digest.clone();
+        reserved[FLAGS_OFFSET] |= 0b0000_1000;
+
+        let fixtures = [
+            ("BadMagic", b"XXXX and then some bytes".to_vec()),
+            ("UnsupportedVersion", version_two),
+            ("Corrupt", version_zero),
+            ("ChecksumMismatch", bad_digest),
+            ("ReservedBitsSet", reserved),
+        ];
+
+        let mut reached = Vec::new();
+        for (expected, bytes) in &fixtures {
+            let err = compressor()
+                .decompress(bytes)
+                .expect_err("hand-built bytes must be refused");
+            assert_eq!(
+                label(&err),
+                *expected,
+                "the fixture written for {expected} reached {err:?}"
+            );
+            reached.push(label(&err));
+        }
+        reached.sort_unstable();
+        reached.dedup();
+        assert_eq!(
+            reached.len(),
+            fixtures.len(),
+            "two fixtures reached the same variant, so one variant has none: {reached:?}"
+        );
+
+        // The same framing over the digest it records is *accepted*. That is what
+        // makes the mismatch the cheap direction and pins which way the digest
+        // costs: `Ok` is the outcome that asks for a correct SHA-256 of the payload,
+        // and a wrong one is free.
+        let accepted = compressor()
+            .decompress(&hand_built(PAYLOAD, format::sha256(PAYLOAD)))
+            .expect("hand-built framing over the recorded digest must be accepted");
+        assert_eq!(accepted.as_slice(), PAYLOAD);
+    }
+
     /// A *well-formed* ten-byte length field is not a varint fault: nine continuation
     /// bytes and a `0x01` decode to 2^63, and what refuses the archive is the length
     /// gate in `decompress`, at `ORIGINAL_LEN_OFFSET`. The rustdoc on

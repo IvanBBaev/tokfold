@@ -56,6 +56,38 @@ fn arb_framed_body() -> impl Strategy<Value = String> {
     ]
 }
 
+/// The alphabet [`base64_decoding_arbitrary_text_never_panics`] draws its junk from.
+///
+/// Named rather than inlined for the same reason as [`ARBITRARY_LINE`]: the liveness
+/// check certifies a strategy, and certifying a *different* regex would certify
+/// nothing. Characters outside the standard alphabet (`!`, `\u{00e9}`, a space) and a
+/// freely placed `=` are what make an unknown symbol and misplaced padding ordinary
+/// draws rather than lucky ones.
+const ARBITRARY_BASE64: &str = "[A-Za-z0-9+/=!\u{00e9} ]{0,64}";
+
+/// Text for [`base64_decoding_arbitrary_text_never_panics`]: mostly junk from the
+/// alphabet above, sometimes a quartet sequence built to carry padding.
+///
+/// Junk alone reaches three of the decoder's four rejections easily and the fourth
+/// almost never. `NonCanonical` needs a length that is a multiple of four, every
+/// earlier quartet clean, *and* a final padded group whose discarded bits are set --
+/// which the junk alphabet assembles by accident 68 times in 100 000 draws. At
+/// proptest's default 256 cases that is an expected 0.17 hits, so most runs decoded no
+/// non-canonical tail at all while the property's doc claimed the path was reached. The
+/// two padded arms build the tail on purpose -- nought to three clean quartets, then
+/// two or three alphabet characters and the padding that matches -- which reaches both
+/// of the branches that raise it: `b`'s low four bits under two pads, `c`'s low two
+/// under one. Only the proportions the strategy actually produces are a claim worth
+/// anything, and they are pinned by
+/// [`the_generated_base64_reaches_every_decoder_outcome`].
+fn arb_base64_text() -> impl Strategy<Value = String> {
+    prop_oneof![
+        6 => ARBITRARY_BASE64.prop_map(String::from),
+        1 => "([A-Za-z0-9+/]{4}){0,3}[A-Za-z0-9+/]{2}==".prop_map(String::from),
+        1 => "([A-Za-z0-9+/]{4}){0,3}[A-Za-z0-9+/]{3}=".prop_map(String::from),
+    ]
+}
+
 proptest! {
     /// The property the whole `tokfold_decompress` tool rests on: an archive is handed
     /// to a client as base64 and comes back as the same bytes.
@@ -68,11 +100,13 @@ proptest! {
 
     /// A decoder fed a peer's string must answer, not abort.
     ///
-    /// The alphabet is deliberately mixed with characters outside it, so the generator
-    /// reaches every rejection path — a bad length, an unknown symbol, padding in the
-    /// wrong place, and a final quartet whose discarded bits are set.
+    /// [`arb_base64_text`] mixes junk from outside the alphabet with tails built to be
+    /// padded, so each of the five outcomes the decoder has -- an accepted string and
+    /// all four rejections -- is an ordinary draw.
+    /// [`the_generated_base64_reaches_every_decoder_outcome`] holds it there, and says
+    /// what each rate was measured to be.
     #[test]
-    fn base64_decoding_arbitrary_text_never_panics(text in "[A-Za-z0-9+/=!\u{00e9} ]{0,64}") {
+    fn base64_decoding_arbitrary_text_never_panics(text in arb_base64_text()) {
         // The result is not asserted on: what is being tested is that there *is* one.
         let _ = base64::decode(&text);
     }
@@ -82,6 +116,11 @@ proptest! {
     /// Re-encoding what came out has to reproduce the input exactly. Without this, two
     /// distinct strings could decode to the same bytes, which is a malleability bug: an
     /// archive would have more than one valid spelling.
+    ///
+    /// The whole assertion sits inside `if let Ok(decoded)`, so a decoder that accepted
+    /// nothing would satisfy this completely;
+    /// [`the_generated_base64_reaches_every_decoder_outcome`] measures that arm rather
+    /// than assuming it.
     #[test]
     fn base64_accepts_only_the_canonical_spelling(text in "[A-Za-z0-9+/=]{0,64}") {
         if let Ok(decoded) = base64::decode(&text) {
@@ -533,5 +572,87 @@ fn the_generated_lines_reach_the_answers_the_properties_assert() {
          {floor} this test requires. Widen `arb_framed_body` towards requests whose \
          answers are large, or the property is testing the happy path under a name \
          that promises otherwise"
+    );
+}
+
+/// Generator liveness for the two base64 properties.
+///
+/// `base64_decoding_arbitrary_text_never_panics` claims its generator reaches every
+/// rejection path the decoder has, and `base64_accepts_only_the_canonical_spelling`
+/// states its whole assertion inside `if let Ok(decoded)` -- the arm a property dies
+/// of, since a decoder that accepted nothing would satisfy it completely. Neither was
+/// measured, and the claim was false for one member of the four it covers: against the
+/// junk alphabet alone, `NonCanonical` came up 68 times in 100 000 draws, an expected
+/// 0.17 hits over proptest's default 256 cases, so roughly five runs in six exercised
+/// neither branch that raises it. A category in a sentence is a claim about every
+/// member of it, so each member is counted here.
+///
+/// The `match` is exhaustive on purpose. `DecodeError` carries no `#[non_exhaustive]`,
+/// so a fifth rejection stops this test compiling until it is given a floor -- and
+/// until the two docs that enumerate four are widened to match.
+///
+/// A fixed seed (`TestRunner::deterministic`) keeps this a hard assertion rather than a
+/// flaky one. The floors are proportions, well under the rates measured over 20 000
+/// draws (accepted 4.7%, `BadLength` 55.9%, `BadSymbol` 9.8%, `MisplacedPadding` 7.9%,
+/// `NonCanonical` 21.8%) so that generator noise cannot trip them, and far above the
+/// 0.068% the old generator reached.
+#[test]
+fn the_generated_base64_reaches_every_decoder_outcome() {
+    use proptest::strategy::ValueTree;
+    use proptest::test_runner::TestRunner;
+    use tokfold_mcp::base64::DecodeError;
+
+    const DRAWS: usize = 2000;
+
+    let mut runner = TestRunner::deterministic();
+    let mut accepted = 0usize;
+    let mut bad_length = 0usize;
+    let mut bad_symbol = 0usize;
+    let mut misplaced = 0usize;
+    let mut non_canonical = 0usize;
+    let mut canonical_accepted = 0usize;
+
+    for _ in 0..DRAWS {
+        if let Ok(tree) = arb_base64_text().new_tree(&mut runner) {
+            match base64::decode(&tree.current()) {
+                Ok(_) => accepted += 1,
+                Err(DecodeError::BadLength) => bad_length += 1,
+                Err(DecodeError::BadSymbol) => bad_symbol += 1,
+                Err(DecodeError::MisplacedPadding) => misplaced += 1,
+                Err(DecodeError::NonCanonical) => non_canonical += 1,
+            }
+        }
+        // The neighbouring property draws from its own, narrower alphabet, and it is
+        // the `Ok` arm there that has to be reached for it to assert anything at all.
+        if let Ok(tree) = "[A-Za-z0-9+/=]{0,64}".new_tree(&mut runner) {
+            if base64::decode(&tree.current()).is_ok() {
+                canonical_accepted += 1;
+            }
+        }
+    }
+
+    let floor = DRAWS / 50;
+    for (name, count) in [
+        ("an accepted string", accepted),
+        ("BadLength", bad_length),
+        ("BadSymbol", bad_symbol),
+        ("MisplacedPadding", misplaced),
+        ("NonCanonical", non_canonical),
+    ] {
+        assert!(
+            count > floor,
+            "`arb_base64_text` barely reaches {name}: {count} of {DRAWS} draws, at or \
+             below the {floor} this test requires. Either widen the strategy or narrow \
+             the claim in `base64_decoding_arbitrary_text_never_panics`, which says \
+             every outcome is an ordinary draw"
+        );
+    }
+
+    let canonical_floor = DRAWS / 100;
+    assert!(
+        canonical_accepted > canonical_floor,
+        "base64_accepts_only_the_canonical_spelling is all but vacuous: {canonical_accepted} \
+         of {DRAWS} draws decoded at all, at or below the {canonical_floor} required, so \
+         the re-encoding it exists to check almost never runs"
     );
 }

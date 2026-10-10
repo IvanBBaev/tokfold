@@ -343,11 +343,19 @@ for a correct SHA-256 of its own payload.
 
 That is what the second half is for. It reads the same bytes as an edit to an archive
 `compress` really wrote, and what that buys is `Ok`: an accepted archive, which
-arbitrary bytes reach only by handing over a correct SHA-256 of their own payload. It
-does not buy a rejection arbitrary bytes cannot reach. They reach every rejection,
-`ChecksumMismatch` among them -- measured from a hand-built header over a zeroed
-digest and from all 255 single-byte rewrites of a seed's last payload byte, as the
-target's module doc records.
+arbitrary bytes reach only by handing over a correct SHA-256 of their own payload. It does not buy a rejection arbitrary bytes cannot reach. All five rejections
+`decompress` can return -- `BadMagic`, `UnsupportedVersion`, `Corrupt`,
+`ChecksumMismatch` and `ReservedBitsSet` -- have a hand-built fixture in
+`every_decompress_rejection_is_reachable_from_hand_built_bytes`, in the crate's own
+suite, and not one of them calls `compress`. `ChecksumMismatch` is the member worth
+naming, because it is the one the digest guards, and the same test pins which direction
+the digest costs: the mismatch is a zeroed checksum field over a payload of the recorded
+length, while the same framing over the recorded digest is accepted and hands the
+payload back. The sentence used to rest on two measurements instead, one of them a sweep
+of single-byte rewrites of an archive `compress` wrote -- which is this half, the one
+being argued about. The `match` in that test is exhaustive over a `#[non_exhaustive]`
+enum, which binds other crates and not the one declaring it, so a sixth variant stops it
+compiling rather than leaving this paragraph wider than its fixtures.
 
 Against a known original the fail-closed property is checkable in one direction: an
 edit that changed no byte must be accepted, so a rejection proves the bytes differ
