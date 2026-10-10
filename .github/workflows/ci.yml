@@ -619,18 +619,34 @@ jobs:
     # it is pinned to a dated build rather than the moving `nightly` channel, so
     # a red mark here is a finding in this repo and not upstream churn. The
     # weekly `nightly` job below is the one that tracks the moving channel. To
-    # bump: change the date here and in `fuzz/README.md`, and rebuild `fuzz/`
-    # locally first.
+    # bump: change both spellings in the step below, rebuild `fuzz/` locally
+    # first, and then change every occurrence in `fuzz/README.md` except the one
+    # under *Measured runs*, which records which toolchain those numbers came
+    # from and goes stale with them, not with this pin -- a replace-all over
+    # that file rewrites a measurement that was never re-run.
     #
     # `fuzz/` is its own workspace with its own `Cargo.lock` and is not a member
     # of the root one, so nothing else in this file compiles it. "Nothing here
     # depends on nightly except this job" would be false -- the `nightly` job
-    # below installs a nightly toolchain too. What holds is the narrower claim:
-    # no *required* check depends on nightly, since both jobs that use it are
-    # `continue-on-error` and neither runs on a pull request. cargo-fuzz 0.13.2 has no `--locked`
-    # option on `build`, `run` or `list`, so the lockfile is checked by the
-    # `cargo fetch --locked` step before any of them runs: a stale
-    # `fuzz/Cargo.lock` fails there instead of being re-resolved silently.
+    # below installs one too, the moving channel rather than this pinned date.
+    #
+    # The narrower claim -- that no check on the branch-protection list in this
+    # file's header depends on nightly -- holds, but not for the reason this
+    # comment used to give. It said "both jobs that use it are
+    # `continue-on-error` and neither runs on a pull request", and both halves
+    # are false of this job: `fuzz` carries no `continue-on-error`, on the job
+    # or on any step, so a crash here fails the run, and it has no job-level
+    # `if:`, so it runs on every pull request -- which the first paragraph above
+    # says in as many words. What makes the claim hold is the list itself:
+    # `fuzz` is deliberately absent from it (the header says why), and `nightly`
+    # is `continue-on-error: true` and runs only on the schedule or a manual
+    # run. The weaker fact behind both is that the list is a to-do: `main` is
+    # not protected today, so no check is required at all.
+    #
+    # cargo-fuzz 0.13.2 has no `--locked` option on `build`, `run` or `list`, so
+    # the lockfile is checked by the `cargo fetch --locked` step before any of
+    # them runs: a stale `fuzz/Cargo.lock` fails there instead of being
+    # re-resolved silently.
     #
     # `timeout-minutes` is the only one in this file, because this is the only
     # job whose work is open-ended by construction: `-max_total_time` bounds the

@@ -5,17 +5,24 @@
 
 This directory is its own Cargo workspace with its own `Cargo.lock`. It is **not** a
 member of the root workspace, so `cargo build`, `cargo test`, `cargo package
---workspace` and `cargo deny check` at the repository root never compile it, and
-no gate leg needs a nightly toolchain. "Nothing outside this directory" would be
-false: `ci.yml`'s `nightly` job installs `nightly-2026-09-28` and runs the
-workspace tests and clippy on it. That job is `continue-on-error`, runs only on a
-schedule or a manual dispatch, and is not a required check, so it gates nothing --
-but it is a use of nightly outside `fuzz/`, and the narrower claim is the true one.
+--workspace` and `cargo deny check` at the repository root never compile it. Two
+claims about nightly that would be convenient here are both false: "nothing outside
+this directory uses it" and "no job that can fail a run uses it". Two jobs in
+`ci.yml` install a nightly toolchain. `fuzz` installs the pinned
+`nightly-2026-09-28` and builds the targets in this directory; it runs on every
+trigger and carries no `continue-on-error`, on the job or on any step, so a crash
+here fails the run -- it is deliberately not on the branch-protection list in that
+file's header, which is where the header says the decision belongs. `nightly`
+installs the *moving* `nightly` channel, not the pinned date, and runs the workspace
+tests and clippy on it; it is `continue-on-error: true`, runs only on a schedule or
+a manual dispatch, and is not on that list either. What holds is the narrower claim:
+no check on `ci.yml`'s branch-protection list needs a nightly toolchain.
 
 ## Prerequisites
 
 - A nightly toolchain. cargo-fuzz builds with `-Zsanitizer=address` by default.
-  CI pins `nightly-2026-09-28`; any recent nightly should work locally.
+  CI's `fuzz` job pins `nightly-2026-09-28` (the `nightly` job pins nothing);
+  any recent nightly should work locally.
 - cargo-fuzz. CI installs 0.13.2:
 
   ```sh

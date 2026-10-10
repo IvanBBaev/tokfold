@@ -733,6 +733,87 @@ released says so, and names what `0.0.1` does in the same case.
 
 ### Documentation
 
+- **A feature's inertness argued from its default, in a README sentence the crate's
+  own tests contradict in both directions.** `README.md`'s *What is in v0.0.1* said
+  the opt-in `tiktoken` feature "embeds megabytes of BPE tables and is off by default,
+  so it never changes the archive format". The claim is true and the reason given for
+  it is not: being off by default is a statement about the default configuration, and
+  the claim is about what the feature does when it is on. What makes it hold is that
+  the v0.0.1 archive is always a passthrough recovery blob whose header hardcodes
+  `tokenizer_id = 0` and whose payload is the original bytes verbatim — the
+  estimator's id is reported out-of-band in `Stats`, never written into the header —
+  so the archive is byte-identical with the feature on, not merely identical in
+  layout.
+
+  The sentence also read as though enabling the feature were a no-op, which
+  `tokfold-core` has a test asserting it is not:
+  `exact_estimator_changes_encoder_selection_in_both_directions` pins a small
+  homogeneous array where the heuristic over-counts and picks E2 while both exact
+  tokenizers pass through, and a small pretty-printed config object where the
+  heuristic under-counts the indentation and passes through while both exact
+  tokenizers charge that whitespace and pick E1. Its sibling
+  `estimator_choice_does_not_change_recovery_archive` states the real reason in its
+  own rustdoc and disclaims, in as many words, the reading the README invited. The
+  bullet now carries both halves and names both fixtures.
+
+- **The CI badge was described by the two triggers that flatter it, and it carries no
+  filter.** `README.md` said "The one badge above is the CI badge: the workflow in
+  `.github/workflows/ci.yml` really does run on every pull request and on every push
+  to `main`, so that badge reflects a real result". Both facts are true and the
+  conclusion does not follow: `ci.yml` has four triggers, not two, and the badge URL
+  carries no `?event=` or `?branch=` filter, so it shows the newest run on `main`
+  whatever started it. On the weekly schedule every gate job is skipped by its own
+  `if: github.event_name != 'schedule'`, so the colour comes from the weekly jobs
+  alone -- and two of those three, `audit` and `release-test`, carry no
+  `continue-on-error`, so they can set it either way. Measured on the live repository:
+  the newest `ci.yml` run on `main` was #27, event `schedule`, 2026-10-05T13:18:44Z,
+  in which `audit`, `release-test` and `nightly` succeeded while `actionlint`, `fmt`,
+  `clippy`, `docs`, `doc-drift`, `deny`, `package`, `launcher` and `test` were all
+  skipped -- and `ci.yml/badge.svg` read `<title>ci - passing</title>` at that moment.
+  The bullet now says what a green badge does and does not mean, and names
+  `?event=push` as the narrowing that is not set. Whether to set it is a presentation
+  decision and is left alone here. A badge is a claim, and the runs it is a claim
+  about are the ones its URL selects, not the ones the workflow file makes
+  interesting.
+
+- **A reason given for a claim, false in both halves, inside the comment the claim's
+  own counter-example is written in.** `ci.yml`'s `fuzz` job opened with "60 seconds
+  on every pull request and every push to `main`" and then, further down, justified
+  "no *required* check depends on nightly" with "since both jobs that use it are
+  `continue-on-error` and neither runs on a pull request". Both halves are false of
+  `fuzz` itself: it carries no `continue-on-error` on the job or on any step, so a
+  crash fails the run, and it has no job-level `if:`, so it runs on every pull request
+  -- which is what its own first paragraph says. This file's header already said the
+  first half outright ("The `fuzz` job has no `continue-on-error` either, so it fails
+  the run today"), so the comment contradicted its own job and its own file. The
+  conclusion does hold, for the reason the header gives and this comment did not:
+  `fuzz` is deliberately absent from the branch-protection list, and `nightly` is
+  `continue-on-error: true` on a schedule-or-dispatch trigger. The comment now gives
+  that reason, and the weaker fact behind it -- the list is a to-do, so no check is
+  required at all today. A reason for believing a claim is a claim like any other, and
+  it can be false while the claim is true.
+
+- **A pinned toolchain attributed to the job that deliberately does not pin it.**
+  `fuzz/README.md` said "`ci.yml`'s `nightly` job installs `nightly-2026-09-28`". It
+  does not: it installs the *moving* `nightly` channel, on purpose, because its job is
+  to give advance notice of upstream churn. The pinned date is installed by the `fuzz`
+  job, for the opposite reason -- so that a red mark there is a finding in this repo.
+  The same sentence was also an enumeration that missed a member: it offered the
+  `nightly` job as the one use of nightly outside this directory and concluded "it
+  gates nothing", while `fuzz` installs nightly too, is not `continue-on-error`, and
+  fails the run on every pull request. Both jobs are now named with what each installs
+  and what each can do to a run, and the narrow claim is stated as what it is: no
+  check on `ci.yml`'s branch-protection list needs a nightly toolchain. The
+  *Prerequisites* line "CI pins `nightly-2026-09-28`" now says which job pins it.
+
+- **A bump instruction that was a replace-all over a file holding a measurement.**
+  `ci.yml` said "To bump: change the date here and in `fuzz/README.md`". That file
+  spells the pinned nightly in four places and one of them is under *Measured runs*,
+  recording which toolchain the edge counts and exec/s figures came from; moving it
+  with the pin would relabel numbers nobody re-ran. The instruction now excludes that
+  occurrence and says why, by rule rather than by count, so it does not rot when a
+  fifth spelling appears.
+
 - **A cross-document pointer naming a section that holds three of the four things it
   covers.** `docs/threat-model.md` closed its four npm-launcher signal findings with
   "All of these are documented in the header comments of `npm/tokfold/bin/tokfold` and,

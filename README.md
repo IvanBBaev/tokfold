@@ -28,10 +28,19 @@ for the command line.
   published at `0.0.1` with npm provenance attestations. See `npm/README.md` for
   why the launcher is published last, and for why the Windows package is
   `tokfold-windows-x64` rather than the `win32` name Node itself uses.
-- The one badge above is the CI badge: the workflow in `.github/workflows/ci.yml`
-  really does run on every pull request and on every push to `main`, so that badge
-  reflects a real result. Pushes to other branches run nothing — open a pull
-  request to get a gate.
+- The one badge above is the CI badge, and it is narrower than it looks. The
+  workflow in `.github/workflows/ci.yml` really does run on every pull request and
+  on every push to `main`, and pushes to other branches run nothing — open a pull
+  request to get a gate. But the badge URL carries no `?event=` filter, so it shows
+  the newest run on `main` whatever triggered it, and that workflow also runs on a
+  weekly schedule in which every gate job is skipped by design (`if:
+  github.event_name != 'schedule'`) and only the weekly jobs run. On 2026-10-05 the
+  badge read *passing* for exactly such a run: `audit`, `release-test` and `nightly`
+  succeeded, and `actionlint`, `fmt`, `clippy`, `docs`, `doc-drift`, `deny`,
+  `package`, `launcher` and `test` were all skipped. A green badge therefore says
+  the newest run on `main` passed, not that the gate passed on the current commit.
+  Adding `?event=push` to the badge URL would narrow it to the runs this bullet used
+  to describe; it is not set.
 - The engine crate is `tokfold-core`; the CLI binary is `tokfold`; the MCP
   integration (`tokfold-mcp`) serves the engine as tools over stdio and is
   **experimental and unhardened** — it sees everything passed through it. Its
@@ -263,14 +272,22 @@ the original bytes unmodified. The engine never repairs input.
 
 ### What is in v0.0.1 — and what is not
 
-Present: the parser, the archive format, the token estimator, and the first
-encoders (passthrough, whitespace minification, shape-deduplicated tabular
-re-encoding). An opt-in, non-default `tiktoken` feature adds exact GPT tokenizer
-estimators (`cl100k_base`, `o200k_base`) for the do-no-harm gate; it embeds megabytes
-of BPE tables and is off by default, so it never changes the archive format. An
-experimental MCP server (`tokfold mcp`) exposes the engine over stdio as three tools —
-`tokfold_compress`, `tokfold_decompress` and `tokfold_estimate`. That is the whole
-catalogue: `tools::NAMES` in `tokfold-mcp`, whose length and order the unit test
+Present: the parser, the archive format, the token estimator, and the first encoders
+(passthrough, whitespace minification, shape-deduplicated tabular re-encoding). An
+opt-in, non-default `tiktoken` feature adds exact GPT tokenizer estimators
+(`cl100k_base`, `o200k_base`) for the do-no-harm gate; it embeds megabytes of BPE
+tables. Turning it on does change what the model reads — pricing candidates exactly
+is the whole point of it, and it both suppresses transforms the heuristic over-rated
+and enables wins it under-rated — but it never changes the archive, and not because
+it is off by default: the archive in v0.0.1 is always a passthrough recovery blob
+whose header hardcodes `tokenizer_id = 0` and whose payload is the original bytes
+verbatim, whatever estimator priced the candidates, so it comes out byte-identical
+with the feature on. `tokfold-core` pins the two halves in
+`exact_estimator_changes_encoder_selection_in_both_directions` and
+`estimator_choice_does_not_change_recovery_archive`. An experimental MCP server
+(`tokfold mcp`) exposes the engine over stdio as three tools — `tokfold_compress`,
+`tokfold_decompress` and `tokfold_estimate`. That is the whole catalogue:
+`tools::NAMES` in `tokfold-mcp`, whose length and order the unit test
 `the_catalogue_lists_every_tool_in_a_fixed_order` pins. The server is unhardened and
 unaudited. It shipped in `0.0.1` in that state, labelled rather than held back —
 hardening is a milestone still owed, not one this release passed.
