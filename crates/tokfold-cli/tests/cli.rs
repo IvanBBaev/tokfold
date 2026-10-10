@@ -4131,3 +4131,230 @@ fn two_instances_of_this_suite_do_not_wipe_each_others_fixtures() {
         );
     }
 }
+
+/// A successful pass writes the file at the end of a symlink chain, not the links.
+///
+/// `docs/threat-model.md` says both the write and the clearing resolve a symlink at
+/// the archive path and act on its target — "through a chain `l1 -> l2 -> real` it is
+/// `real` that is written or removed, and both links survive". Only the removing half
+/// was held, by `a_symlink_chain_at_the_archive_path_names_the_file_it_resolves_to`;
+/// a conjunction is a claim about both operations, so drive the writing half too.
+/// Drive it at the member the sentence does not exclude and the removing test cannot
+/// reach — a chain whose end does not exist yet, where `create(true)` decides where
+/// the file is born — and then at the same chain again, now overwriting. Measured
+/// against `cargo build --release -p tokfold-cli` + `--workspace --all-features`
+/// (SHA-1 `ca2cfc4a…`) on 2026-10-10: both land in `real`, both links stay links, and
+/// `expand` reads the original back out of `real`.
+#[test]
+fn a_successful_pass_writes_through_a_symlink_chain_and_keeps_both_links() {
+    let dir = scratch_dir("symlink_chain_write");
+    let input = dir.join("good.json");
+    let real = dir.join("real.tkfd");
+    let middle = dir.join("l2.tkfd");
+    let link = dir.join("l1.tkfd");
+    fs::write(&input, COMPRESSIBLE_JSON).expect("write the compressible input");
+    std::os::unix::fs::symlink(&real, &middle).expect("link to the archive");
+    std::os::unix::fs::symlink(&middle, &link).expect("link to the link");
+    assert!(
+        !real.exists(),
+        "the chain must dangle first: that is the half the removing test cannot reach"
+    );
+
+    for pass in ["a dangling chain", "an existing file at the end"] {
+        let out = run_tokfold_without_stdin(&[
+            "compress",
+            "--input",
+            path_str(&input),
+            "--archive",
+            path_str(&link),
+        ]);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(0), "{pass}: {stderr}");
+        assert_eq!(
+            fs::read(&real)
+                .expect("read the archive at the end of the chain")
+                .get(..4),
+            Some(&b"TKFD"[..]),
+            "{pass}: the archive must be born at the end of the chain"
+        );
+        assert!(
+            fs::symlink_metadata(&middle).is_ok_and(|meta| meta.file_type().is_symlink())
+                && fs::symlink_metadata(&link).is_ok_and(|meta| meta.file_type().is_symlink()),
+            "{pass}: neither link is what was written"
+        );
+        let archive = fs::read(&real).expect("read the archive");
+        let expanded = run_tokfold(&["expand"], &archive);
+        assert_eq!(
+            expanded.stdout,
+            COMPRESSIBLE_JSON,
+            "{pass}: the archive at the end of the chain must restore the input: {}",
+            String::from_utf8_lossy(&expanded.stderr)
+        );
+    }
+}
+
+/// `write_file`'s `metadata` follows a symlink, so a link aimed at a FIFO is refused.
+///
+/// The comment above that check says so in those words, and it is the whole reason the
+/// check is a `metadata` and not a `symlink_metadata`: a `symlink_metadata` would see
+/// a symlink, which is neither a regular file nor a directory, and refuse every link —
+/// including the chain the test above requires to work. Nothing drove a link aimed at
+/// a file type the check rejects. Measured against the same build as the test above:
+/// exit `2`, nothing on standard output, and the refusal names the path the caller
+/// typed — the link — because that is the path `metadata` was asked about and no write
+/// ever happened. Both the link and the FIFO are left where they were.
+#[test]
+fn a_symlink_aimed_at_a_fifo_is_refused_by_the_write_path() {
+    let dir = scratch_dir("symlink_to_fifo_archive");
+    let input = dir.join("good.json");
+    let fifo = dir.join("pipe");
+    let link = dir.join("link.tkfd");
+    fs::write(&input, COMPRESSIBLE_JSON).expect("write the compressible input");
+    let made = Command::new("mkfifo")
+        .arg(path_str(&fifo))
+        .status()
+        .is_ok_and(|status| status.success());
+    if !made {
+        return; // no `mkfifo` on this box; nothing to assert about
+    }
+    std::os::unix::fs::symlink(&fifo, &link).expect("link to the fifo");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tokfold"))
+        .args([
+            "compress",
+            "--input",
+            path_str(&input),
+            "--archive",
+            path_str(&link),
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn tokfold");
+    assert!(
+        finished_within_ten_seconds(&mut child),
+        "a link aimed at a FIFO blocked the write; the refusal is what keeps it from \
+         hanging, so a hang here is the finding"
+    );
+    let out = child
+        .wait_with_output()
+        .expect("collect the child's output");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "an archive that cannot be written is an I/O failure, exit 2: {stderr}"
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "the rendering must not be emitted when the archive it recovers was never \
+         written: {:?}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(
+        stderr.contains(&format!(
+            "refusing to write the archive to {}: it is not a regular file",
+            path_str(&link)
+        )),
+        "the refusal must name the operation and the path the caller typed: {stderr}"
+    );
+    assert!(
+        fs::symlink_metadata(&link).is_ok_and(|meta| meta.file_type().is_symlink()),
+        "the refused link must be left where it was"
+    );
+    assert!(
+        fs::symlink_metadata(&fifo).is_ok(),
+        "the FIFO behind the link must be left where it was"
+    );
+}
+
+/// A new archive's mode is whatever the umask leaves, and an overwrite keeps the
+/// file's own — a permissions claim `docs/threat-model.md` makes and nothing held.
+///
+/// `write_file` passes no mode to `OpenOptions`, so `create` applies the process
+/// umask. The threat model's *Archive path handling* section gives three figures for
+/// that and calls the result the user's responsibility; no test asserted any of them,
+/// and no test in this file reads a produced file's mode at all — the eight
+/// `set_permissions` calls here all *write* a mode on a fixture. Driving it needs a
+/// umask, which std cannot set, so each pass runs under `sh -c 'umask N; …'` rather
+/// than taking a dependency for it. Measured 2026-10-10 against `cargo build
+/// --release --workspace --all-features` (SHA-1 `ca2cfc4a…`): `022` gives `0644`,
+/// `077` gives `0600`, and `000` gives `0666` — world-*writable*, the member the
+/// bullet did not name — while an overwrite re-applies nothing, so a pre-existing
+/// `0666` file stays `0666` even under `077`.
+#[test]
+fn a_new_archives_mode_is_what_the_umask_leaves() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let dir = scratch_dir("archive_umask");
+    let input = dir.join("good.json");
+    fs::write(&input, COMPRESSIBLE_JSON).expect("write the compressible input");
+
+    let quote = |path: &Path| {
+        let text = path_str(path).to_string();
+        assert!(
+            !text.contains('\''),
+            "a fixture path with a quote in it would break the script: {text}"
+        );
+        format!("'{text}'")
+    };
+    let drive = |umask: &str, archive: &Path| -> Output {
+        let script = format!(
+            "umask {umask}; exec {} compress --input {} --archive {}",
+            quote(Path::new(env!("CARGO_BIN_EXE_tokfold"))),
+            quote(&input),
+            quote(archive),
+        );
+        Command::new("sh")
+            .arg("-c")
+            .arg(script)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .expect("run tokfold under a umask")
+    };
+    let mode_of = |path: &Path| {
+        fs::metadata(path)
+            .expect("stat the archive")
+            .permissions()
+            .mode()
+            & 0o777
+    };
+
+    for (umask, expected) in [("022", 0o644), ("077", 0o600), ("000", 0o666)] {
+        let archive = dir.join(format!("u{umask}.tkfd"));
+        let out = drive(umask, &archive);
+        assert!(
+            out.status.success(),
+            "umask {umask}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            mode_of(&archive),
+            expected,
+            "a new archive under umask {umask} carries the mode the umask leaves"
+        );
+    }
+
+    let existing = dir.join("existing.tkfd");
+    fs::write(&existing, b"").expect("create the file the pass will overwrite");
+    fs::set_permissions(&existing, fs::Permissions::from_mode(0o666)).expect("widen the mode");
+    let out = drive("077", &existing);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        mode_of(&existing),
+        0o666,
+        "an overwrite re-applies no mode, so the file's own survives the umask"
+    );
+    assert_eq!(
+        fs::read(&existing).expect("read the archive").get(..4),
+        Some(&b"TKFD"[..]),
+        "the overwrite must actually have happened for the mode above to mean anything"
+    );
+}

@@ -206,8 +206,21 @@ The only file the CLI writes is the `--archive` path, through `write_file` in
 `clear_stale_archive`. Both resolve a symlink at that path and act on its target, so
 "that same path" names the file the path resolves to and not always the file you
 typed: through a chain `l1 -> l2 -> real` it is `real` that is written or removed,
-and both links survive. The guards around both are documented in
-`crates/tokfold-cli/README.md` and in the rustdoc of the functions named here.
+and both links survive. That is a claim about both operations, and until 2026-10-10
+only the removing half was held, by
+`a_symlink_chain_at_the_archive_path_names_the_file_it_resolves_to`. The writing half
+is pinned by
+`a_successful_pass_writes_through_a_symlink_chain_and_keeps_both_links`, which drives
+the chain twice — once with a file already at the end of it, and once with nothing
+there, where `create` decides where the file is born — and reads the original back
+through `expand`. `write_file` resolves the link by asking `fs::metadata`, which
+follows symlinks, so a link aimed at something that is not a regular file is refused
+exactly as its target would be: exit `2`, nothing on standard output, and the refusal
+names the path the caller typed, because that is the path `metadata` was asked about
+and no write ever happened
+(`a_symlink_aimed_at_a_fifo_is_refused_by_the_write_path`). The guards around both are
+documented in `crates/tokfold-cli/README.md` and in the rustdoc of the functions named
+here.
 
 - A rejected pass deletes a previous archive at the path only if that path is a
   regular file that opens with the `TKFD` magic. This keeps a stale archive from
@@ -245,11 +258,18 @@ and both links survive. The guards around both are documented in
   (read from the source; not measured on Windows).
 - **The archive is created with the process umask, not with a restrictive mode.**
   `write_file` uses `OpenOptions` with `write`, `create` and `truncate` and sets no
-  mode. Measured on macOS: under umask `022` a new archive is `0644`, which any local
-  user can read, and under `077` it is `0600`. Overwriting an existing file keeps
-  that file's mode: a pre-existing `0666` file stayed `0666` under umask `077`. The
+  mode. Measured on macOS against `cargo build --release --workspace --all-features`
+  (SHA-1 `ca2cfc4a…`), re-measured 2026-10-10: under umask `022` a new archive is
+  `0644`, which any local user can read; under `077` it is `0600`; and under `000` it
+  is `0666`, which any local user can also **write** — the member this bullet did not
+  name until that date. Overwriting an existing file re-applies nothing and keeps that
+  file's own mode: a pre-existing `0666` file stayed `0666` under umask `077`. The
   archive holds the input verbatim, so on a shared machine the archive's permissions
-  are the user's responsibility.
+  are the user's responsibility. All four figures are pinned in
+  `crates/tokfold-cli/tests/cli.rs` by `a_new_archives_mode_is_what_the_umask_leaves`,
+  which drives each pass under `sh -c 'umask N; …'` because std cannot set a umask;
+  before it, no test in that file read a produced file's mode at all — its eight
+  `set_permissions` calls all write a mode onto a fixture.
 - The archive write is not atomic (no temporary file and `rename`). An interrupted
   overwrite can leave a truncated file where a good archive was. `expand` refuses a
   truncated archive rather than decoding it wrongly, and the offset it names is

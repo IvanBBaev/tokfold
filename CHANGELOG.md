@@ -3045,6 +3045,37 @@ documentation a previous fix falsified.
 
 ### Tests
 
+- **Three claims about the archive path had the half that a doc or a comment gives as
+  its own reason unpinned.** `docs/threat-model.md` says the write and the clearing
+  both resolve a symlink, so "through a chain `l1 -> l2 -> real` it is `real` that is
+  written or removed, and both links survive" — a conjunction, and only the removing
+  half was held, by
+  `a_symlink_chain_at_the_archive_path_names_the_file_it_resolves_to`.
+  `a_successful_pass_writes_through_a_symlink_chain_and_keeps_both_links` holds the
+  writing half at both members of the category: a chain ending in an existing file,
+  and a dangling one, where `create` decides where the file is born. `write_file`'s own
+  comment explains why the check is a `fs::metadata` and not a `symlink_metadata` — "a
+  link aimed at a FIFO is refused too" — and nothing drove it;
+  `a_symlink_aimed_at_a_fifo_is_refused_by_the_write_path` does, and records that the
+  refusal names the path the caller typed, not the FIFO behind it, because that is the
+  path `metadata` was asked about and no write happened. The two bite on opposite
+  mutations and neither sees the other's: asking `symlink_metadata` instead fails the
+  chain pin (and `an_archive_path_that_does_not_empty_on_open_is_refused`), deleting
+  the `ensure!` that rejects non-regular files fails the FIFO pin (through the bounded
+  ten-second wait) and `a_fifo_at_the_archive_path_neither_hangs_nor_is_removed` —
+  exactly those two each time, and nothing else in the suite. The third claim is the
+  umask bullet in the same section: three permission figures, none asserted anywhere,
+  in a file whose eight
+  `set_permissions` calls all *write* a mode onto a fixture and never read one back.
+  `a_new_archives_mode_is_what_the_umask_leaves` pins them, driving each pass under
+  `sh -c 'umask N; …'` because std cannot set a umask, and adds the member the bullet
+  did not name: umask `000` gives `0666`, which any local user can also **write**.
+  Forcing the archive to `0600` by hand fails it on the first leg (`384` against
+  `420`). Measured against `cargo build --release --workspace --all-features`, SHA-1
+  `ca2cfc4a…`, on 2026-10-10. **A conjunction is a claim about both operations, and the
+  half a comment offers as its own justification is the half most likely to have
+  nothing driving it.**
+
 - **The suite's fixture root was shared, so the gate's own two legs destroyed each
   other's files.** `CARGO_TARGET_TMPDIR` is baked in at compile time and resolves to
   `<target-dir>/tmp` for every profile, so the debug and the release `tokfold-cli`
@@ -3061,8 +3092,9 @@ documentation a previous fix falsified.
   `cargo clean` does. Pinned by
   `every_fixture_path_sits_under_a_root_named_for_this_process` and
   `two_instances_of_this_suite_do_not_wipe_each_others_fixtures` — hand-reverting the
-  root to `CARGO_TARGET_TMPDIR` itself fails exactly those two of 81. What this does
-  *not* explain: the `Bad file descriptor (os error 9)` form of the same suite's
+  root to `CARGO_TARGET_TMPDIR` itself fails exactly those two and nothing else — the
+  suite's size is not part of the claim, because the next commit moves it. What this
+  does *not* explain: the `Bad file descriptor (os error 9)` form of the same suite's
   intermittent failure appeared in none of the 18 concurrent runs, so concurrency is
   not established as its cause and it stays open. Finding it is harder than it looks,
   because the context string it carries, `inspecting the archive path <path>`, is
