@@ -1,8 +1,11 @@
 # Privacy
 
 This document covers what tokfold does with the data it is given, and what it does
-not do. Every statement names the code that makes it true, or the measurement that
-showed it. For the attacks this design does and does not resist, see
+not do. Every statement about what the code *does* names the code that makes it true,
+the measurement that showed it, or a section of this document that names one of those
+— the *Summary* restates what the sections below hold and is anchored by them, and a
+sentence that opens with "therefore" is drawn from the statement above it. For the
+attacks this design does and does not resist, see
 [`threat-model.md`](threat-model.md).
 
 A statement below marked **enforced** is checked by CI on every push to `main` and on
@@ -118,7 +121,10 @@ stale-archive deletion and no same-file guards (see
 
 **None — true today, not enforced.**
 
-- No crate contains code that collects, stores or transmits usage data.
+- No crate contains code that collects, stores or transmits usage data. The three
+  verbs are held in different places: *Network* above for transmitting, both by the
+  enforced dependency ban and by the first-party `std::net` review, and *Files* and
+  *Caches and temporary files* below for collecting and storing.
 - No crate reads the clock: no non-test source uses `std::time`, `SystemTime` or
   `Instant`.
 - Outputs are therefore free of timestamps, and a run leaves no record of when it
@@ -139,7 +145,15 @@ stale-archive deletion and no same-file guards (see
 ### What the CLI writes
 
 - **Standard output:** the rendering (`compress`), the restored original (`expand`),
-  the measurement report (`stats`), or the JSON-RPC replies (`mcp`).
+  the measurement report (`stats`), the JSON-RPC replies (`mcp`), or `--help` and
+  `--version` text. The first three go through `write_stdout` in `main.rs`, the
+  replies through `tokfold_mcp::stdio::serve_stdio`, and the help and version text
+  through clap's own printer when standard output is a terminal and `write_stdout`
+  otherwise — the two writers the rustdoc of the `--help`/`--version` branch in
+  `main.rs` sets out against each other. That makes three writers in all, which is
+  why a fix to one of them is not a fix to standard output. Until 2026-10-10 this
+  bullet listed the four subcommand outputs only, which read as the whole of what
+  reaches standard output.
 - **Standard error:** diagnostics, all through one function (`warn` in `main.rs`).
   These can include the paths you passed and sizes. The `mcp` subcommand also prints
   its experimental notice there on start-up.
@@ -319,7 +333,16 @@ It locates the native binary for your platform and runs it.
 
 ## Keeping this document true
 
-Each statement above names the code that makes it true. A change to one of those
-places can falsify a sentence here. Only the network ban on dependencies is checked
-mechanically; everything marked "true today" needs a reviewer to re-read this file
+Each statement above about what the code *does* names the code that makes it true,
+the measurement that showed it, or a section of this document that names one of those
+— the same rule the header states, and it is worth stating twice only if both say the
+same thing. Until 2026-10-10 this one dropped the "or the measurement" half, which
+made it the stricter of two rules the document gave for itself, and under it the two
+archive-mode bullets under *What the CLI writes* read as violations: `write_file` sets
+no permissions, so no code holds `0644`, `0600` or `0666` — `git grep` finds none of
+the three in any crate's `src` or `tests` — and only the measurement beside them
+does. A change to a named place can falsify a sentence here. Only the network
+ban on dependencies is checked mechanically — `deny.toml`'s `[bans]` list, run by the
+`deny` job in `.github/workflows/ci.yml` — and it is the one statement above marked
+**enforced**; everything marked "true today" needs a reviewer to re-read this file
 when the named code changes.

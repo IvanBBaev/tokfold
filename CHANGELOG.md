@@ -733,6 +733,67 @@ released says so, and names what `0.0.1` does in the same case.
 
 ### Documentation
 
+- **`docs/privacy.md` gave itself two different rules for its own honesty, and the
+  stricter one was false.** The header said "Every statement names the code that
+  makes it true, **or the measurement that showed it**"; *Keeping this document true*
+  said "Each statement above names the code that makes it true" and dropped the
+  measurement half. Two rules, stated as one. Under the stricter of them the two
+  archive-mode bullets under *What the CLI writes* are violations: `write_file` sets
+  no permissions, so no code in the repository holds `0644`, `0600` or `0666` —
+  `git grep` over every crate's `src` and `tests` finds none of the three — and only
+  the measurement printed beside them does. Both statements now say the same thing,
+  and it is the superset: code, the measurement, or a section of this document that
+  names one of those. The closing one also now names what makes its enforcement half
+  true, which had been asserted and not cited — `deny.toml`'s `[bans]` list, run by
+  the job named `deny` in `.github/workflows/ci.yml`, against the workflow's
+  `push: branches: [main]` and `pull_request:` triggers — and says that the ban is
+  the one statement in the document carrying the **enforced** marker, which `grep`
+  confirms (the other occurrences are the two markers' own definition, two
+  "not enforced" statements, and these two sentences).
+- **The scope statements had been covering for two statements that satisfied
+  neither rule.** The *Telemetry* bullet "No crate contains code that collects,
+  stores or transmits usage data" named nothing at all for any of its three verbs; it
+  now names where each is held — *Network* for transmitting, both by the enforced
+  dependency ban and by the first-party `std::net` review, and *Files* and *Caches and
+  temporary files* for collecting and storing. And the *Standard output* bullet named
+  neither code nor a measurement **and** was short by one output: it listed the
+  rendering, the restored original, the measurement report and the JSON-RPC replies,
+  four outputs by subcommand, which reads as the whole of what reaches standard
+  output. `--help` and `--version` text reaches it too. The bullet now names all
+  five and the three writers behind them, which is the point: `write_stdout` in
+  `main.rs` for the first three, `tokfold_mcp::stdio::serve_stdio` for the replies —
+  verified to clone the stdout descriptor into a `File` of its own — and clap's own
+  printer when standard output is a terminal with `write_stdout` otherwise, the two
+  the rustdoc of that branch in `main.rs` sets out against each other. Three writers,
+  so a fix to one of them is not a fix to standard output; this repository has paid
+  for that distinction once already.
+- **One of this entry's own corrections was false until it was measured.** The first
+  draft of the closing statement cited the *Standard output* bullet as the statement
+  the stricter rule had wrongly condemned, "anchored on what a run was observed to
+  print". It is anchored on nothing — which is why it appears in the bullet above as
+  a gap rather than as an example. The archive-mode bullets were put in its place
+  only after `git grep` showed the three mode values live in no source and no test.
+  **A correction is a claim like any other, and an example is the easiest kind to
+  write without checking.**
+- **Both of these sentences had been looked at and deliberately left, on a written
+  reason that was false.** An earlier round swept this repository for commentary
+  pointing at an unnamed target, and listed what it chose not to touch: "commentary
+  that describes its own file's layout instead of pointing at a target — … each
+  security file's closing convention (`docs/privacy.md`: "Each statement above names
+  the code that makes it true")". Two files carry such a convention, `docs/privacy.md`
+  and `docs/threat-model.md`; `SECURITY.md` closes on *Acknowledgments*, which is
+  content. The convention in both has now been rewritten, because the reason for
+  leaving it was wrong about what kind of sentence it is: a rule saying that every
+  statement above names its code is not commentary about the file's layout, it is a
+  universal claim about every statement in the file — and in both files it was false,
+  here of two statements and in the threat model of three whole sections. **A reason
+  for leaving something alone is a claim like any other**, and this one failed by
+  misclassifying its subject rather than by getting a fact wrong, which is the harder
+  failure to see: the sentence was read for its grammar and not for what it asserts.
+  The quotation in that earlier entry is left as written — it records what the file
+  said when the decision was made, and rewriting it would falsify the history of the
+  decision this entry reverses.
+
 - **The threat model's own closing rule was a universal claim, and it was false.**
   *Where this document can go stale* said "Every claim above names the function or
   file that holds it", and offered that as the mechanism for keeping the document
