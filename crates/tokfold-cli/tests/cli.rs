@@ -381,10 +381,19 @@ fn mcp_prints_the_experimental_notice_and_exits_zero_on_empty_input() {
         out.stdout.is_empty(),
         "no request means no reply; stdout carries protocol only"
     );
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("EXPERIMENTAL"),
-        "mcp must surface the experimental notice on stderr"
+    // `crates/tokfold-mcp/README.md` promises that stderr "carries the one-line
+    // EXPERIMENTAL notice and nothing else". A `contains` cannot falsify the second
+    // half: this assertion matched two words of the message, so a second diagnostic —
+    // a deprecation note, a duplicated warning, a log line from a dependency — would
+    // have passed it while the promise became false. Compare the whole stream with the
+    // constant the server crate exports, plus the single newline the CLI appends. That
+    // pins "nothing else" but not "one line": the comparison is against the same
+    // constant, so a newline inside the constant satisfies it too, and that half is
+    // held by `notice_is_one_unbroken_line` in `tokfold-mcp`.
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        format!("{}\n", tokfold_mcp::EXPERIMENTAL_NOTICE),
+        "the notice is all that mcp may write to stderr"
     );
 }
 

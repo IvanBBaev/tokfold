@@ -256,11 +256,19 @@ newest handshake-era version it serves.
   reports a larger input as `input_too_large`; `tokfold_compress` given the same
   input answers `-32602` instead, because the unchanged text comes back twice in
   the reply. So the frame, not the engine, sets the passthrough ceiling, and it lies
-  below 16 MiB: the reply to a declined text that needs no escaping is 338 bytes
-  plus twice the text for a one-digit request id, so 16,777,047 bytes of `a` (169
-  under 16 MiB) are answered with an exactly 32 MiB reply and 16,777,048 are refused
-  `-32602`. Each extra digit of the id takes one byte off the ceiling (16,777,046
-  for id `100`), and text the reply must escape lowers it much further.
+  below 16 MiB. A declined reply repeats the text twice and carries the parse error
+  that declined it, so the envelope belongs to the fixture: for a run of `a`, whose
+  reason is `invalid JSON at byte 0: expected a JSON value`, the reply measures `337 +
+  d + 2T` bytes, `d` being the request id's decimal digits and `T` the text's length.
+  A one-digit id therefore answers 16,777,047 bytes of `a` (169 under 16 MiB) with an
+  exactly 32 MiB reply and refuses 16,777,048 with `-32602`. An extra digit of the id
+  costs one byte of reply where an extra byte of text costs two, so the ceiling falls
+  by one byte for every *two* extra digits rather than for every digit: ids `10` and
+  `100` share 16,777,046 and `1000` and `10000` share 16,777,045 — each measured at
+  its boundary on 2026-10-10, answered at that length and refused `-32602` one byte
+  above it. A declined shape whose reason is longer lowers the ceiling too,
+  escape-free though it is: `[1,2` reports `unexpected end of input` and its envelope
+  is 361. Text the reply must escape lowers it much further.
 - **One request at a time.** Requests are answered in order, each reply written
   before the next line is read.
 - **Experimental** means: no security review has been done, the wire shape may

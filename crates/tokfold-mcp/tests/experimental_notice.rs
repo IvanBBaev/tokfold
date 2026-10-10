@@ -25,7 +25,9 @@ use tokfold_mcp::EXPERIMENTAL_NOTICE;
 /// invisible in review and which rustfmt neither adds nor protects. Delete it and the
 /// constant silently gains a newline plus the source indentation in mid-sentence,
 /// turning one stderr line into two ragged ones. Nothing else in the workspace would
-/// notice: the existing CLI assertion only checks that stderr *contains* a keyword.
+/// notice: the one CLI assertion that reads the real stream compares it with this very
+/// constant plus the newline the CLI appends, so a newline inside the constant
+/// satisfies that comparison too.
 #[test]
 fn notice_is_one_unbroken_line() {
     assert!(
@@ -89,17 +91,20 @@ fn notice_contains_no_control_or_terminal_escape_characters() {
     );
 }
 
-/// The all-caps keyword is a cross-crate contract, not a stylistic choice.
+/// The all-caps keyword is a documented promise, not a stylistic choice.
 ///
-/// `crates/tokfold-cli/tests/cli.rs` asserts that the `mcp` subcommand's stderr
-/// contains `EXPERIMENTAL`, with that exact casing. This crate owns the string, so the
-/// promise has to be pinned here too — otherwise the only way to discover the coupling
-/// is to break another crate's test suite and work backwards.
+/// This crate's README tells the reader that `tokfold mcp` prints "the EXPERIMENTAL
+/// notice" on stderr, and the package description opens with the same word. Nothing
+/// outside this file holds the spelling: the CLI test that reads the real stream
+/// compares it with this constant rather than grepping it, and the only other use of
+/// the literal in the workspace is a negative `contains` on `mcp`'s stdout, which
+/// keeps passing whatever the notice is renamed to — it would quietly stop checking
+/// for a leak instead of failing.
 #[test]
 fn notice_shouts_the_experimental_keyword_in_caps() {
     assert!(
         EXPERIMENTAL_NOTICE.contains("EXPERIMENTAL"),
-        "the notice must carry the literal all-caps keyword that the CLI test greps for: \
+        "the notice must carry the literal all-caps keyword this crate's README names: \
          {EXPERIMENTAL_NOTICE:?}"
     );
 }

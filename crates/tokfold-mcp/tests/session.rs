@@ -14,7 +14,7 @@
     clippy::indexing_slicing
 )]
 
-use tokfold_mcp::{Server, json, stdio, tools};
+use tokfold_mcp::{MAX_MESSAGE_BYTES, Server, json, stdio, tools};
 
 /// Runs a whole session and returns one entry per emitted line.
 fn session(input: &str) -> Vec<json::Value> {
@@ -255,8 +255,14 @@ fn measure(request: &str) -> Frame {
 
 /// Renders a `tools/call` line for a text-taking tool.
 fn call_line(tool: &str, text: &str) -> String {
+    call_line_with_id(1, tool, text)
+}
+
+/// One renderer serves both helpers, so a test about the id's width cannot drift from
+/// the shape every other test here measures.
+fn call_line_with_id(id: u64, tool: &str, text: &str) -> String {
     format!(
-        r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"{tool}","arguments":{{"text":{}}}}}}}"#,
+        r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/call","params":{{"name":"{tool}","arguments":{{"text":{}}}}}}}"#,
         json::Value::string(text)
     )
 }
@@ -458,6 +464,62 @@ fn the_small_call_figure_the_docs_quote_carries_its_counting_convention() {
         "and 505 is the same exchange counted the way the frame limit counts a message, \
          the 5.06x of `src/lib.rs` truncated; a site that quotes either must say which"
     );
+}
+
+#[test]
+fn the_declined_reply_envelope_grows_by_one_byte_per_digit_of_the_request_id() {
+    // The passthrough ceiling the docs quote -- 16_777_047 bytes of `a` answered with an
+    // exactly 32 MiB reply -- is a property of two things the reply carries besides the
+    // text: the request id, echoed back, and the parse error that declined the input.
+    // `README.md` once stated the first as "each extra digit of the id takes one byte off
+    // the ceiling", which its own parenthetical contradicted. A digit does cost one byte
+    // of reply, but a byte of text costs two, so the ceiling falls by one byte for every
+    // *two* extra digits, and consecutive id widths share a ceiling.
+    //
+    // This pins the equation and the step it implies on a tiny fixture. The 32 MiB
+    // boundaries themselves were measured out of band, at each of these five id widths,
+    // as `the_documented_large_call_reply_limit_is_reached_by_the_fixture_the_docs_name`
+    // explains for the other large figure: a 32 MiB reply in a unit test buys nothing the
+    // equation does not already say.
+    let text = "aaaa";
+    for (id, digits) in [(1u64, 1), (10, 2), (100, 3), (1000, 4), (10000, 5)] {
+        assert_eq!(
+            declined_envelope(id, text),
+            337 + digits,
+            "the envelope of a declined reply is 337 bytes plus the id's digits"
+        );
+        let ceiling = (MAX_MESSAGE_BYTES - (337 + digits)) / 2;
+        let expected = match digits {
+            1 => 16_777_047,
+            2 | 3 => 16_777_046,
+            _ => 16_777_045,
+        };
+        assert_eq!(
+            ceiling, expected,
+            "an id of {digits} digit(s) frames at most this many bytes of `a`"
+        );
+    }
+
+    // And the envelope is not a function of escaping alone: this input needs no escaping
+    // either, but the reason it is declined with is longer, so the figure above belongs
+    // to its fixture and not to "escape-free text".
+    assert!(
+        declined_envelope(1, "[1,2") > declined_envelope(1, text),
+        "a longer refusal reason makes a wider envelope"
+    );
+}
+
+/// What a declined `tokfold_compress` reply costs beyond the two copies of `text` it
+/// echoes: the framed message without its newline, which is how the frame limit counts
+/// it, less `2 * text.len()`.
+fn declined_envelope(id: u64, text: &str) -> usize {
+    let frame = measure(&call_line_with_id(id, tools::COMPRESS, text));
+    assert_eq!(
+        result_of(&frame.reply, "structuredContent.compressed"),
+        Some(&json::Value::Bool(false)),
+        "the fixture must be declined, or this is not the envelope being measured"
+    );
+    frame.reply_bytes - 1 - 2 * text.len()
 }
 
 #[test]

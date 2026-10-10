@@ -297,9 +297,13 @@ fn compressed_outcome(artifact: &Artifact, with_payload: bool) -> Outcome {
 /// known multiple of a known ceiling, and past the ceiling it is a refusal rather than a
 /// frame nothing can read.
 ///
-/// The two ceilings are 169 bytes apart in the direction that matters: the doubling
-/// stops fitting at `16_777_047` bytes of escape-free input, while core declines for
-/// size only from `16_777_217`. So on this path — the one that echoes — the
+/// The two ceilings overlap the wrong way round, and 169 inputs lie between them: the
+/// doubling stops fitting above `16_777_047` bytes of `a` echoed under a one-digit id --
+/// the widest that fixture frames under any id, since no id is narrower than one
+/// character -- while core declines for size only from `16_777_217`. A declined shape
+/// whose refusal reason is longer, and the reply quotes it, fits less still; and nothing
+/// closes the gap from the other side, because the doubling alone puts `16_777_217` bytes
+/// at `33_554_434`, two past the limit. So on this path — the one that echoes — the
 /// `input_too_large` code this function can produce never reaches a client; the
 /// refusal does. Only the `with_payload: false` caller, `tokfold_estimate`, can carry
 /// it out. [`MAX_MESSAGE_BYTES`] carries the derivation.

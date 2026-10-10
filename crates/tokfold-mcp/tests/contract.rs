@@ -1022,8 +1022,11 @@ fn the_engines_own_size_ceiling_is_unreachable_through_the_echoing_tool() {
     // Two ceilings, and they overlap the wrong way round.
     //
     // A declined `tokfold_compress` echoes the input twice -- once as
-    // `structuredContent.rendering`, once as the content text -- so for text that JSON
-    // escaping does not expand, the frame is `338 + 2T` bytes wide. That reaches
+    // `structuredContent.rendering`, once as the content text -- and quotes the parse
+    // error that declined it, so the envelope belongs to the fixture. For the run of `a`
+    // below, reported at byte 0, under this test's one-digit id, and with no escaping to
+    // expand either copy, the frame is `338 + 2T` bytes wide; in general it is `337 + d +
+    // 2T` for an id of `d` digits, so a wider id frames less. That reaches
     // `MAX_MESSAGE_BYTES` exactly at `T = 16_777_047` and passes it at `16_777_048`.
     // Core declines for size only *above* its own 16 MiB ceiling, so the first input it
     // calls too large is `16_777_217` -- 169 bytes past the point where the echo
@@ -1047,7 +1050,10 @@ fn the_engines_own_size_ceiling_is_unreachable_through_the_echoing_tool() {
     };
     let envelope = 338;
     let last_that_fits = (MAX_MESSAGE_BYTES - envelope) / 2;
-    assert_eq!(last_that_fits, 16_777_047, "the widest echoed input");
+    assert_eq!(
+        last_that_fits, 16_777_047,
+        "the widest echoed input, for a one-digit id"
+    );
 
     let fitting = frame("tokfold_compress", last_that_fits);
     assert_eq!(

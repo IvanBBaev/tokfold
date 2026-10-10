@@ -733,6 +733,54 @@ released says so, and names what `0.0.1` does in the same case.
 
 ### Documentation
 
+- **A rule about the request id's cost, false against the parenthetical that followed
+  it.** `crates/tokfold-mcp/README.md`'s *Limits* said the reply to a declined
+  `tokfold_compress` "is 338 bytes plus twice the text for a one-digit request id" and
+  then that "**Each extra digit of the id takes one byte off the ceiling (16,777,046
+  for id `100`)**". The two halves disagree: by that rule id `100` would frame
+  16,777,045 bytes, not the 16,777,046 its own parenthetical names. The parenthetical
+  is the measured value. A digit of the id costs one byte of reply where a byte of
+  text costs two, so the ceiling falls by one byte for every *two* extra digits and
+  consecutive id widths share one: measured on 2026-10-10 against
+  `target/debug/tokfold mcp` built from this tree, ids `1`/`10`/`100`/`1000`/`10000`
+  frame 16,777,047/046/046/045/045 bytes of `a`, each answered at that length and
+  refused `-32602` one byte above it.
+
+  The same figure was also over-scoped. The envelope quotes the parse error that
+  declined the input, so it belongs to the fixture and not to "text that needs no
+  escaping": a run of `a` is declined with `invalid JSON at byte 0: expected a JSON
+  value` and measures 338 bytes under a one-digit id, while `[1,2` needs no escaping
+  either, is declined with `unexpected end of input`, and measures 361. All four sites
+  that stated the envelope as a fixed `338 + 2T` now carry the general form `337 + d +
+  2T`, name the fixture it was measured on, and say that a wider id or a longer reason
+  only lowers the ceiling: `crates/tokfold-mcp/README.md`, the `MAX_MESSAGE_BYTES`
+  rustdoc in `crates/tokfold-mcp/src/lib.rs`, the `with_payload`-path note in
+  `crates/tokfold-mcp/src/tools.rs`, and the comment and assertion message in
+  `the_engines_own_size_ceiling_is_unreachable_through_the_echoing_tool`.
+
+  The conclusion all four draw survives and no longer rests on the fixture at all. It
+  had been argued from a gap between two measured numbers, which left it true only for
+  the id and the reason those numbers were taken under. It is now derived: the
+  doubling alone puts the engine's first too-large input, 16,777,217 bytes, at
+  33,554,434 bytes of reply, two past the 32 MiB frame, so no envelope however short
+  can let `tokfold_compress` deliver `input_too_large` to a client -- only
+  `tokfold_estimate`, which reports numbers without the payload, can.
+  `crates/tokfold-mcp/src/tools.rs` also said the two ceilings are "169 bytes apart"
+  beside numbers 170 apart; 169 is the count of inputs between them, which is what it
+  now says.
+
+  Pinned by
+  `the_declined_reply_envelope_grows_by_one_byte_per_digit_of_the_request_id` in
+  `crates/tokfold-mcp/tests/session.rs`, which measures the envelope at all five id
+  widths on a four-byte fixture, asserts the equation and then the five derived
+  ceilings so the one-byte-per-two-digits step is held, and asserts that `[1,2`'s
+  envelope is the wider one so the 338 cannot be read back as a property of escaping.
+  The 32 MiB boundaries themselves stay out of band, as the other large-reply figure's
+  test already explains: a 32 MiB reply in a unit test buys nothing the equation does
+  not say. The helper that builds a call line now takes the id and the old one
+  delegates to it, so a test about the id's width cannot drift from the shape every
+  other test in that file measures.
+
 - **A feature's inertness argued from its default, in a README sentence the crate's
   own tests contradict in both directions.** `README.md`'s *What is in v0.0.1* said
   the opt-in `tiktoken` feature "embeds megabytes of BPE tables and is off by default,
@@ -2756,6 +2804,32 @@ documentation a previous fix falsified.
   reference the deletion test accepts.
 
 ### Tests
+
+- `mcp_prints_the_experimental_notice_and_exits_zero_on_empty_input` compares the whole
+  of stderr with `tokfold_mcp::EXPERIMENTAL_NOTICE` plus the one newline the CLI
+  appends, where it matched `contains("EXPERIMENTAL")`. The claim it is named after
+  lives in `crates/tokfold-mcp/README.md`: stderr "carries the one-line EXPERIMENTAL
+  notice and nothing else". The second half is a claim about the stream, and a substring
+  match cannot falsify it -- a second diagnostic on that path, a duplicated warning or a
+  log line from a dependency, would have kept the test green while the sentence went
+  false. This assertion held two words of the message. Measured on the debug binary
+  with `< /dev/null`: 149 bytes on stderr, one line, exactly the constant and the
+  newline `warn` appends, so the sentence was true and merely unheld.
+
+  The "one line" half is not pinned by that comparison and is not meant to be: it
+  compares against the same constant, so a newline inside the constant satisfies both
+  sides of it. That half stays with `notice_is_one_unbroken_line`, which is where the
+  hazard lives -- the literal is held together by a line-continuation escape.
+
+  Two rustdoc paragraphs in `crates/tokfold-mcp/tests/experimental_notice.rs` described
+  the CLI assertion as a `contains`, and fixing that assertion falsified both. One of
+  them was the stated reason its own test earns its place ("Nothing else in the
+  workspace would notice"), which is still true and true for a different reason. The
+  other called the all-caps keyword a cross-crate contract because the CLI test grepped
+  for it; that contract no longer exists, and nothing outside that file holds the
+  spelling now -- the only other use of the literal in the workspace is a negative
+  `contains` on `mcp`'s stdout, which keeps passing whatever the notice is renamed to
+  and would quietly stop checking for a leak rather than fail.
 
 - `every_decompress_rejection_is_reachable_from_hand_built_bytes` is new.
   `fuzz/README.md` and the `decompress` fuzz target's module doc both rested on one
