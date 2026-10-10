@@ -733,6 +733,40 @@ released says so, and names what `0.0.1` does in the same case.
 
 ### Documentation
 
+- **An error-code list with a member no input reaches, under a heading that fits three
+  others badly.** `crates/tokfold-mcp/README.md`, under *The tools*, said "A damaged
+  archive is a tool error (`isError: true`) whose `structuredContent.code` is one of
+  `bad_magic`, `unsupported_version`, `corrupt`, `checksum_mismatch`,
+  `reserved_bits_set`, `invalid_base64`, `not_utf8` or `unrecognized`". Both edges of
+  that set were wrong. `unrecognized` is the `_` arm of `decompress_error_code` in
+  `crates/tokfold-mcp/src/tools.rs`, and no input produces it: `DecompressError`
+  declares exactly five variants and the mapping names all five explicitly, so the arm
+  is reached only by a sixth variant that does not exist. It stays, because the enum is
+  `#[non_exhaustive]` and the mapping is in another crate, so the compiler requires a
+  fallback — but a client told to branch on it is being told to handle an outcome the
+  server cannot send. In the other direction, three of the remaining seven are not a
+  damaged archive at all. `invalid_base64` is decided before an archive exists, so
+  nothing was damaged. The empty argument answers `bad_magic` for compatibility while
+  its message names the size (`the archive is empty (0 bytes)`), which is the opposite
+  of corruption. And `not_utf8` comes from an *intact* archive — the header parses, the
+  checksum holds, the payload is restored byte for byte, and the one problem is that
+  those bytes are not a Rust string, so there is no `text` field to carry them. The
+  bullet now groups the seven by what reaches each, and says plainly that the eighth is
+  reachable by nothing and why the arm is kept.
+  `every_decompress_code_a_caller_can_reach_is_reached_here_and_the_catch_all_is_not`
+  in `crates/tokfold-mcp/tests/contract.rs` drives one input per code through the real
+  transport and compares the codes it got back **as a set**, so a code that stops being
+  produced fails there even though every other assertion in that file still passes; the
+  existing `damage` table next to it covers four of the seven and nothing anywhere
+  covered `unrecognized`. Hand-mutating `ChecksumMismatch => "unrecognized"` makes the
+  new test fail and left the rest of the suite green, which is the gap it closes. The
+  five damaged copies are compared against the pristine bytes before any of them is
+  sent, because a fixture whose edit is a no-op would drive the *pristine* archive under
+  a damaged code's name and pass; turning one of the edits into a no-op
+  (`reserved_bit[8] |= 0b0000_0000`) fails on that comparison rather than on the
+  code. **A catch-all arm the compiler demands is not an outcome the protocol offers,
+  and a heading over an enumeration is a claim about every member under it.**
+
 - **A truncation table refuted by its own prose, three ways.** `docs/threat-model.md`,
   under *Archive path handling (CLI)*, prints every band a truncated archive falls
   into, and the paragraph reading that table back got it wrong three times. It said the

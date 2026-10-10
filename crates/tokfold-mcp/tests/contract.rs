@@ -737,6 +737,154 @@ fn each_kind_of_archive_damage_is_named_by_its_own_code() {
     );
 }
 
+// One input per reachable code, and the set compared as a whole: splitting the rows
+// across functions would let a code drop out of the set without failing anything.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn every_decompress_code_a_caller_can_reach_is_reached_here_and_the_catch_all_is_not() {
+    // `each_kind_of_archive_damage_is_named_by_its_own_code` pins the four codes a
+    // *damaged archive* produces. That is not the whole contract: the published set is
+    // wider than damage and narrower than the mapping, and both edges were wrong in the
+    // README until this test was written.
+    //
+    // Wider, because three of the codes a caller can see are not damage at all.
+    // `invalid_base64` is decided before an archive exists, so nothing was damaged.
+    // `bad_magic` covers two unrelated inputs -- an empty argument, whose message names
+    // emptiness rather than corruption, and bytes that are simply not this format.
+    // `not_utf8` fires on an *intact* archive: the header parses, the checksum holds,
+    // the payload is restored byte for byte, and the only problem is that those bytes
+    // are not a Rust string, so there is no `text` field to put them in.
+    //
+    // Narrower, because `unrecognized` -- the `_` arm of `decompress_error_code` -- is
+    // produced by no input. `DecompressError` has five variants and the mapping names
+    // all five explicitly; the arm exists because the enum is `#[non_exhaustive]` and
+    // this crate is not the one that declares it, so the compiler demands a fallback.
+    // A sixth variant added in tokfold-core would land there, and no test outside that
+    // crate can see one coming -- which is why the arm stays, and why its absence from
+    // the reachable set is asserted here instead of being taken on trust.
+    let original = r#"{"rows":[{"id":1,"name":"ada"},{"id":2,"name":"grace"}]}"#;
+    let archive = compress(original)
+        .get("archive")
+        .and_then(json::Value::as_str)
+        .expect("this input compresses")
+        .to_owned();
+    let good = base64::decode(&archive).expect("the server emits valid base64");
+
+    // An archive over bytes that are not UTF-8. The server never writes one -- it only
+    // ever compresses `&str` -- but `archive` is caller-supplied, and any other producer
+    // of the format can build this. It decodes cleanly, which is the point.
+    let payload = [0xFF_u8, 0xFE];
+    let mut not_utf8 = good[..10].to_vec();
+    not_utf8.push(2);
+    not_utf8.extend_from_slice(&tokfold_core::format::sha256(&payload));
+    not_utf8.extend_from_slice(&payload);
+    assert_eq!(
+        tokfold_core::Compressor::new(tokfold_core::Config::default())
+            .decompress(&not_utf8)
+            .expect("this archive is intact, not damaged"),
+        payload,
+        "the not_utf8 fixture must be a valid archive, or it tests the wrong thing"
+    );
+
+    let mut clobbered_magic = good.clone();
+    clobbered_magic[0] ^= 0b0000_0001;
+    let mut newer_version = good.clone();
+    newer_version[4] = 2;
+    let mut reserved_bit = good.clone();
+    reserved_bit[8] |= 0b0000_1000;
+    let mut wrong_checksum = good.clone();
+    wrong_checksum[11] ^= 0b0000_0001;
+    let mut cut_short = good.clone();
+    cut_short.truncate(11);
+
+    // Every one of the five edits above must actually land, or a row below would drive the
+    // pristine archive under a damaged code's name and still pass.
+    for (name, damaged) in [
+        ("clobbered_magic", &clobbered_magic),
+        ("newer_version", &newer_version),
+        ("reserved_bit", &reserved_bit),
+        ("wrong_checksum", &wrong_checksum),
+        ("cut_short", &cut_short),
+    ] {
+        assert_ne!(damaged, &good, "{name}: this fixture damages nothing");
+    }
+
+    // Each row is an input a caller can send and the code it comes back as. The `reached`
+    // set below is compared as a whole, so a code that stops being produced fails here
+    // even though every other assertion in this file still passes.
+    let reachable: &[(&str, String)] = &[
+        ("invalid_base64", "not base64 at all !!!".to_owned()),
+        ("bad_magic", String::new()),
+        ("bad_magic", base64::encode(&clobbered_magic)),
+        ("unsupported_version", base64::encode(&newer_version)),
+        ("reserved_bits_set", base64::encode(&reserved_bit)),
+        ("checksum_mismatch", base64::encode(&wrong_checksum)),
+        ("corrupt", base64::encode(&cut_short)),
+        ("not_utf8", base64::encode(&not_utf8)),
+    ];
+
+    let mut reached: Vec<&str> = Vec::new();
+    for (expected, argument) in reachable {
+        let refused = decompress(argument);
+        let code = refused
+            .get("code")
+            .and_then(json::Value::as_str)
+            .unwrap_or_else(|| panic!("{expected}: this input must be refused: {refused}"));
+        assert_eq!(code, *expected, "{expected}: got {refused}");
+        assert!(
+            refused.get("text").is_none(),
+            "{expected}: a refusal must not also hand back bytes: {refused}"
+        );
+        if !reached.contains(expected) {
+            reached.push(expected);
+        }
+    }
+    reached.sort_unstable();
+    assert_eq!(
+        reached,
+        [
+            "bad_magic",
+            "checksum_mismatch",
+            "corrupt",
+            "invalid_base64",
+            "not_utf8",
+            "reserved_bits_set",
+            "unsupported_version",
+        ],
+        "the codes a caller can reach are the seven the README lists"
+    );
+    assert!(
+        !reached.contains(&"unrecognized"),
+        "no input reaches the catch-all: {reached:?}"
+    );
+
+    // The two codes whose message carries the distinction the README now draws. Without
+    // these, "the argument is not base64" and "the argument is empty" would both read as
+    // a damaged archive to anyone showing the code to a user.
+    assert_eq!(
+        decompress("").get("message").and_then(json::Value::as_str),
+        Some("the archive is empty (0 bytes)"),
+        "an empty argument is named for its size, not for its magic"
+    );
+    assert_eq!(
+        decompress(&base64::encode(&not_utf8))
+            .get("message")
+            .and_then(json::Value::as_str),
+        Some("the archive restores bytes that are not valid UTF-8"),
+        "an intact archive is not described as damaged"
+    );
+
+    // And the pristine archive still round-trips, so the eight inputs above fail for the
+    // reasons claimed rather than because the fixture was broken to begin with.
+    assert_eq!(
+        decompress(&archive)
+            .get("text")
+            .and_then(json::Value::as_str),
+        Some(original),
+        "the pristine archive must still round-trip"
+    );
+}
+
 #[test]
 fn the_transport_line_limit_is_the_one_the_documentation_promises() {
     // The limit stays above the engine's own 16 MiB input ceiling, which is what makes a

@@ -232,12 +232,24 @@ newest handshake-era version it serves.
   `⟦tkfd:v1:raw⟧` marker line.
 - **`tokfold_decompress`** — argument `archive`, the base64 string from
   `tokfold_compress`. Returns the original text in both `content` and
-  `structuredContent.text`. A damaged archive is a tool error (`isError: true`)
-  whose `structuredContent.code` is one of `bad_magic`, `unsupported_version`,
-  `corrupt`, `checksum_mismatch`, `reserved_bits_set`, `invalid_base64`,
-  `not_utf8` or `unrecognized`; no partial text is ever returned. The archive is
-  **not** encrypted or obfuscated — at `0.0.1` it holds the original bytes verbatim
-  behind a header — so store it as carefully as the text itself.
+  `structuredContent.text`. A failure is a tool error (`isError: true`) carrying
+  `structuredContent.code`, and no partial text ever comes back with it. Four of the
+  codes mean the archive is damaged: `unsupported_version`, `reserved_bits_set`,
+  `checksum_mismatch` and `corrupt`. Three do not. `invalid_base64` is decided
+  before an archive exists — the argument never decoded. `bad_magic` covers bytes
+  that are not this format, and also an empty argument, whose message names the size
+  (`the archive is empty (0 bytes)`) rather than the magic. `not_utf8` comes from an
+  *intact* archive: the header parsed, the checksum held, the payload was restored
+  byte for byte, and the only problem is that those bytes are not a string, so there
+  is no `text` to put them in. Those seven are the whole set a caller can reach,
+  pinned as a set by
+  `every_decompress_code_a_caller_can_reach_is_reached_here_and_the_catch_all_is_not`
+  in `tests/contract.rs`. A written eighth, `unrecognized`, is reached by no input:
+  `DecompressError` has five variants and the mapping names all five, so that arm
+  exists only because the enum is `#[non_exhaustive]` and a variant added in a later
+  tokfold-core has to land somewhere. The archive is **not** encrypted or
+  obfuscated — at `0.0.1` it holds the original bytes verbatim behind a header — so
+  store it as carefully as the text itself.
 
 ### 5. Limits
 
