@@ -84,8 +84,18 @@ fn run_tokfold_without_stdin(args: &[&str]) -> Output {
 /// report whether it exited on its own.
 ///
 /// A test for "this must not hang" that hangs when it regresses reports nothing, so
-/// every wait that could block forever goes through here and the timeout becomes an
-/// assertion of its own rather than a stalled run.
+/// the waits in *those* tests go through here and the timeout becomes an assertion of
+/// its own rather than a stalled run.
+///
+/// That is a claim about those waits and no others. Most children in this file are
+/// waited on with a plain `.output()` or `.wait()`, both of which block until the
+/// child exits -- including `run_tokfold`'s own `.output()`, so even the common path
+/// is unguarded. Measured on 2026-10-03 over this file: `grep -c '\.output()'` is 16
+/// and `grep -cE '\.wait\(\)|\.wait_with_output\(\)'` is 8, against a single
+/// `try_wait` -- the one below -- and four callers of this helper. Those 24 waits
+/// assume the binary terminates, which is not what their tests are about; if one
+/// regresses, the run stalls until the harness' own bound instead of failing here.
+/// Route a new wait through this helper when termination *is* the test's subject.
 fn finished_within_ten_seconds(child: &mut Child) -> bool {
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
@@ -481,8 +491,10 @@ fn the_profile_flag_selects_the_encoder_the_report_names() {
         "balanced must let the tabular encoder compete: {balanced}"
     );
 
-    // `aggressive` is documented as identical to `balanced` in v0.0.1; pin that so the
-    // day it diverges is a deliberate change and not a silent one.
+    // `aggressive` enables the same encoders as `balanced` in v0.0.1, which is what
+    // this pins -- the identity of the two reports, not the mapping that produced
+    // them. No output can check that mapping, so it is pinned where the arms are
+    // distinguishable, in `each_profile_spelling_reaches_its_own_core_profile`.
     let aggressive = stats_report("aggressive", COMPRESSIBLE_JSON);
     assert_eq!(
         aggressive, balanced,
@@ -1377,11 +1389,17 @@ fn help_version_and_mcp_fail_on_a_standard_output_that_cannot_be_written() {
 /// subcommand, not an empty document.
 ///
 /// `io::stdin()` treats `EBADF` as end of input, so in 0.0.1 `compress --archive` read
-/// nothing, passed nothing through and exited `0`, leaving an earlier run's archive at
-/// that path in place (the stale-archive clearing added since would have deleted it);
-/// `expand` reported a bad magic and exited `3`; `stats` called the empty input
-/// invalid JSON; and `mcp` ended its session at once with `0`. A descriptor opened write-only is the
-/// portable way to get `EBADF` from a read.
+/// nothing, passed nothing through and exited `0`; `expand` reported a bad magic and
+/// exited `3`; `stats` called the empty input invalid JSON; and `mcp` ended its session
+/// at once with `0`. A descriptor opened write-only is the portable way to get `EBADF`
+/// from a read.
+///
+/// Both binaries leave an earlier run's archive at the `--archive` path, for different
+/// reasons, and the last assertion here pins that: 0.0.1 had read an empty input and
+/// declined to compress it ("no recovery archive written (compression did not run)"),
+/// and this binary never reaches the clearing step, because the read failure is raised
+/// before compression runs. The clearing is on the path where compression ran and the
+/// input was rejected, not on an I/O failure reading the input.
 #[cfg(unix)]
 #[test]
 fn a_standard_input_that_cannot_be_read_fails_the_command() {
@@ -2409,11 +2427,18 @@ fn a_symlink_chain_at_the_archive_path_names_the_file_it_resolves_to() {
     );
 }
 
-/// A read-only input named twice is refused like a writable one, although a
-/// successful pass could not have overwritten it (`0.0.1` stopped at "Permission
-/// denied") and a rejected one would not have deleted it (`0.0.1` passed it through,
-/// exit `0`). The guard runs before either outcome is known, so its message may not
-/// predict one: it states the rule it checked.
+/// A read-only input named twice is refused like a writable one, and the message states
+/// the rule the guard checked rather than an outcome, because the guard runs before
+/// either outcome is known.
+///
+/// Both outcomes were once described here as harmless over a read-only file, on
+/// `0.0.1`'s evidence. Only the successful pass is: it needs write permission on *the
+/// file* and `0.0.1` stopped at "Permission denied". The rejected pass reaches a
+/// read-only file, because `fs::remove_file` needs write permission on the *directory*
+/// and ignores the file's own mode -- the asymmetry
+/// `a_read_only_archive_survives_a_successful_pass_and_is_deleted_by_a_rejected_one`
+/// pins on an archive at its own path. `0.0.1` is harmless on that leg only because it
+/// has no clearing step at all: it passed the input through at exit `0`.
 #[test]
 #[cfg(unix)]
 fn a_read_only_input_named_as_its_own_archive_is_refused_without_a_prediction() {
@@ -2505,6 +2530,18 @@ fn a_fifo_at_the_archive_path_neither_hangs_nor_is_removed() {
         "a rejected input is still a clean passthrough: {stderr}"
     );
     assert_eq!(out.stdout, b"not json");
+    // The whole message here too, for the reason the winning leg spells out below: the
+    // clearing path and the write path share the suffix "it is not a regular file", so
+    // only the operation and the path tell them apart. Before this assertion the
+    // rejected leg checked no message at all, and the two sites that did check this one
+    // were both descriptor spellings (`/dev/fd/3`, `/dev/null`) -- never a FIFO.
+    assert!(
+        stderr.contains(&format!(
+            "left {} untouched: it is not a regular file",
+            path_str(&rejected)
+        )),
+        "the clearing must name the operation and the path it left alone: {stderr}"
+    );
     assert!(
         fs::symlink_metadata(&rejected).is_ok(),
         "a FIFO cannot hold a stale archive, so it must be left where it was"
@@ -2527,9 +2564,18 @@ fn a_fifo_at_the_archive_path_neither_hangs_nor_is_removed() {
          written: {:?}",
         String::from_utf8_lossy(&out.stdout)
     );
+    // The whole message, not the four words the two refusals share. `main` has two
+    // that end in "it is not a regular file": the clearing path's "left X untouched"
+    // and the write path's "refusing to write the archive to X". A `contains` on the
+    // common suffix passes for either, so it would not notice the winning pass naming
+    // the wrong operation -- and the path is asserted because that is the one thing a
+    // caller needs from the message and the one thing a refusal can get wrong.
     assert!(
-        stderr.contains("not a regular file"),
-        "the refusal must say why the path was rejected: {stderr}"
+        stderr.contains(&format!(
+            "refusing to write the archive to {}: it is not a regular file",
+            path_str(&winning)
+        )),
+        "the refusal must name the operation and the path it refused: {stderr}"
     );
     assert!(
         fs::symlink_metadata(&winning).is_ok(),
@@ -3302,6 +3348,61 @@ fn a_short_file_behind_a_read_only_descriptor_is_reported_like_a_long_one() {
     assert_eq!(fs::read(&short).expect("reread the short file"), b"TK");
 }
 
+/// The error for a write-only descriptor slot begins exactly at the magic's width,
+/// because the length shortcut runs before the read that a write-only descriptor
+/// refuses. Three bytes cannot carry the magic, so the slot is settled as foreign
+/// without being read and the rejected input passes through at exit `0`; four bytes
+/// (`ARCHIVE_MAGIC.len()`) could, so the read is attempted, fails with `EACCES`, and
+/// the pass is refused at exit `2` with nothing on stdout. The slot itself is untouched
+/// at both widths.
+///
+/// The wide side costs the caller a document `0.0.1` handed back: `0.0.1` inspected no
+/// slot at all and passed the input through at either width, measured on the published
+/// `tokfold-darwin-arm64` binary (`sha1 8e2ed283`) as exit `0` with the input on
+/// stdout. That divergence is deliberate -- an unreadable slot may hold a stale archive
+/// the rejected pass has to clear, and clearing it is the whole reason the slot is
+/// inspected -- but whether it is worth the document is a judgement this test only
+/// records, not one it settles.
+#[test]
+#[cfg(target_os = "macos")]
+fn the_write_only_descriptor_slot_error_begins_at_the_magics_width() {
+    let dir = scratch_dir("descriptor-slot-write-only-width");
+
+    let narrow = dir.join("narrow");
+    fs::write(&narrow, b"TKF").expect("seed three bytes");
+    let out = compress_into_descriptor_3(">>", &narrow, b"not json");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    assert_eq!(
+        out.stdout, b"not json",
+        "a slot too short for the magic is foreign, so the input is passed through"
+    );
+    assert!(
+        stderr.contains("tokfold: left /dev/fd/3 untouched: it is not a tokfold archive\n"),
+        "{stderr}"
+    );
+    assert_eq!(fs::read(&narrow).expect("reread the narrow slot"), b"TKF");
+
+    let wide = dir.join("wide");
+    fs::write(&wide, b"TKF!").expect("seed the magic's width");
+    let out = compress_into_descriptor_3(">>", &wide, b"not json");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "one more byte makes the slot readable in principle: {stderr}"
+    );
+    assert_eq!(
+        out.stdout, b"",
+        "the rejected document is lost at this width, unlike in 0.0.1"
+    );
+    assert!(
+        stderr.contains("and not passed through: inspecting the archive path /dev/fd/3"),
+        "{stderr}"
+    );
+    assert_eq!(fs::read(&wide).expect("reread the wide slot"), b"TKF!");
+}
+
 /// A directory behind a descriptor spelling is reported as a directory, exit `2`, as
 /// one named by its own path is — not skipped as a file that holds no archive.
 #[test]
@@ -3655,6 +3756,62 @@ fn an_archive_path_that_cannot_be_inspected_fails_the_successful_pass_on_the_ins
         "{stderr}"
     );
     assert_eq!(fs::read(&not_a_dir).expect("reread the plain file"), b"x");
+}
+
+/// A directory at the archive path of a *rejected* pass is fatal, where a FIFO at the
+/// same path is not: the clearing admits a directory on purpose -- the slot check
+/// `clear_stale_archive` delegates to, `inspect_archive_slot`, settles `NotAFile` on
+/// `!meta.is_file() && !meta.is_dir()`, so a directory goes on to the magic probe, where
+/// `File::open` succeeds on it and `read_exact` fails with `EISDIR`. (The `is_file() ||
+/// is_dir()` spelling is `write_file`'s, which governs the *successful* pass's half of
+/// this pair.) So the passthrough that a rejected input would otherwise get is lost --
+/// exit `2` with nothing on stdout --
+/// while `a_fifo_at_the_archive_path_neither_hangs_nor_is_removed` shows the other
+/// member of "not a regular file" passing through at exit `0`. The directory is left
+/// exactly as it was; nothing in it is read or removed.
+///
+/// The error number is asserted because a message's number is a claim of its own: 21 is
+/// `EISDIR` on both macOS and Linux, which is as far as `cfg(unix)` reaches here.
+#[test]
+#[cfg(unix)]
+fn a_directory_at_the_archive_path_of_a_rejected_pass_costs_the_passthrough() {
+    let dir = scratch_dir("archive_path_is_a_directory_rejected");
+    let input = dir.join("broken.json");
+    fs::write(&input, b"not json").expect("write the rejected input");
+    let archive = dir.join("slot");
+    fs::create_dir(&archive).expect("create the directory slot");
+    fs::write(archive.join("inside"), b"kept").expect("seed a file inside the slot");
+
+    let out = run_tokfold_without_stdin(&[
+        "compress",
+        "--input",
+        path_str(&input),
+        "--archive",
+        path_str(&archive),
+    ]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "stderr: {stderr}");
+    assert!(
+        out.stdout.is_empty(),
+        "the rejected document is lost, unlike the FIFO case: {:?}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(
+        stderr.contains(&format!(
+            "and not passed through: inspecting the archive path {}: Is a directory (os error 21)",
+            path_str(&archive)
+        )),
+        "the refusal must name the step, the path and the platform error: {stderr}"
+    );
+    assert!(
+        !stderr.contains("not a regular file"),
+        "a directory is admitted by the clearing, not refused by it: {stderr}"
+    );
+    assert!(archive.is_dir(), "the directory must be left where it was");
+    assert_eq!(
+        fs::read(archive.join("inside")).expect("reread the file inside the slot"),
+        b"kept"
+    );
 }
 
 /// A directory at the archive path of a successful pass is not refused as "not a

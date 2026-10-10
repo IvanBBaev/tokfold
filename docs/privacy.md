@@ -7,11 +7,15 @@ showed it. For the attacks this design does and does not resist, see
 
 A statement below marked **enforced** is checked by CI on every push to `main` and on
 every pull request. A statement marked **true today** was read back against the
-**working tree**, not against a commit: when this file was last audited (2026-10-01)
-the tree held uncommitted changes on top of `main` at `0f759f6` — `git diff
---shortstat` was not empty — and this document is itself untracked. A statement here
-can therefore differ from what `main` contains, and nothing fails the build if a
-change breaks it. Review is the only guard.
+**working tree**, not against a commit, and the statements were not all read back on
+the same day — a measurement here carries its own date. The tree is not clean: at the
+most recent read-back (2026-10-10) it held uncommitted changes on top of `main` at
+`c6f800e`, and `git diff --shortstat` reported 16 files changed; both of those move
+with every commit, so re-derive them rather than trusting the two values here. This
+document is tracked — `df6a0fc` added it, and that same commit carried a
+sentence calling it untracked, false the moment it landed. A statement here can
+therefore differ from what `main` contains, and nothing fails the build if a change
+breaks it. Review is the only guard.
 CI is not a required check either: `main` has no branch protection
 (`gh api repos/IvanBBaev/tokfold/branches/main/protection` answers "Branch not
 protected"), so a failing run reports a broken **enforced** statement but does not
@@ -45,8 +49,8 @@ stale-archive deletion and no same-file guards (see
   of ordinary non-network crates. `libc 0.2.186` is in the default graph today,
   through `sha2 → cpufeatures` (`cargo tree -p tokfold-cli -e normal -i libc`), so
   the raw socket syscalls are reachable from the graph and this gate does not see
-  them. What answers that is the first-party bullet below and `nm -u` on the built
-  binary, not `cargo deny`.
+  them. What answers that is this section's *The binary* bullet and `nm -u` on the
+  built binary, not `cargo deny`.
   The `deny` job in `.github/workflows/ci.yml` runs `cargo deny --locked check` on
   every push to `main` and on every pull request. It does not run on the scheduled
   build.
@@ -64,19 +68,48 @@ stale-archive deletion and no same-file guards (see
   `rusty-fork 0.3.1` (`cargo tree -p tokfold-core -e features --all-features`). None
   of that is compiled into a released binary.
 - **The binary.** A macOS arm64 release build of the **working tree** (SHA-1
-  `834c01f2…`, built 2026-10-01 with default features — `tokfold-cli` declares no
-  `[features]` table of its own, so `--all-features` on that package adds nothing)
-  imports none of these symbols: `socket`, `connect`, `getaddrinfo`, `sendto`,
+  `834c01f2…`, built 2026-10-01 by `cargo build --release -p tokfold-cli` with
+  default features, re-verified to still reproduce 2026-10-10). What moves that hash
+  is the **feature set**, and the package selection only decides which packages a
+  feature flag can reach; four builds of this tree, measured 2026-10-10, separate the
+  two: `-p tokfold-cli` and `--workspace` both give `834c01f2…` at 1 261 712 bytes
+  with default features, so widening the selection alone changes nothing;
+  `-p tokfold-cli --all-features` also gives `834c01f2…`, because `--all-features`
+  applies to the *selected* packages and `tokfold-cli` declares no `[features]` table
+  of its own; `-p tokfold-cli --features tokfold-core/tiktoken` gives `a65170a2…` at
+  1 263 392 without `tokfold-core` being selected at all; and `--workspace
+  --all-features` gives `ca2cfc4a…`, the same 1 263 392 bytes by a different route,
+  because the wider selection puts `tokfold-core` in reach of `--all-features` and so
+  turns on both `tiktoken` and the unimplemented `hf`. Selecting a package never
+  enables its non-default features; `tiktoken` is not in core's `default` list.
+  `834c01f2…` imports none of these symbols: `socket`, `connect`, `getaddrinfo`, `sendto`,
   `bind`, `listen`, `fork`, `execv`, `posix_spawn`. The same holds for the binary npm
   ships for that platform (`tokfold-darwin-arm64` `0.0.1`, `bin/tokfold` SHA-1
   `8e2ed283…`). The measurement is `nm -u <binary>` filtered for those names; it
   matched nothing in either, while the unfiltered lists are 83 undefined symbols for
   the working-tree build and 76 for the published one, so the filter had something to
-  reject. Both binaries are stripped, so this says what the binary *imports*, not
-  what it contains. The other four platform binaries were not measured.
+  reject. Of those two, only the published one is stripped — not because a local build
+  cannot be, but because nothing in the repository strips one by default: the workspace
+  `Cargo.toml` declares no `[profile.release]` table, and `release.yml` passes
+  `--config 'profile.release.strip="symbols"'` as a one-off so that a developer's
+  build keeps its backtrace symbols. Passing that same override here does strip a
+  local build, and with the rest of `release.yml`'s flags it gives `2a17afd0…` at
+  1 002 896 bytes (measured 2026-10-10). So for the published binary this says what
+  it *imports* and
+  not what it contains, while the working-tree build still carries 2 562 defined
+  symbols, 440 of them mangled Rust names containing `tokfold`, that this measurement
+  does not look at. The other four platform binaries were not measured.
 - **Token counting.** The optional `tiktoken` feature of `tokfold-core` (off by
-  default, and not enabled in the release build) compiles its encoding tables into the
-  binary through `tiktoken-rs`. It downloads nothing.
+  default, and not enabled in the release build — `release.yml` builds `--package
+  tokfold-cli` with no feature flags) embeds its encoding tables at compile time
+  through `tiktoken-rs`, which `include_str!`s them, so nothing is fetched at run
+  time. It does not follow that those tables reach *this* binary: nothing on the
+  CLI's command line selects an exact estimator, so the linker drops them. Measured
+  2026-10-10 on this tree with one variable moved — the same `-p tokfold-cli`
+  selection, the feature off and then on — `cargo build --release -p tokfold-cli
+  --features tokfold-core/tiktoken` grows the binary by 1 680 bytes (1 261 712
+  → 1 263 392, SHA-1 `834c01f2…` → `a65170a2…`) — a thousandth of the 1 681 126
+  bytes of `cl100k_base.tiktoken` alone. Either way it downloads nothing.
 - **Installing through npm** uses the network, as any `npm install` does: npm fetches
   the launcher package and one platform package from the registry. That is npm's
   traffic, not tokfold's. See *The npm launcher*.
@@ -112,8 +145,8 @@ stale-archive deletion and no same-file guards (see
   its experimental notice there on start-up.
 - **The `--archive` path, and nothing else on disk.** `write_file` in `main.rs` is the
   only function that writes a file. Read "the `--archive` path" as *the file that
-  path resolves to*: both the write and the deletion below follow a symlink at that
-  path to its target.
+  path resolves to*: both the write and the deletion of a stale archive follow a
+  symlink at that path to its target.
   - It opens the path with `write`, `create` and `truncate`, and sets no permissions,
     so a new archive gets your process umask's default mode. Measured on macOS: under
     umask `022` a new archive is `0644`, which other local users can read; under
@@ -176,8 +209,8 @@ stale-archive deletion and no same-file guards (see
 - **None at run time.** The CLI writes no file other than the `--archive` path (or,
   through a symlink there, that path's target), and neither library crate writes
   files.
-- **A `cargo test` run is a different story, and the bullet above is about the
-  shipped binary.** The workspace's own sources name a temporary directory in two
+- **A `cargo test` run is a different story, and the *None at run time* bullet is
+  about the shipped binary.** The workspace's own sources name a temporary directory in two
   places: `std::env::temp_dir`, in the `#[cfg(test)]` module `archive_identity_tests`
   in `crates/tokfold-cli/src/main.rs`, and `env!("CARGO_TARGET_TMPDIR")` — a
   directory under `target/`, not the system one — in
@@ -201,11 +234,11 @@ decides what enters the model's context and what it logs.
   original**. Measured on `{"a":1}`: the reply carried a base64 archive that decodes
   to a `TKFD` header followed by `{"a":1}`. A client that logs or stores tool results
   therefore logs or stores the original too.
-- **`tokfold_decompress`** returns the original **twice**, like the bullet above:
+- **`tokfold_decompress`** returns the original **twice**, like `tokfold_compress`:
   once as `content[0].text` and once as `structuredContent.text`. Measured on the
-  built binary (SHA-1 `834c01f2…`) with an archive of
-  `{"secret":"hunter2","rows":[{"a":1},{"a":2}]}`: both fields carried that document
-  in full. A client that stores only one of the two still stores the whole
+  built binary (`cargo build --release -p tokfold-cli`, SHA-1 `834c01f2…`) with an
+  archive of `{"secret":"hunter2","rows":[{"a":1},{"a":2}]}`: both fields carried
+  that document in full. A client that stores only one of the two still stores the whole
   original.
 - **`tokfold_estimate`** returns the statistics without the payload (pinned by the
   `estimate_reports_stats_without_the_payload` test in `tools.rs`).
@@ -214,8 +247,9 @@ decides what enters the model's context and what it logs.
   it.** `EXPERIMENTAL_NOTICE` is a constant in `crates/tokfold-mcp/src/lib.rs`; the
   CLI's `cmd_mcp` (`crates/tokfold-cli/src/main.rs`) writes it to **standard error**
   before the loop starts, so it reaches the terminal or the host's log, not the
-  JSON-RPC client. Measured on the built binary (SHA-1 `834c01f2…`) with the input
-  closed: standard error held exactly one line, byte-identical to that constant,
+  JSON-RPC client. Measured on the built binary (`cargo build --release -p
+  tokfold-cli`, SHA-1 `834c01f2…`) with the input closed: standard error held exactly
+  one line, byte-identical to that constant,
   saying the server is unhardened and unaudited and must not be used with production
   secrets.
 

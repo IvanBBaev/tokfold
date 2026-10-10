@@ -1,9 +1,16 @@
 //! The README's Quickstart session, replayed and checked against what it quotes.
 //!
-//! The Quickstart shows a session a reader can paste into a shell and the replies it
-//! produces. Both halves are read out of `README.md` here rather than copied, so the
-//! document cannot drift from the server unnoticed *where this file anchors it* -- and
-//! that is under a quarter of the bytes it quotes, the share
+//! The Quickstart shows a session a reader can paste into a shell, the replies it
+//! produces, and the fourth reply's rendering unescaped. All three are read out of
+//! `README.md` here rather than copied -- the blocks marked `quickstart-session`,
+//! `quickstart-replies` and `quickstart-rendering`, each found by its marker, so a lost
+//! marker is a panic -- and the document cannot drift from the server unnoticed *where
+//! this file anchors it*. What that is worth differs by block, and this header stated
+//! one block's share as if it covered all three ("that is under a quarter of the bytes
+//! it quotes"): the session block is pinned whole, its first and last lines by equality
+//! and its seven request lines by being served; the rendering is compared byte for
+//! byte; and only the replies are quoted with elisions, holding 1693 bytes of the 7178
+//! the real replies carry -- the share
 //! `the_quoted_replies_anchor_only_part_of_what_they_quote` asserts. The request lines
 //! are the ones the reader runs, and every quoted reply is matched against the real
 //! one. A quoted reply is trimmed with `…`; each piece between the ellipses must appear
@@ -311,7 +318,9 @@ fn the_quoted_replies_anchor_only_part_of_what_they_quote() {
     // and suffix check. Derived here so that no comment has to carry the count.
     assert_eq!(past_the_loop, 4, "quotes with more than two pieces");
     // Stated as the inequality rather than as "23.6%", so that the assertion says what it
-    // means when a row moves: under a quarter of the quoted session is held down.
+    // means when a row moves: under a quarter of what the server emits in reply is held
+    // down. It is the replies' share and not the file's -- the session block is served
+    // line by line and the rendering block is compared whole.
     assert!(
         anchored_total * 4 < actual_total,
         "{anchored_total} of {actual_total} bytes"

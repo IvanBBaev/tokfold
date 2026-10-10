@@ -3,10 +3,15 @@
 This document describes the threats tokfold faces in each of the three ways it can
 be deployed, and names the code that answers each one. Where nothing answers a
 threat, it says so. Its claims were read back against the **working tree**, not
-against a commit: when it was last audited (2026-10-01) the tree held uncommitted
-changes on top of `main` at `0f759f6` — `git diff --shortstat` was not empty — and
-this document is itself untracked, so a sentence here can describe code that `main`
-does not contain. It is not an audit: the
+against a commit, and **not all on the same day** — a measurement here carries its
+own date, and an undated sentence was read back whenever it was last touched. The
+tree is not clean: at the most recent read-back (2026-10-10) it held uncommitted
+changes on top of `main` at `c6f800e`, and `git diff --shortstat` reported 16 files
+changed. Both of those move with every commit, so re-derive them (`git log -1
+--format=%h`, `git diff --shortstat`) rather than trusting the two values here. This
+document is tracked — `df6a0fc` added it, and that same commit carried a
+sentence calling it untracked, false the moment it landed — but no gate leg checks it
+against the code, so a sentence here can describe code that `main` does not contain. It is not an audit: the
 `tokfold-mcp` crate in particular is declared **EXPERIMENTAL, unhardened and
 unaudited** (`crates/tokfold-mcp/src/lib.rs`, `EXPERIMENTAL_NOTICE`), and nothing
 here changes that status.
@@ -78,9 +83,12 @@ or a tool get back what was really there.
   rendering twice, as `content` text and as `structuredContent.rendering`. When there
   is an archive, it also carries `structuredContent.archive`, the archive in base64,
   which holds the original bytes. So by default the full original goes back to the
-  client beside the rendering (measured on the built binary with
-  `{"a":1}`: the reply held `rendering` and a base64 `archive` that decodes to a
-  `TKFD` header followed by `{"a":1}`).
+  client beside the rendering (measured 2026-10-10 against the built binary
+  (`cargo build --release -p tokfold-cli`, SHA-1 `834c01f2…`) with `{"a":1}`: the
+  reply's `structuredContent` held `compressed`, `stats`, `rendering` and `archive`,
+  the `rendering` was the `⟦tkfd:v1:raw⟧` marker plus the input and equal to
+  `content[0].text`, and the base64 `archive` decoded to 50 bytes opening `TKFD` and
+  ending in `{"a":1}`).
 - **Not implemented here.** The *proxy* shape — an upstream connection, a
   content-addressed archive store and a `retrieve` tool — is out of scope by design
   and needs a threat model of its own before any of it is written
@@ -124,7 +132,7 @@ code holds it today.
 
 | Threat | Mitigation in code |
 |---|---|
-| Oversized input to the engine | Core refuses input over `max_input_bytes`, which defaults to 16 MiB (`DEFAULT_MAX_INPUT_BYTES` in `crates/tokfold-core/src/compressor.rs`). The CLI then passes the input through unchanged and exits `0` **unless something on the `--archive` path stops it first**. Measured with a 17,825,802-byte input and no `--archive`: exit `0`, the input echoed byte for byte, and on standard error "tokfold: passing input through uncompressed: input 17825802 bytes exceeds limit 16777216". With `--archive` the passthrough can fail instead, and then nothing reaches standard output at all. Two measured with that same input: a stale archive the process cannot unlink is fatal (`--archive` naming a `TKFD` file in a mode-`555` directory: exit `2`, 0 bytes on standard output, "the input was rejected (...) and not passed through: removing stale archive ...: Permission denied (os error 13)"), and an archive aimed at its own input is refused before the read (exit `2`, 0 bytes on standard output, the input left at its full size). The clearing needs the *directory* writable, which a successful pass does not — see *Archive path handling*. **On the MCP path the input is not passed through, and the ceiling is usually not what the client is told about.** Measured against the built binary (SHA-1 `834c01f2…`) with a single JSON string argument: `tokfold_compress` is refused with `-32602` and "the reply exceeds the 33554432 byte frame limit" at **both** 16 777 217 bytes (over the engine ceiling) and 16 777 100 bytes (under it), because a passthrough reply carries the text twice — `content[0].text` and `structuredContent` — so the 32 MiB frame limit is reached before the 16 MiB engine ceiling can be reported, and a client never learns which of the two stopped it. Only `tokfold_estimate`, whose reply stays small, surfaces the ceiling: at 16 777 217 bytes it answered `isError: false` with the text "not compressed: input 16777217 bytes exceeds limit 16777216" — a refusal reported as a *successful* result — and at 16 777 100 bytes it answered with an ordinary estimate. |
+| Oversized input to the engine | Core refuses input over `max_input_bytes`, which defaults to 16 MiB (`DEFAULT_MAX_INPUT_BYTES` in `crates/tokfold-core/src/compressor.rs`). The CLI then passes the input through unchanged and exits `0` **unless something on the `--archive` path stops it first**. Measured with a 17,825,802-byte input and no `--archive`: exit `0`, the input echoed byte for byte, and on standard error "tokfold: passing input through uncompressed: input 17825802 bytes exceeds limit 16777216". With `--archive` the passthrough can fail instead, and then nothing reaches standard output at all. Three measured with that same 17,825,802-byte input (2026-10-03): a directory at `--archive` is fatal (exit `2`, 0 bytes on standard output, "the input was rejected (...) and not passed through: inspecting the archive path adir: Is a directory (os error 21)"), a stale archive the process cannot unlink is fatal (`--archive` naming a `TKFD` file in a mode-`555` directory: exit `2`, 0 bytes on standard output, "the input was rejected (...) and not passed through: removing stale archive ...: Permission denied (os error 13)"), and an archive aimed at its own input is refused before the read (exit `2`, 0 bytes on standard output, the input left at its full size). The *shape* of all three — exit `2`, nothing on standard output, and the failing step named in the message — is pinned by a test: `a_directory_at_the_archive_path_of_a_rejected_pass_costs_the_passthrough`, `a_stale_archive_whose_removal_fails_is_named_and_left_intact` and `the_guard_stops_a_rejected_pass_from_deleting_its_own_input`, all in `crates/tokfold-cli/tests/cli.rs`. None of those three pins the case measured here, though: each drives a small invalid-JSON input, so what rejects the document in the test is the parse and not the 16 MiB ceiling, and the oversized reading above rests on the measurement alone. The clearing needs the *directory* writable, which a successful pass does not — see *Archive path handling*. **On the MCP path the input is not passed through, and the ceiling is usually not what the client is told about.** Measured against the built binary (`cargo build --release -p tokfold-cli`, SHA-1 `834c01f2…`) with a single JSON string argument: `tokfold_compress` is refused with `-32602` and "the reply exceeds the 33554432 byte frame limit" at **both** 16 777 217 bytes (over the engine ceiling) and 16 777 100 bytes (under it), because a passthrough reply carries the text twice — `content[0].text` and `structuredContent` — so the 32 MiB frame limit is reached before the 16 MiB engine ceiling can be reported, and a client never learns which of the two stopped it. Only `tokfold_estimate`, whose reply stays small, surfaces the ceiling: at 16 777 217 bytes it answered `isError: false` with the text "not compressed: input 16777217 bytes exceeds limit 16777216" — a refusal reported as a *successful* result — and at 16 777 100 bytes it answered with an ordinary estimate. |
 | Deep nesting in the engine | Core's parser refuses nesting past `max_depth`, which defaults to 512 (`DEFAULT_MAX_DEPTH` in `compressor.rs`; the check is in `open_container` in `crates/tokfold-core/src/tape.rs`). |
 | Oversized MCP frame | Messages over `MAX_MESSAGE_BYTES` (32 MiB) are refused and skipped, and the stream resynchronises on the next newline (`read_line` and `skip_to_newline` in `stdio.rs`). Reading goes through `take`, so an unterminated line cannot grow the buffer without bound. The same constant bounds every reply (`render_bounded` in `crates/tokfold-mcp/src/jsonrpc.rs`, applied by `Server::handle_line`), and has done since commit `36b771e`. Both directions compare the message without its newline. |
 | A small frame that parses into a huge tree | The MCP JSON parser caps materialised values at `json::MAX_NODES` (`MAX_MESSAGE_BYTES / 8`) and nesting at `json::MAX_DEPTH` (128) (`crates/tokfold-mcp/src/json.rs`). The frame limit alone does not bound memory, and `MAX_MESSAGE_BYTES`'s rustdoc says so. |
@@ -186,10 +194,10 @@ What the code does, and does not do, about it:
 
 | Threat | Mitigation in code |
 |---|---|
-| A dependency opens a network connection | **Partly.** `deny.toml` bans a fixed list of *named crates* — HTTP, RPC and WebSocket stacks, socket wrappers and DNS resolvers — from the whole workspace graph, evaluated with `all-features = true`, and denies tokio's `net` feature. CI runs `cargo deny --locked check` on every push to `main` and every pull request (the `deny` job in `.github/workflows/ci.yml`). Only crates.io is an allowed source. Read "socket primitives" as that list and not as the capability: `deny.toml`'s own comment exempts `libc` and `nix` deliberately, as the substrate of ordinary non-network crates, and `libc 0.2.186` is in the default graph through `sha2 → cpufeatures`. The raw socket syscalls are therefore reachable from the graph, and this gate does not see them; what answers that is the row below and `nm -u` on the binary. |
-| First-party code opens a network connection | **Held by review, not by the build.** `std::net` is part of the standard library and cannot be banned (`deny.toml`, header comment; `crates/tokfold-mcp/src/lib.rs`, module docs). No `std::net`, `TcpStream`, `UdpSocket` or process spawn exists in the non-test sources today; the test sources do spawn (`/bin/sh`, `mkfifo` and the binary under test in `crates/tokfold-cli/tests/cli.rs`) and are not compiled into a released binary. A macOS arm64 release build of the working tree (SHA-1 `834c01f2…`, default features) imports no `socket`, `connect`, `bind`, `listen`, `getaddrinfo`, `sendto`, `fork`, `execv` or `posix_spawn` symbol; so does the published `tokfold-darwin-arm64` `0.0.1` binary (`bin/tokfold` SHA-1 `8e2ed283…`). The measurement is `nm -u <binary>` filtered for those names, against unfiltered lists of 83 and 76 undefined symbols respectively, and both binaries are stripped — so it says what they *import*, not what they contain. The other four platform binaries were not measured. |
+| A dependency opens a network connection | **Partly.** `deny.toml` bans a fixed list of *named crates* — HTTP, RPC and WebSocket stacks, socket wrappers and DNS resolvers — from the whole workspace graph, evaluated with `all-features = true`, and denies tokio's `net` feature. CI runs `cargo deny --locked check` on every push to `main` and every pull request (the `deny` job in `.github/workflows/ci.yml`). Only crates.io is an allowed source. Read "socket primitives" as that list and not as the capability: `deny.toml`'s own comment exempts `libc` and `nix` deliberately, as the substrate of ordinary non-network crates, and `libc 0.2.186` is in the default graph through `sha2 → cpufeatures`. The raw socket syscalls are therefore reachable from the graph, and this gate does not see them; what answers that is the *First-party code opens a network connection* row and `nm -u` on the binary. |
+| First-party code opens a network connection | **Held by review, not by the build.** `std::net` is part of the standard library and cannot be banned (`deny.toml`, header comment; `crates/tokfold-mcp/src/lib.rs`, module docs). No `std::net`, `TcpStream`, `UdpSocket` or process spawn exists in the non-test sources today; the test sources do spawn (`/bin/sh`, `mkfifo` and the binary under test in `crates/tokfold-cli/tests/cli.rs`) and are not compiled into a released binary. A macOS arm64 release build of the working tree (`cargo build --release -p tokfold-cli`, SHA-1 `834c01f2…`, default features — that package selection is the one `release.yml` ships. The package selection is *not* what moves the hash, though: `cargo build --release --workspace` with default features is byte-identical to that `-p tokfold-cli` build, `834c01f2…` at 1 261 712 bytes (measured 2026-10-10). The feature set moves it, and `--all-features` moves two features at once — core's `tiktoken` and its unimplemented `hf` — so `--workspace --all-features` gives `ca2cfc4a…` while `tiktoken` alone gives `a65170a2…`, the same 1 263 392 bytes as each other and different bytes. It is not the shipped *build*: `release.yml` adds `--target aarch64-apple-darwin --locked` and the `strip`/`crt-static` `--config` pair, which on this tree give `2a17afd0…` at 1 002 896 bytes. Every symbol count in this row is identical across that axis — 2 645 total, 83 undefined, 440 `tokfold` names unstripped and 83 / 82 / 0 stripped, with or without `--target`) imports no `socket`, `connect`, `bind`, `listen`, `getaddrinfo`, `sendto`, `fork`, `execv` or `posix_spawn` symbol; so does the published `tokfold-darwin-arm64` `0.0.1` binary (`bin/tokfold` SHA-1 `8e2ed283…`). The measurement is `nm -u <binary>` filtered for those names **as whole symbols** (`grep -xE '_?(socket|connect|bind|listen|getaddrinfo|sendto|fork|execv|posix_spawn)'`, which is empty for both); filtering for them as substrings is *not* empty, because `bind` matches dyld's own `dyld_stub_binder`, so an unanchored re-run contradicts this row's "imports no `bind`" claim without finding anything a caller could use. Against unfiltered lists of 83 and 76 undefined symbols respectively, so the filter had something to reject. **Of the two binaries this row's symbol counts come from, only the published one is stripped** — not because a local build cannot be, but because nothing in the repository strips one by default: the workspace `Cargo.toml` declares no `[profile.release]` table, and `release.yml` passes `--config 'profile.release.strip="symbols"'` as a one-off so that a developer's build keeps its backtrace symbols. `nm` lists 77 symbols for the published binary — 76 undefined, 1 defined, none naming `tokfold` — against 2,645 for the working-tree build, of which 2,562 are defined and 440 are mangled Rust names containing `tokfold`. For the published binary this measurement therefore says what it *imports* and not what it contains; for the working-tree build that limit is the measurement's, not the binary's. Stripping moves the undefined count too, so 83 against 76 spans two variables at once: the same tree built with that override lists 82 undefined symbols, the one it drops being `__tlv_bootstrap`. The other four platform binaries were not measured. |
 | The archive leaks through file permissions | **Open.** See *Archive path handling*. |
-| Diagnostics leak content | Read this per crate and then per binary, because the two differ. **Crates:** `tokfold-core` writes to neither stream; `tokfold-mcp` writes nothing to standard error and to standard output only the protocol replies of `serve_stdio`. The derivation is `grep -rn 'eprint!\|eprintln!\|stderr()\|io::stderr\|Stderr' crates/tokfold-mcp/src`, which matches nothing; the same pattern plus `print!\|println!\|stdout()` matches nothing in `crates/tokfold-core/src`. Grepping the bare word `stderr` instead is *not* empty — it finds two module-doc lines, one of which states the rule that diagnostics belong on stderr — so match the macros and the handle, not the word. **The `tokfold` binary running `mcp`** does write one line to standard error, but the CLI does it, not the crate: `cmd_mcp` in `crates/tokfold-cli/src/main.rs` prints `EXPERIMENTAL_NOTICE` — a constant in `crates/tokfold-mcp/src/lib.rs` — before the loop starts. Measured with the input closed: standard error held exactly that one line and nothing else, so no content passes through it. The CLI's own diagnostics go to standard error through one function (`warn` in `main.rs`) and do quote paths and sizes. Some MCP error messages echo client-supplied text back to that same client, such as `unknown tool: <name>` in `tools.rs`. |
+| Diagnostics leak content | Read this per crate and then per binary, because the two differ. **Crates:** `tokfold-core` writes to neither stream; `tokfold-mcp` writes nothing to standard error and to standard output only the protocol replies of `serve_stdio`. The derivation is `grep -rn 'eprint!\|eprintln!\|stderr()\|io::stderr\|Stderr' crates/tokfold-mcp/src`, which matches nothing; the same pattern plus `print!\|println!\|stdout()` matches nothing in `crates/tokfold-core/src`. Grepping the bare word `stderr` in `crates/tokfold-mcp/src` instead is *not* empty — it finds two module-doc lines, in `lib.rs` and `stdio.rs`, one of which states the rule that diagnostics belong on stderr; in `crates/tokfold-core/src` even the bare word matches nothing (measured 2026-10-03). Name the directory: this sentence read as a claim about `crates/tokfold-core/src`, the one it was written next to, where the count is zero. So match the macros and the handle, not the word. **The `tokfold` binary running `mcp`** does write one line to standard error, but the CLI does it, not the crate: `cmd_mcp` in `crates/tokfold-cli/src/main.rs` prints `EXPERIMENTAL_NOTICE` — a constant in `crates/tokfold-mcp/src/lib.rs` — before the loop starts. Measured with the input closed: standard error held exactly that one line and nothing else, so no content passes through it. The CLI's own diagnostics go to standard error through one function (`warn` in `main.rs`) and do quote paths and sizes. Some MCP error messages echo client-supplied text back to that same client, such as `unknown tool: <name>` in `tools.rs`. |
 
 ### Archive path handling (CLI)
 
@@ -204,6 +212,29 @@ and both links survive. The guards around both are documented in
 - A rejected pass deletes a previous archive at the path only if that path is a
   regular file that opens with the `TKFD` magic. This keeps a stale archive from
   verifying against a new document. Foreign files are left alone.
+- "Not a regular file" is a category, and its members do not behave alike on a
+  rejected pass. A FIFO is left where it is and the passthrough still runs: exit `0`,
+  the input echoed, "tokfold: left <path> untouched: it is not a regular file". A
+  **directory** is fatal: exit `2`, nothing on standard output, "inspecting the
+  archive path <path>: Is a directory (os error 21)" — the clearing lets a directory
+  through to the magic probe on purpose (the check it delegates to,
+  `inspect_archive_slot`, settles "not a regular file" on `!meta.is_file() &&
+  !meta.is_dir()`), `File::open` succeeds on a directory, and the read of it fails. The
+  `is_file() || is_dir()` spelling is `write_file`'s and governs the successful pass
+  below, not the clearing. On a *successful* pass both are fatal, with
+  different messages: a FIFO is refused before the write ("refusing to write the
+  archive to <path>: it is not a regular file"), a directory reaches the write and
+  reports the platform error ("writing archive to <path>: Is a directory"). All four
+  measured 2026-10-03 against the macOS arm64 release build the *First-party code
+  opens a network connection* row fingerprints (`cargo build --release -p
+  tokfold-cli`, SHA-1 `834c01f2…`), and pinned in `crates/tokfold-cli/tests/cli.rs` by
+  `a_fifo_at_the_archive_path_neither_hangs_nor_is_removed` (both FIFO legs),
+  `a_directory_at_the_archive_path_of_a_successful_pass_reports_the_platform_error`
+  and `a_directory_at_the_archive_path_of_a_rejected_pass_costs_the_passthrough`.
+  Two of the four were unpinned when this bullet first named two tests as covering all
+  of them: no test drove a directory on a rejected pass at all, and the FIFO test
+  asserted a message only on its winning leg — the "left <path> untouched" wording was
+  held for `/dev/fd/3` and `/dev/null`, never for a FIFO.
 - The CLI refuses to use the same regular file for the input and the archive, or for
   the output and the input (`ensure_archive_is_not_the_input` and
   `ensure_output_is_not_the_input`). On Unix these guards compare device and inode
@@ -223,8 +254,9 @@ and both links survive. The guards around both are documented in
   overwrite can leave a truncated file where a good archive was. `expand` refuses a
   truncated archive rather than decoding it wrongly, and the offset it names is the
   first byte of the field that came up short — which sometimes is where the cut fell
-  and sometimes is not. Measured against the built binary (SHA-1 `834c01f2…`) on a
-  1664-byte archive of a 1620-byte JSON original. The layout is the one
+  and sometimes is not. Measured against the built binary (`cargo build --release -p
+  tokfold-cli`, SHA-1 `834c01f2…`) on a 1664-byte archive of a 1620-byte JSON
+  original. The layout is the one
   `crates/tokfold-core/src/format.rs` owns as named `*_OFFSET` constants: the 4-byte
   magic at 0, `version` at 4, `encoder_id` at 5, the little-endian `tokenizer_id` at
   6–7, the little-endian `flags` at 8–9, the `original_len` ULEB128 at 10–11 (1620
@@ -243,7 +275,7 @@ and both links survive. The guards around both are documented in
   | 10 | `3` | `archive corrupted at byte 10` | the varint, absent entirely |
   | 11 | `3` | `archive corrupted at byte 11` | its second byte, which the first asks for |
   | 12–43 | `3` | `archive corrupted at byte 12` | the checksum |
-  | 44–1663 | `3` | `archive corrupted at byte 10` | nothing — see below |
+  | 44–1663 | `3` | `archive corrupted at byte 10` | no field — the payload is short |
   | 1664 | `0` | — | the original, byte for byte |
 
   So do not read the offset as "where the file ends" — but do not read it as
@@ -317,8 +349,9 @@ They are listed so that nobody mistakes them for undiscovered defects.
 - **`initialize` never answers `params.protocolVersion` with `-32022`, and it does
   not answer a *supported modern* one with itself either.** It falls back to a
   supported legacy revision, as the older revisions specify. Saying only
-  "unsupported" understates it: measured against the built binary (SHA-1
-  `834c01f2…`), an `initialize` carrying `"protocolVersion":"2026-07-28"` — the
+  "unsupported" understates it: measured against the built binary (`cargo build
+  --release -p tokfold-cli`, SHA-1 `834c01f2…`), an `initialize` carrying
+  `"protocolVersion":"2026-07-28"` — the
   revision this server lists **first** in the `supported` array of its own `-32022`
   errors, measured as `["2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26",
   "2024-11-05"]` — was answered with `"protocolVersion":"2025-11-25"`. Adding a

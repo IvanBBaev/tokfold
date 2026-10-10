@@ -453,8 +453,17 @@ jobs:
           # hand to users, not of the tree everyone else builds locally.
           #
           # `strip` because a developer's backtraces should keep their symbols
-          # while a shipped binary has no use for them. It cuts several
-          # megabytes per platform.
+          # while a shipped binary has no use for them. Measured on macOS
+          # arm64 from the 2026-10-10 tree, with this step's own flags
+          # (`--target aarch64-apple-darwin --locked` and both `--config`
+          # lines), it saves 258,704 bytes: 1,261,600 -> 1,002,896, 20.5%,
+          # and `nm` goes from 2,645 symbols to 83. Those bytes are the
+          # step's, not a host build's -- dropping `--target` gives 1,261,712
+          # and 1,002,912 from the same tree, so a size quoted without the
+          # flags that produced it is a different binary. The symbol counts
+          # do not move across that axis. The other four targets were not
+          # measured; no binary here is large enough for the saving to reach
+          # a megabyte.
           #
           # `crt-static` because rustc does not enable it on the MSVC target --
           # `rustc --print cfg --target x86_64-pc-windows-msvc` lists no
@@ -688,8 +697,16 @@ jobs:
         # exercises the shipped launcher rather than the binary directly. It
         # builds the exact node_modules layout npm produces -- launcher plus one
         # platform package -- and runs the `tokfold` command through it, so a
-        # broken resolve path, a lost exit code or a missing executable bit is
-        # caught here rather than by the first person to install it.
+        # broken resolve path or a lost exit code is caught here rather than by
+        # the first person to install it.
+        #
+        # Not a missing executable bit, though this comment claimed it for a
+        # while. "Place the binaries" runs earlier in this same job and ends with
+        # `chmod +x "$exe"` on every platform binary under a `set -euo pipefail`
+        # step that aborts if the chmod fails; `cp -a` below preserves that mode.
+        # So the bit is always set by the time this step looks, and the case it
+        # claimed to catch cannot occur in this workflow. A check cannot be
+        # credited with catching a state the pipeline makes unreachable.
         run: |
           set -euo pipefail
           root="$(mktemp -d)"

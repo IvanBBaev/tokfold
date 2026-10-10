@@ -733,6 +733,82 @@ released says so, and names what `0.0.1` does in the same case.
 
 ### Documentation
 
+- **The one comment in this repo whose stated purpose is to be precise about what a gate
+  covers was wrong about the whole workspace.** `ci.yml`'s `doc-drift` job opens with
+  "BE PRECISE ABOUT WHAT THIS GATE COVERS, because the job name oversells it", and then
+  oversold the repo instead: "It opens no README and reads no markdown — there is no
+  `include_str!` anywhere in this workspace … every other README line and doc comment in
+  this repo is still guarded by review alone." The first clause is true of the test the
+  gate runs; the workspace claim was falsified by `df6a0fc`, which added
+  `crates/tokfold-mcp/tests/quickstart.rs` — the one `include_str!` in the workspace
+  (`grep -ran 'include_str!\|include_bytes!' --include='*.rs' crates/ fuzz/` finds
+  exactly it), over `crates/tokfold-mcp/README.md`. The consequence runs the opposite
+  way to what the comment told a reader: editing that README's Quickstart *can* turn a
+  check red, so it is not guarded by review alone, and the check that fails is not
+  `doc-drift` — `quickstart` only rides along inside `cargo test --workspace`, so it
+  reports under `test`. The comment now says which three blocks are anchored, which job
+  reports them, and what `quickstart.rs`'s own header says it leaves open, so the new
+  paragraph does not oversell the coverage either. The job's name, its "the name is kept
+  because branch protection requires it by exact string" paragraph and its one step are
+  unchanged: this is a comment fix, not a gate change.
+- **`quickstart.rs`'s own header counted two of the three README blocks it reads, and
+  gave one block's coverage share as the file's.** It said "Both halves are read out of
+  `README.md`" where `block_after` is called three times —
+  `<!-- quickstart-session -->`, `<!-- quickstart-replies -->` and
+  `<!-- quickstart-rendering -->` — and then "that is under a quarter of the bytes it
+  quotes", which is the replies' share and not the file's: the session block is pinned
+  whole (its first line by an `assert_eq!` against the literal `tokfold mcp <<'EOF'`,
+  its terminator by the `take_while` plus "nothing follows the heredoc terminator", its
+  seven request lines by being served), the rendering block is compared byte for byte in
+  `the_unescaped_rendering_is_the_one_the_compress_reply_carries`, and only the replies
+  are quoted with elisions. So the only block the share describes is the one of three
+  that is partly anchored, and the header read as if the file covered a quarter of what
+  it quotes. Both sentences are rewritten, and the `assert!` beside the inequality —
+  "under a quarter of the quoted session is held down" — is corrected the same way. The
+  share itself holds and is unchanged: 1 693 bytes held of the 7 178 the real replies
+  carry, pinned exactly by `the_quoted_replies_anchor_only_part_of_what_they_quote`.
+  **No byte sizes for the three blocks were published**, although they were measured
+  (1 883 / 1 747 / 234, and a text-mode `len()` in Python gives 1 707 for the replies
+  because the 16 `…` and four `⟦`/`⟧` are one character and three bytes each): nothing
+  pins them, and an unpinned number in a header is what this entry is fixing.
+- **`ci.yml`'s job-layout legend said the `fuzz` job "carries no `if:` at all", and
+  `fuzz` is the only one of the nine gates that carries two.** Its job level carries
+  none, which is the legend's point and is true: eight of the nine gates have
+  `if: github.event_name != 'schedule'` and `fuzz` has no job-level condition, so it
+  is the one gate the weekly cron also pays for. But "at all" is a claim about every
+  `if:` in the job, and the crash-artifact upload step carries `if: failure()` — the
+  only step-level `if:` in any of the nine, measured by walking each job's span:
+  `actionlint`, `fmt`, `clippy`, `docs`, `doc-drift`, `deny`, `package` and `launcher`
+  have zero, `fuzz` has one. So the single job the legend singles out as free of `if:`
+  is the single job with a second one. Both the legend and the entry in this section
+  that quotes it now say *job-level*, and the legend adds what the step-level one does
+  (it skips the upload on success and gates nothing), because a reader checking the
+  legend greps the job and finds that line. The `fuzz` job's own in-body comment was
+  already exact — "the only gate without `if: github.event_name != 'schedule'`" names
+  the condition instead of the category — and is unchanged. Re-derive with
+  `grep -n '^    if:'` for the job level (twelve lines, eight of them on gates —
+  `fuzz` is the ninth gate and has none, and the other four are `test`, `audit`,
+  `release-test` and `nightly`) and `grep -n '^        if:'` for the step level (three
+  lines, all `if: failure()` — in `fuzz`, `test` and `release-test`, so `fuzz` is the
+  only one of the nine that has one). The same shortening stands in a
+  dated `WORKLOG.md` record and is left there: the argument it supports is about which
+  trigger runs the job, which a step-level `if:` cannot affect.
+- **`fuzz/README.md` publishes per-selector seed counts that the obvious command
+  refutes.** The hand-built table gives `seeds/roundtrip/` 28 files as 7 documents x 4
+  selectors, and `find seeds/roundtrip -name '*-01.json'` gives eight: an imported
+  JSONTestSuite case is named `jsonts-n_number_-01.json`, so its own name ends in the
+  selector suffix the convention uses. Nothing in the table is wrong — every row was
+  re-counted against the tree, 13 + 7 + 14 + 28 + 14 = 76, the 6 `patch-*.bin` files
+  are what separate that from the 70 derived from fourteen originals, and the imported
+  side is 1 264 files of 17 040 bytes in 4 x 316 — but the re-derivation needs
+  `! -name 'jsonts-*'`, and without it the `Files` column reads 13, 323, 330, 344 and
+  330. The README now says so and gives both commands, because a published count that
+  the first grep contradicts gets reported as a defect by the next reader. Measured
+  while checking: the "committed seeds" sentences in `fuzz/README.md` and `ci.yml`,
+  surfaced as false on 2026-09-28 when `fuzz/` was untracked, are true now — all
+  1 341 files under `fuzz/seeds/` are tracked, and `fuzz/` has 1 353 tracked files in
+  all.
+
 - `docs/threat-model.md` — trust boundaries, assets and mitigations for the library,
   the CLI and the experimental `tokfold mcp` server, each tied to the code that holds
   it, plus the MCP and engine issues that are known and still open — and
@@ -1228,9 +1304,17 @@ documentation a previous fix falsified.
   have been added since. It was written when `tokfold-core` was the whole workspace
   and went stale the day `tokfold-mcp` arrived. The count is gone rather than corrected
   — it carries no weight the sentence needs and rots on every crate added. (Worth noting
-  how it hid: `grep -rn indexing_slicing | grep allow` returns *nothing*, because the
-  lint name sits on its own line inside a multi-line `#![allow(...)]`. Silence from grep
-  is not absence.)
+  how it hid: `grep -rn indexing_slicing crates/ | grep allow` finds almost none of the
+  sites, because at almost all of them the lint name sits on a continuation line of a
+  multi-line `#![allow(...)]` and the word `allow` is on a different line. Measured on
+  2026-10-03: 16 lines mention the lint, one of them `//!` prose and 15 of them
+  attribute sites, and the `grep allow` filter matches exactly one of those 15 --
+  `error.rs`, whose `#![allow(...)]` is a single line -- so it hides 14. This sentence
+  said *nothing* rather than *almost none* when it was written, and it was right then:
+  commit `0f759f6` added that single-line `#![allow(...)]` to `error.rs` seventeen days
+  later and falsified it, which is this repo's own recurring shape -- a later fix making
+  an earlier document false. The lesson is unchanged and is what matters here, not the
+  count. Near-silence from grep is not absence.)
 - **`tape.rs` said `Node::depth` "was a `u16` through v0.0.1" while the crate it is in
   is still `0.0.1`.** The widening is unreleased; the `0.0.1` on npm still has the `u16`
   and will until a release goes out. The doc now says so instead of dating the change to
@@ -1607,10 +1691,31 @@ documentation a previous fix falsified.
   "Every reversibility statement gave the contract" entry above two days earlier
   with the same `~43-byte`. The count was one short in both halves, so it named
   every unhedged site correctly and still described a smaller job than there was.
-  All five hedged sites — the root README twice, the npm README, the `tokfold-core`
-  README and its crate rustdoc — now give 43 to 46 outright, and the two
-  library-facing ones add the 47 an embedder reaches by raising `max_input_bytes`,
-  which the CLI's 16 MiB cap never does. The entry is left as written.
+  All five hedged sites — the root README twice, `npm/tokfold/README.md`, the
+  `tokfold-core` README and its crate rustdoc — now give 43 to 46 outright, and
+  all of them but the npm one add the 47 an embedder reaches by raising
+  `max_input_bytes`, which the CLI's 16 MiB cap never does. The entry above is
+  left as written. Those two facts read "the npm README" and "the two
+  library-facing ones add the 47" until 2026-10-03, and both were wrong in
+  `0f759f6`, the commit that carries this entry *and* the change it describes.
+  `npm/README.md` is a different file and has never held the claim in any commit;
+  the one that did is `npm/tokfold/README.md`. This same section names
+  `npm/README.md` explicitly in the release-date and publisher-check entries, so
+  the short form sent a reader to the file where there is nothing to find. And
+  the 47 went into four of the five sites in that commit, the root README's two
+  paragraphs among them, so "the two library-facing ones" gave neither the right
+  number nor the right reason: the 47 is withheld from `npm/tokfold/README.md`
+  alone, which is read by people installing the binary. Re-derive both rather
+  than trusting this sentence: over the four files that hold the five sites,
+  `grep -n '43 to 46'` gives five lines and `grep -n '47'` gives four sites in
+  five lines, the crate rustdoc wrapping one of them across two — not `'(47'`,
+  since three sites parenthesise the number and the rustdoc does not. The two
+  counts this entry corrects — seven and five — cannot be re-derived from git at
+  all: `0f759f6^` holds four hedged sites and no unhedged ones, because the
+  unhedged pair in `crates/tokfold-cli/README.md` and
+  `crates/tokfold-cli/tests/cli.rs` was created inside `0f759f6` itself, so both
+  numbers described an uncommitted working tree that no commit can confirm or
+  refute.
 - **The MCP README and the comment in `tests/session.rs` that explains the reply
   fixture wrote the reply ratio as `2 + 4/3e`, which reads as 2 + (4/3)·e and grows
   with *e*.** Never released. The ratio falls as the escaping factor grows: a reply of
@@ -1663,7 +1768,7 @@ documentation a previous fix falsified.
   entry quoted have since moved with `ci.yml`, and are its to keep current: the set of
   describing lines has gained `fuzz`, and the condition sentence, which gave eight when
   eight was also the total, now reads "Eight of those nine jobs" — the ninth being
-  `fuzz`, the one gate that carries no `if:` at all. What the fix did, name the jobs
+  `fuzz`, the one gate with no *job-level* `if:`. What the fix did, name the jobs
   rather than the lines, is unchanged. The clippy-line entry's own present-tense
   clause was corrected on 2026-10-01 — it had carried both the count and the very
   property this entry refutes — and restates neither now; what it records about the
@@ -1674,8 +1779,8 @@ documentation a previous fix falsified.
   invalid input, so the claim held only inside the configured limits. The root and
   `tokfold-core` READMEs now say so, the CLI README's size-limit section adds the
   depth refusal (`compress` exits `0` with `nesting depth 513 exceeds limit 512` and
-  writes no archive; `stats` exits `2`), and the npm README says deeper JSON is
-  refused the same way as oversized input.
+  writes no archive; `stats` exits `2`), and `npm/tokfold/README.md` says deeper
+  JSON is refused the same way as oversized input.
 - **The root README's escape-style example compared `"é"` with `"é"`** — the same
   literal twice, so it illustrated nothing. It now compares `"é"` with `"\u00e9"`.
 - **The root README declines to call the engine "lossless", and the MCP server's
@@ -1750,8 +1855,8 @@ documentation a previous fix falsified.
   rejected pass — piped NDJSON, say — exits `0` and leaves `log.json` untouched, unless
   that file opens with the `TKFD` magic, in which case it is deleted. The help and
   both READMEs now say that. The stdin identity entry under `Fixed` ("the pass
-  overwrites `log.json`") and the entry on the npm README's redirect sentence
-  ("destroyed either way") repeat the old claim and are left as written.
+  overwrites `log.json`") and the entry on `npm/tokfold/README.md`'s redirect
+  sentence ("destroyed either way") repeat the old claim and are left as written.
 - **`ci.yml` justified `actionlint` by saying cargo does not read JavaScript.** True,
   and not the point: actionlint reads only the workflow files, so no gate reads the
   JavaScript; the comment now says that.
@@ -2105,7 +2210,8 @@ documentation a previous fix falsified.
   of a 1 620-byte JSON original, a cut to 10 bytes is reported at byte 10 and a cut
   to 11 at byte 11, so the offset both moves with the cut and coincides with the end
   of the file. Every truncation length from 1 to 1 664 was then run through `expand`
-  against the built binary (SHA-1 `834c01f2…`), which answers in ten bands and
+  against the built binary (`cargo build --release -p tokfold-cli`, SHA-1
+  `834c01f2…`), which answers in ten bands and
   nothing else, and `docs/threat-model.md` now publishes the table, the fixture that
   reaches it and the rule the bands derive from: **the reported offset is the first
   byte of the field that came up short**, not the byte at which the cut fell. It
@@ -2132,11 +2238,303 @@ documentation a previous fix falsified.
   where an interrupted write of a large archive actually lands; the header bands are
   reachable only by a write that died inside its first 44 bytes.
 
+- **A claim about the release was measured on one of its five platform packages and
+  written without naming the one.** The MCP README said the quickstart's tool results
+  (replies 3 to 6) are byte-identical between this repository and "the published `0.0.1`
+  binary", with replies 1 and 2 differing only in the `instructions` text and the
+  `tokfold_compress` description. Both halves hold — but the singular named no artefact,
+  no platform and no date, nothing in the repository pins the comparison (CI has no
+  published binary to run), and the sentence gave a reader no way to re-run it. The
+  release ships five platform packages.
+
+  Measured: the `bin/tokfold` of `tokfold-darwin-arm64@0.0.1`, recovered from the npm
+  cache and identified by SHA-1 `8e2ed283eb205aca9cf34051a7b3ede6f4f70508` (the hash the
+  project records for it; its SHA-256 is
+  `121033e0a6323eb1fc997a7cf85ef6d86fa8cca2a9049bc6e71df93b53652d1d`, which matches
+  nothing recorded), replayed against a release build of this tree on macOS arm64.
+  Replies 3 to 6 are byte-identical at 527, 1 502, 921 and 386 bytes, the totals the
+  `COVERAGE` rows in `crates/tokfold-mcp/tests/quickstart.rs` already pin. A
+  field-by-field walk of replies 1 and 2 found exactly one differing path each,
+  `/result/instructions` and `/result/tools[0]/description` with `tools[0]` being
+  `tokfold_compress`, and the two strings account for the whole difference — 560 bytes
+  of the first line and 110 of the second, so key order, tool order and the input
+  schemas are byte-identical too.
+
+  The README now names the artefact, the hash, the platform and the date, and says in
+  which direction the other four packages are covered: by reasoning, not measurement.
+  That reasoning is published with it — `tokfold-core` carries no `cfg(unix)`,
+  `cfg(windows)` or `cfg(target_os)` in its source or its tests, `tokfold-mcp`'s only
+  such switch chooses how `serve_stdio` obtains stdin and stdout rather than what a
+  reply contains, no crate here declares a target-conditional dependency table, and the
+  reason `tokfold-core` declines to claim identity across targets (`FxHasher`'s
+  table-shape interning differs on a 32-bit target and through a different multiply on
+  `sparc64` and `wasm64`) does not separate five packages that are all 64-bit and
+  neither of those architectures. Documentation only; no behaviour and no test changed.
+
+- **Two `--archive` justifications were universals a sibling path refutes** (`tokfold-cli`).
+  The same-file guard's doc for a read-only archive said a rejected pass "would not have
+  deleted it", while `a_stale_archive_behind_a_read_only_descriptor_is_not_the_archive_slot`
+  pins the deletion a rejected pass does perform on a writable slot; the reason it does
+  not here is narrower and is now stated — `fs::remove_file` needs the *directory*
+  writable, so a read-only *file* is still cleared, and what stops the clearing is that
+  the write never reaches the slot at all. `inspect_descriptor_slot`'s doc then said a
+  rejected pass "never passes through beside one it could not rule out", which the
+  read-only descriptor path refutes exactly: its bytes are just as unknown, it holds a
+  real archive in that test's fixture, and the input passes through at exit `0`. Both now
+  state the rule the code applies — reachability, not identifiability — and name the
+  sibling that excludes the other case. The write-only-stdin parenthetical in the same
+  family predicted a deletion its own test's final assertion forbids; both outcomes are
+  now measured in it instead (released `0.0.1`: exit `0`, "no recovery archive written
+  (compression did not run)"; working tree: exit `2`, "reading standard input: Bad file
+  descriptor (os error 9)"), with the 68-byte archive surviving both.
+- **The width of the write-only descriptor-slot error is now published with its cost**
+  (`tokfold-cli`). The doc gave the width ("a file of four bytes or more") without the
+  reason it is that width or what it costs. The length shortcut runs after the
+  write-reach question and before the read, so the boundary is exactly
+  `ARCHIVE_MAGIC.len()`: a write-only slot of three bytes is settled as foreign unread
+  and the rejected input passes through at exit `0`, while one of four is read, fails
+  with `EACCES`, and the pass is refused at exit `2` with nothing on stdout. The wide
+  side is a behaviour change against `0.0.1`, which inspected no slot and passed the
+  input through at either width — measured on the published `tokfold-darwin-arm64`
+  binary (`sha1 8e2ed283`) as exit `0` with the input on stdout and the slot untouched,
+  at three bytes and at four. It costs the caller a rejected document that `0.0.1`
+  handed back; the divergence is deliberate, and whether it is worth the document is an
+  owner question, not a defect this entry closes.
+
+- `docs/threat-model.md` named two tests as pinning four behaviours, and two of the
+  four had no test. The bullet "'Not a regular file' is a category, and its members do
+  not behave alike on a rejected pass" enumerated a FIFO and a directory across a
+  rejected and a successful pass, quoted each message, and closed with "All four
+  measured ... and pinned by" two test names. Of the four, the successful-pass directory
+  and both FIFO *exit codes* were pinned; a plain-path directory on a rejected pass was
+  driven by no test at all, and the FIFO test asserted a message only on its winning leg
+  — the "left <path> untouched: it is not a regular file" wording was held for
+  `/dev/fd/3` and for `/dev/null`, two descriptor spellings, and never for a FIFO. A
+  claim that a test pins something is a claim about that test's coverage, and an
+  enumeration closed with "all four" is a claim about every member of it. The behaviour
+  itself was measured true, down to the platform's `(os error 21)`; it is the pinning
+  that was not. Both gaps are now closed by tests and the bullet names three.
+- The same bullet attributed the clearing's admission of a directory to the wrong
+  function and the wrong spelling: "`clear_stale_archive` admits `is_file() ||
+  is_dir()`". `clear_stale_archive`'s body holds no such condition — it delegates to
+  `inspect_archive_slot`, which settles "not a regular file" on `!meta.is_file() &&
+  !meta.is_dir()` and so lets a directory through to the magic probe, where
+  `File::open` succeeds and `read_exact` fails with `EISDIR`. The `is_file() ||
+  is_dir()` spelling is `write_file`'s `ensure!`, which governs the *successful* pass —
+  the other half of the same bullet. The two conditions are De Morgan equivalents, which
+  is why reading the sentence against either function makes it look right; the sentence
+  still pointed at the half it was not describing. Both are now named where they belong.
+
+- **A binary SHA-1 was published as an identity seven times without the command that
+  produced it.** Three sites in `docs/privacy.md` and four in `docs/threat-model.md`
+  named `834c01f2…` with no command beside it; the count is
+  `git show c6f800e:docs/privacy.md` and `git show c6f800e:docs/threat-model.md`
+  searched for the hash. One tree gives six different binaries, measured 2026-10-10 on
+  macOS arm64: `834c01f2` at 1 261 712 bytes for `cargo build --release -p tokfold-cli`;
+  `ca2cfc4a` at 1 263 392 for `--release --workspace --all-features`; `a65170a2`, also
+  1 263 392 and different bytes, for `-p tokfold-cli --features tokfold-core/tiktoken`;
+  `dfca1f8f` at 1 002 912 for the host build plus
+  `--config 'profile.release.strip="symbols"'`; and, for `release.yml`'s own line,
+  which adds `--target aarch64-apple-darwin --locked`, `b4aea8b4` at 1 261 600 without
+  the `--config` pair and `2a17afd0` at 1 002 896 with it. **A binary hash is a claim about its build
+  command**, and without one a reader cannot tell which of the six a sentence means.
+  Each hash is now introduced with the command that produced it, in `docs/privacy.md`,
+  `docs/threat-model.md`, `crates/tokfold-mcp/README.md` and the `parse_failure`
+  rustdoc in `crates/tokfold-cli/src/main.rs`; the later mentions inside those same
+  passages carry no command, because the passage that introduced them named one.
+  `npm/README.md` names no hash at all — its claims are sizes, corrected in their own
+  entry.
+
+- **"Both binaries are stripped" was false for one of the two.** `docs/privacy.md` and
+  `docs/threat-model.md` each closed their `nm -u` measurement with that sentence to
+  excuse its narrowness. Only the published `tokfold-darwin-arm64` binary is stripped
+  (77 symbols); the working-tree build carries 2 645, of which 2 562 are defined and 440
+  are mangled Rust names containing `tokfold`. For the local build the import-only limit
+  is the *measurement's*, not the binary's, and both files now say which.
+
+- **The replacement sentence was then an unqualified category that the same table row
+  refuted.** "**Only the published binary is stripped**" is false of any build given
+  that `--config` override, and the row's own text had come to name one (`2a17afd0`).
+  Both files now scope it to the two binaries the symbol counts come from, and say that
+  nothing in the repository strips a build by default — which is the fact the sentence
+  was there to carry.
+
+- **A hash change was attributed to the package selection, which is byte-neutral.**
+  `docs/privacy.md` stated the mechanism outright: "what moves the hash is the package
+  selection, because adding `tokfold-core` to it turns on that crate's `tiktoken`". Both
+  halves are false, and four builds of this tree measured 2026-10-10 separate the axes:
+  `--release --workspace` with default features is byte-identical to
+  `-p tokfold-cli` (`834c01f2`, 1 261 712), so widening the selection alone changes
+  nothing; `-p tokfold-cli --all-features` is byte-identical too, because
+  `--all-features` applies to the *selected* packages and `tokfold-cli` declares no
+  `[features]` table; and `-p tokfold-cli --features tokfold-core/tiktoken` moves the
+  bytes to `a65170a2` with `tokfold-core` never selected. Selecting a package does not
+  enable its non-default features — `tiktoken` is not in core's `default` list. What
+  moves the hash is the feature set; the selection only decides which packages a feature
+  flag can reach, which is why `--workspace --all-features` differs at all, and it turns
+  on core's unimplemented `hf` as well. The same mechanism stood in weaker form in the
+  `parse_failure` rustdoc and in `docs/threat-model.md`; all three now publish the four
+  builds instead of the explanation.
+
+- **The strip saving in `release.yml`'s own comment was wrong twice, the second time by
+  this round's correction.** It had claimed megabytes; the corrected figure, 258 800
+  bytes from 1 261 712 to 1 002 912, was a *host* build's, inside a comment describing a
+  step that passes `--target aarch64-apple-darwin --locked`. The step's own saving is
+  **258 704 bytes, 1 261 600 to 1 002 896, 20.5%**, with `nm` going from 2 645 symbols to
+  83. The comment now carries the step's pair and the host's as the contrast, so the axis
+  is visible rather than implied. **A correction is a claim like any other.**
+
+- **The same host-for-target substitution had already propagated to `npm/README.md`**,
+  into a sentence written here, two sentences below that file's own quotation of
+  `release.yml`'s `--target` line. It now reads 1 261 600 unstripped and 1 002 896
+  stripped with the flags named, keeps the host pair as the contrast, and states that
+  neither can equal the published 968 480: that binary was built from another commit
+  (`tokfold-darwin-arm64` 0.0.1 records `gitHead` `81c7681`), by another toolchain, on a
+  GitHub runner. The conclusion the paragraph existed for is unchanged and still holds —
+  most of the gap from the 5 254 392-byte debug build is `--release`, not `strip`.
+
+- **`docs/privacy.md` said the `tiktoken` tables are compiled into the binary.** They are
+  not compiled into *this* one: nothing on the CLI's command line selects an exact
+  estimator, so the linker drops them. Measured 2026-10-10 with one variable moved, the
+  feature costs **1 680 bytes** (1 261 712 to 1 263 392, `834c01f2` to `a65170a2`) — a
+  thousandth of the 1 681 126 bytes of `cl100k_base.tiktoken` alone. The bullet now
+  separates what `tiktoken-rs` does at compile time from what reaches the artefact.
+
+- **The reproduction hint beside that hash ruled out the axis that does not move the
+  bytes and omitted the one that does.** It read "`tokfold-cli` declares no `[features]`
+  table of its own, so `--all-features` on that package adds nothing" — true, and now
+  measured rather than reasoned, but it never named the build command the hash came from.
+
+- **The `parse_failure` rustdoc named a source fingerprint that identified nothing.**
+  `9ee10cd2` was derived over `find crates fuzz -name '*.rs' | sort | xargs cat`, which
+  covers the test files no binary links, so an edit to `crates/tokfold-cli/tests/cli.rs`
+  retired the fingerprint while `ca2cfc4a` stayed byte-identical. The fingerprint is gone
+  and its derivation is published, so the same number cannot come back looking load-bearing.
+
+- **Both security documents' headers were stale and scoped to one day that was not
+  theirs.** Each said its claims were read back against the working tree "when this file
+  was last audited (2026-10-01)", naming `main` at `0f759f6`, while the files carry
+  2026-10-03 measurements and `main` is further along. A scope statement is a claim about
+  every sentence it covers, so the single date was false for the document as a whole.
+  Both headers now say the claims were *not* all read back on one day, that a measurement
+  here carries its own date, and that the tree state they quote moves with every commit —
+  with the commands to re-derive it.
+
+- **The oversized-input row in `docs/threat-model.md` said nothing about what pins it,
+  and the tests that look like its pins do not.**
+  `a_directory_at_the_archive_path_of_a_rejected_pass_costs_the_passthrough`,
+  `a_stale_archive_whose_removal_fails_is_named_and_left_intact` and
+  `the_guard_stops_a_rejected_pass_from_deleting_its_own_input` pin the *shape* of its
+  three measurements — exit `2`, nothing on standard output, the failing step named — but
+  each drives a small invalid-JSON input, so what rejects the document in the test is the
+  parse and not the 16 MiB ceiling. The row now states both halves: the shape is pinned,
+  the oversized case rests on the measurement alone.
+
+- **Two measurement sites did not identify their binary, and both were re-run rather
+  than hedged.** `crates/tokfold-mcp/README.md` compared a seven-line session against
+  "a release build of this repository", and `docs/threat-model.md`'s archive-in-reply
+  bullet said "measured on the built binary". Both were replayed 2026-10-10 against
+  `cargo build --release -p tokfold-cli` (`834c01f2`) and every number reproduced:
+  replies 3 to 6 byte-identical at 527, 1 502, 921 and 386 bytes, reply 1 growing from
+  761 to 1 321 and reply 2 from 2 411 to 2 521, with the two differing strings
+  (`/result/instructions`, `/result/tools[0]/description`) accounting for the whole delta
+  — overwriting only those two in the registry binary's replies reproduces the working
+  tree's lines exactly; and `tokfold_compress` of `{"a":1}` answering with
+  `compressed`, `stats`, `rendering` and `archive`, the rendering equal to
+  `content[0].text`, and the base64 archive decoding to 50 bytes that open `TKFD` and end
+  in `{"a":1}`.
+
+- **A correction written this round claimed a byte-identity its own paragraph
+  refutes.** `crates/tokfold-mcp/README.md` named what a pair of runs is evidence for,
+  to replace a pointer at "the paragraph above" — and called it "the byte-identity
+  between this repository and the published `0.0.1` binary", which is false of replies 1
+  and 2: the `instructions` text and the `tokfold_compress` description were both
+  reworded after 0.0.1, as the two sentences before it say. **A category in a sentence
+  is a claim about every member**, and replacing a positional pointer with a name is no
+  licence to widen what is named. The sentence now carries the two things the runs do
+  show — replies 3 to 6 byte-identical, and those two strings accounting for the whole
+  of replies 1 and 2's difference — and says explicitly that it is not a claim across
+  all six.
+- **Thirteen cross-references identified their target by position alone, and four of
+  the thirteen were written by this round's own corrections.** The test applied — call
+  it the deletion test — is whether the phrase still finds its target once the position
+  word is deleted: "the `expand` bullet above" and "the length in the table above" do,
+  because the `expand` bullet is named and the file holds exactly one table; "the bullet above", "the row
+  below" and a bare "see below" do not, and any reordering retargets them in silence
+  with every test still green. Nine were in the tree at `c6f800e`: in
+  `docs/privacy.md`, "the first-party bullet below" in the `cargo deny` bullet, "the
+  bullet above is about the shipped binary" in the temporary-files bullet, "like the
+  bullet above" in the `tokfold_decompress` bullet and "the deletion below" in the
+  `--archive` bullet; in `docs/threat-model.md`, "the row below" in the *A dependency
+  opens a network connection* row and "see below" in the truncation table's 44–1663
+  band; in `crates/tokfold-cli/README.md`, "see below" in the `compress` bullet and "a
+  directory exits `2`, as above" in the descriptor bullet; and in `npm/README.md`,
+  "both of the projects cited above". Four arrived with this round: "the paragraph
+  above" in `crates/tokfold-mcp/README.md`; "byte-identical to the line above" and
+  "contradicts the sentence above" in the threat model's *First-party code opens a
+  network connection* row — the very row both sentences were written to correct — and
+  "built with the flags quoted above" in `npm/README.md`, in the paragraph this round
+  rewrote to stop a size from standing without its flags. Each now names what it
+  points at: this section's *The binary* bullet, the *None at run time* bullet,
+  `tokfold_compress`, the deletion of a stale archive, the `-p tokfold-cli` build, the
+  row's own "imports no `bind`" claim, the *The `--archive` path belongs to tokfold*
+  section, `release.yml`'s own flags, esbuild and turbo by name, a short payload
+  rather than a short field, and, for the directory case, the platform's own
+  diagnostic and the reason the rejected pass opens a directory at all. Deliberately
+  left: commentary that describes its own file's layout instead of pointing at a
+  target — `ci.yml`'s job legend and the section-opening "the session below" in
+  `crates/tokfold-mcp/README.md`; each security file's closing convention
+  (`docs/privacy.md`: "Each statement above names the code that makes it true"); the numeric uses ("well
+  below 32 MiB", "descriptors above 2", "limits approached from above"); and every
+  reference the deletion test accepts.
+
 ### Tests
 
 Defects in the suites themselves that no passing run could have shown — each
 established by mutation or by measurement before it was fixed, and re-established the
 same way afterwards — followed by the tests that pin the fixes above.
+
+- `a_directory_at_the_archive_path_of_a_rejected_pass_costs_the_passthrough` is new. It
+  pins the member of "not a regular file" that costs the caller their document: a
+  directory at `--archive` on a rejected input exits `2` with nothing on standard
+  output, where a FIFO at the same path passes the input through at exit `0`. It asserts
+  the whole message including `(os error 21)` — a number in a message is a claim of its
+  own — that the refusal does *not* say "not a regular file" (the clearing admits a
+  directory rather than refusing it), and that the directory and a file inside it are
+  untouched. `a_fifo_at_the_archive_path_neither_hangs_nor_is_removed` gained the
+  message assertion its own comment had already argued for on the winning leg: the
+  clearing and the write share the suffix "it is not a regular file", so only the
+  operation and the path tell them apart.
+  Neither addition closes a *mutation* gap, and the entry says so rather than implying
+  one: swapping the clearing's message for the write's is killed by the two descriptor
+  tests, and narrowing `inspect_archive_slot` to `!meta.is_file()` is killed by
+  `a_stale_archive_that_cannot_be_removed_suppresses_the_passthrough`. Both were checked
+  against the suite as it stood before this change. What the tests add is coverage of
+  the file types the documentation actually names, so that the "pinned by" sentence
+  above is true of each member rather than of the pair that happened to be tested.
+
+- **The CLI's `--profile` spellings were never checked against the core profiles they
+  name** (`tokfold-cli`). The suite asserted that `aggressive` and `balanced` produce
+  identical `stats` reports, and a comment claimed that "pins" the mapping — it does
+  not: the two reports are equal under *any* mis-mapping of `ProfileArg`, including one
+  that sends both arms to the same profile. Hand-mutating `Aggressive => Balanced`
+  survived the whole suite, while the control mutation `Conservative => Balanced` was
+  caught, which locates the gap precisely at the two arms no output distinguishes. A new
+  unit test in the bin target reads the parser instead of the output, for every spelling
+  of both subcommands that take `--profile`, and pins `--profile`'s `default_value`
+  against `Profile::default()`; all four hand-mutations now die. This is the CLI mirror
+  of the parser check `tokfold-mcp`'s `tools.rs` already had. Note for anyone adding
+  tests to that module: the workspace denies `unwrap_used`, `expect_used` and `panic`,
+  and those lints apply to `#[cfg(test)]` code in the bin target too, so a helper must
+  return `Result` and be asserted against, not panic.
+- `the_write_only_descriptor_slot_error_begins_at_the_magics_width` pins both sides of
+  the boundary in the Documentation entry above (three bytes → exit `0` with the input
+  on stdout and the "not a tokfold archive" line; four bytes → exit `2` with nothing on
+  stdout), and the slot unchanged at both widths. The existing descriptor-slot tests
+  asserted the wide side's *message* only, so neither the boundary nor the lost document
+  was pinned. Two hand-mutations confirm it: widening the shortcut to `<=` makes the
+  four-byte case pass through, and deleting the shortcut makes the three-byte case
+  refuse — each fails on its own side.
 
 - `a_larger_limit_can_collapse_a_batch_that_a_smaller_one_answered` pins the batch
   windows of the Documentation entry on batch monotonicity at every limit from 393 to

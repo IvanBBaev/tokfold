@@ -111,6 +111,38 @@ pub fn json_semantically_eq(a: &str, b: &str) -> bool {
 /// Parse one complete JSON document, or `None` if it is malformed or has trailing
 /// data. The accepted grammar mirrors `tokfold_core::tape`: standard JSON, with lone
 /// `\uXXXX` surrogate escapes accepted (kept raw) and leading zeros rejected.
+///
+/// [`json_semantically_eq`] claims that depth is the *only* way this parser is
+/// narrower than valid JSON, and that every other rejection rejects malformed input.
+/// That is a claim about every rejection site in `impl Parser` -- 36 of them on
+/// 2026-10-03, 14 `return None` plus 22 `?`, and `parse`'s own trailing-data `if` on
+/// top of those -- so here they are classified, to be re-checked by diffing this list
+/// against the code rather than re-derived from scratch. Most of the 22 only
+/// propagate a rejection raised elsewhere; the causes are what follow:
+///
+/// * `value`: `depth > MAX_DEPTH` -- **the one narrowing**; end of input; a byte that
+///   cannot begin a JSON value.
+/// * `object`: a member not opening with `"`; a missing `:`; a separator that is
+///   neither `,` nor `}`. `array`: a separator that is neither `,` nor `]`.
+/// * `string`: end of input before the closing quote; an escape character outside
+///   `"\/bfnrt` and `u`; a non-hex digit in `\uXXXX`; an unescaped byte `<= 0x1F`,
+///   which RFC 8259 forbids. Note what is *not* here: `\uXXXX` is validated for shape
+///   only, so lone surrogates are accepted and `decode_string_body` keeps them raw.
+/// * `number`: a leading zero followed by a digit; no digit at all; a `.` or an
+///   `e`/`E` with no digit after it. `literal`: a byte that is not the one `true`,
+///   `false` or `null` needs.
+/// * `parse` itself: anything left after the value -- trailing data, which the module
+///   docs list separately.
+///
+/// The two sites that are *not* grammar are the `self.src.get(start..j)?` slices in
+/// `string` and `number`. `str::get` yields `None` off a char boundary, so each would
+/// reject a valid document -- and neither is reachable. In `number` the slice is ASCII
+/// digits and signs. In `string`, `start` sits just past the opening `"` and `j` stops
+/// only at `"` (0x22) or `\` (0x5C); UTF-8 continuation bytes are 0x80..=0xBF, so
+/// neither byte can occur inside a multi-byte character and both ends are always
+/// boundaries. A multi-byte character is therefore walked one byte at a time by the
+/// `_ => j += 1` arm and never split. The module docs' raw-vs-escaped accented cases
+/// pin that both spellings reach the accepted arm.
 fn parse(input: &str) -> Option<Value> {
     let mut p = Parser {
         src: input,

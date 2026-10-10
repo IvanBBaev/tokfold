@@ -173,9 +173,35 @@ real model tokenizer):
 
 The archive in that reply is the one the fifth request sends back, and the text the
 fifth reply returns is byte-for-byte the original input. The tool results of this
-session (replies 3 to 6) are byte-identical between this repository and the
-published `0.0.1` binary; replies 1 and 2 differ only in the `instructions` text
-and the `tokfold_compress` description, both reworded since that release.
+session (replies 3 to 6) are byte-identical between this repository and the published
+`0.0.1` binary; replies 1 and 2 differ only in the `instructions` text and the
+`tokfold_compress` description, both reworded since that release. Those two strings
+account for the whole difference — 560 bytes of the first reply's line and 110 of the
+second — so the rest of each line, tool order and input schemas included, is
+byte-identical as well.
+
+That pair of runs is the evidence for the replies-3-to-6 byte-identity and for the two
+reworded strings being the whole of replies 1 and 2's difference — not for a
+byte-identity across all six, which replies 1 and 2 refute. It is also one platform's. On
+2026-10-03 the seven lines this session sends were replayed through the `bin/tokfold` of
+the published `tokfold-darwin-arm64` package (SHA-1
+`8e2ed283eb205aca9cf34051a7b3ede6f4f70508`) and through a release build of this
+repository, on macOS arm64. A build command is part of a local binary's identity here,
+and the 2026-10-03 run did not record one; the whole comparison was re-run on 2026-10-10
+against `cargo build --release -p tokfold-cli` (SHA-1 `834c01f2…`) and every number in
+this paragraph reproduced — replies 3 to 6 byte-identical at 527, 1 502, 921 and 386
+bytes, reply 1 growing 761 → 1 321 and reply 2 2 411 → 2 521, and overwriting only those
+two strings in the release replies reproducing the working tree's lines exactly. The
+other four platform packages were not run, and for them this is reasoning rather than
+measurement. No reply text here is platform-conditional:
+`tokfold-core` carries no `cfg(unix)`, `cfg(windows)` or `cfg(target_os)` in its source
+or its tests, this crate's only such switch picks how `serve_stdio` obtains stdin and
+stdout rather than what any reply contains, and no crate in this workspace declares a
+target-conditional dependency table. And the reason `tokfold-core` does not claim
+identity across targets — `FxHasher`'s table-shape interning, which computes a different
+value on a 32-bit target and through a different multiply on `sparc64` and `wasm64` —
+does not separate the five platform packages: every one of them is a 64-bit target and
+none is either of those two architectures.
 
 The other era needs no handshake: at protocol `2026-07-28` every request carries
 `"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}`

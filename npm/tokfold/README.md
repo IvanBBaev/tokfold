@@ -3,7 +3,13 @@
 Reversible, structure-aware context compression for LLM agents — the `tokfold`
 command-line tool.
 
-This package ships a prebuilt native binary. It is the command-line front end to
+This package ships no binary of its own. `bin/tokfold` is a `#!/usr/bin/env
+node` launcher: the package declares `optionalDependencies` on five per-platform
+packages, npm installs the one whose `os`/`cpu` match, and `lib/resolve.js` finds
+the prebuilt executable inside it at run time -- which is what that module's own
+header has always said. `npm pack --dry-run` here lists four entries
+(`README.md`, `bin/tokfold`, `lib/resolve.js`, `package.json`) and no binary
+among them. It is the command-line front end to
 an embeddable Rust engine that compresses agent context (tool output, JSON, logs)
 into a denser rendering a model reads, plus a recovery archive that reconstructs
 the original on demand.

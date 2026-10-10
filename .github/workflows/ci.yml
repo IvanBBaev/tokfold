@@ -39,11 +39,14 @@
 # a loop, which no single line can quote), and `actionlint` runs a downloaded
 # binary (`./actionlint -color`) rather than a cargo command.
 #
-# Eight of those nine jobs carry exactly one condition, `if: github.event_name !=
-# 'schedule'`, which keeps the weekly cron from paying for the whole gate a
-# second time. The ninth, `fuzz`, carries no `if:` at all: it runs on every
-# trigger, and the trigger decides only how long it fuzzes. That condition is
-# the only way a gate can be skipped, and it is visible in one grep. What it
+# Eight of those nine jobs carry exactly one job-level condition, `if:
+# github.event_name != 'schedule'`, which keeps the weekly cron from paying for
+# the whole gate a second time. The ninth, `fuzz`, carries no job-level `if:`:
+# it runs on every trigger, and the trigger decides only how long it fuzzes. It
+# is not free of `if:` altogether, and it is the only one of the nine that is
+# not -- its crash-artifact upload step carries `if: failure()`, which skips
+# that step on success and gates nothing. The job-level condition is the only
+# way a gate can be skipped, and it is visible in one grep. What it
 # deliberately is *not* is conditional on a matrix value: nothing a
 # contributor can rename or mistype in a `required:` key can turn one of *those
 # nine* gates off on a push or a pull request.
@@ -341,10 +344,22 @@ jobs:
     # BE PRECISE ABOUT WHAT THIS GATE COVERS, because the job name oversells it.
     # `tokfold-mcp/tests/experimental_notice.rs` pins exactly one claim: that the
     # EXPERIMENTAL warning still says what it must, and that the crate
-    # description agrees with it. It opens no README and reads no markdown --
-    # there is no `include_str!` anywhere in this workspace. So this gate catches
-    # drift in the one claim it was written for and in nothing else; every other
-    # README line and doc comment in this repo is still guarded by review alone.
+    # description agrees with it. That test opens no README and reads no markdown,
+    # so this gate catches drift in the one claim it was written for and in
+    # nothing else.
+    #
+    # It is not the only machine-checked documentation in the repo, though this
+    # comment said it was -- "there is no `include_str!` anywhere in this
+    # workspace" -- until `df6a0fc` added one. `tokfold-mcp/tests/quickstart.rs`
+    # pulls `crates/tokfold-mcp/README.md` in with `include_str!` and reads the
+    # three blocks marked `quickstart-session`, `quickstart-replies` and
+    # `quickstart-rendering`, replaying that session through `stdio::serve` in
+    # process, so losing a marker or editing a quoted reply turns a check red.
+    # That check is not this one: `quickstart` only rides along inside `cargo test
+    # --workspace`, so it reports under `test`. Its own header states what it
+    # leaves open -- an elided run is unconstrained, and the `tokfold mcp <<'EOF'`
+    # line is compared as text and never run. Every README line and doc comment
+    # outside those three blocks is still guarded by review alone.
     #
     # The name is kept because branch protection requires it by exact string.
     # Widening the gate means adding assertions to that test (or a new one) and
@@ -461,20 +476,35 @@ jobs:
     # broken platform mapping or a swallowed exit code is a total outage for
     # that install path while the whole Rust gate stays green.
     #
-    # `release.yml` does check the launcher, but only at publish time and only
-    # for what a release can establish without running anything: that both files
-    # parse, that the platform table, the manifests under `npm/platforms/` and
-    # the launcher's `optionalDependencies` name the same five packages, and
-    # that each of those packages declares the `os` and `cpu` its table key
-    # promises. It cannot catch a regression before merge, and it says nothing
-    # about behaviour -- exit-code propagation, signal re-raise, argument
-    # passing, the musl refusal. This job is where that is checked, on every
-    # pull request and every push to `main`.
+    # `release.yml` checks the launcher twice. Statically, in `verify`: that
+    # both files parse, that the platform table, the manifests under
+    # `npm/platforms/` and the launcher's `optionalDependencies` name the same
+    # five packages, and that each of those packages declares the `os` and `cpu`
+    # its table key promises. And dynamically, in `publish`: its "End-to-end
+    # test through the launcher" step builds a `node_modules` layout and runs
+    # the command through it six times, asserting `--version`, a `cmp`-verified
+    # compress/expand round trip, and exit `3` and exit `2` crossing the
+    # wrapper. So "without running anything" is false, and of the behaviours
+    # this comment used to list as unchecked there, exit-code propagation and
+    # argument passing are checked.
     #
-    # No dependency install step, and no lockfile to cache: the suite uses
-    # `node:test` and `node:assert/strict` and nothing else. The npm packages in
-    # this repo ship with zero dependencies on purpose, and a `node_modules`
-    # under `npm/` would be a regression in the thing being tested.
+    # What is actually left to this job. `release.yml` is
+    # `workflow_dispatch`-only, so none of it can catch a regression before
+    # merge; its dynamic step runs on one platform package
+    # (`linux-x64-gnu`) and never on Windows or macOS; and signal re-raise and
+    # the musl refusal are asserted nowhere but here. That is the gap worth
+    # naming, on every pull request and every push to `main`.
+    #
+    # No dependency install step, and no lockfile to cache: the suite imports
+    # nothing from outside Node's standard library. Six builtins, measured with
+    # `grep -hoE "(require|from)[^)]*" npm/tests/*.js`: `node:assert/strict`,
+    # `node:child_process`, `node:fs`, `node:os`, `node:path`, `node:test`, plus
+    # the local `./fixtures.js`. Naming two of the six -- as this comment did --
+    # is an enumeration that goes stale the first time a test needs `node:fs`;
+    # the property worth asserting is "no third-party package", not a list. The
+    # npm packages in this repo ship with zero dependencies on purpose, and a
+    # `node_modules` under `npm/` would be a regression in the thing being
+    # tested.
     if: github.event_name != 'schedule'
     name: launcher (${{ matrix.leg }})
     runs-on: ${{ matrix.os }}
@@ -594,8 +624,11 @@ jobs:
     # locally first.
     #
     # `fuzz/` is its own workspace with its own `Cargo.lock` and is not a member
-    # of the root one, so nothing else in this file compiles it and nothing here
-    # depends on nightly except this job. cargo-fuzz 0.13.2 has no `--locked`
+    # of the root one, so nothing else in this file compiles it. "Nothing here
+    # depends on nightly except this job" would be false -- the `nightly` job
+    # below installs a nightly toolchain too. What holds is the narrower claim:
+    # no *required* check depends on nightly, since both jobs that use it are
+    # `continue-on-error` and neither runs on a pull request. cargo-fuzz 0.13.2 has no `--locked`
     # option on `build`, `run` or `list`, so the lockfile is checked by the
     # `cargo fetch --locked` step before any of them runs: a stale
     # `fuzz/Cargo.lock` fails there instead of being re-resolved silently.

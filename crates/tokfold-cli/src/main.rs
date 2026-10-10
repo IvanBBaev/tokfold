@@ -159,8 +159,8 @@ fn main() -> ExitCode {
 /// One carve-out survives, and it belongs to clap's printer rather than to terminals in
 /// general. A *terminal* opened read-only as stdout still takes clap's path, so the help
 /// or version text is lost and nothing is reported. Measured on macOS arm64 against the
-/// release binary built from source fingerprint `9ee10cd2` by `cargo build --release
-/// --workspace --all-features` (binary SHA-1 `ca2cfc4a`, 2026-10-01) through
+/// release binary `cargo build --release --workspace --all-features` produces (SHA-1
+/// `ca2cfc4a`, 2026-10-01; re-verified to still reproduce 2026-10-10) through
 /// `openpty()` plus a read-only `open()` of `ttyname(slave)`:
 /// `--help` and `--version` exit `0` with no byte on the master and nothing on standard
 /// error, with `TERM` unset and with `TERM=xterm-256color` alike. `compress` and `stats`
@@ -168,6 +168,22 @@ fn main() -> ExitCode {
 /// (`writing to standard output: Bad file descriptor (os error 9)`), exactly as they do
 /// through a read-only regular file, so the carve-out does not widen to the commands
 /// that write a payload.
+///
+/// The build command is part of that binary's identity: the same tree gives
+/// `834c01f2` for `cargo build --release -p tokfold-cli`. The **feature set** is what
+/// separates the two, not the package selection, which only decides which packages a
+/// feature flag can reach — measured 2026-10-10, `--release --workspace` with default
+/// features is byte-identical to `834c01f2`, and so is `-p tokfold-cli
+/// --all-features`, since `--all-features` applies to the selected packages and this
+/// crate declares no `[features]` table. Widening to `--workspace` puts `tokfold-core`
+/// in reach of `--all-features`, which turns on both its `tiktoken` and its
+/// unimplemented `hf`; `tiktoken` alone, as `-p tokfold-cli --features
+/// tokfold-core/tiktoken`, gives `a65170a2` at the same 1 263 392 bytes as `ca2cfc4a`
+/// and different bytes. A source fingerprint
+/// is *not* part of it. This sentence used to name one, `9ee10cd2` over
+/// `find crates fuzz -name '*.rs' | sort | xargs cat`; that derivation covers the test
+/// files, which no binary links, so an edit to `tests/cli.rs` retired the fingerprint
+/// while `ca2cfc4a` stayed byte-identical.
 ///
 /// The two printers are not interchangeable, which is what the terminal branch is for.
 /// On a read-write pty `--help` renders 1 185 bytes with `TERM` unset: the 1 167 of the
@@ -977,9 +993,21 @@ fn inspect_archive_slot(path: &Path) -> Result<ArchiveSlot> {
 /// before the length, so every read-only descriptor gets the same answer and the same
 /// line on stderr whatever its file holds. A file the write does reach is read for the
 /// magic through the typed path, the one spelling that reaches it. One that cannot be
-/// read (a descriptor open write-only on a file of four bytes or more) is an error: it
-/// may hold a stale archive, and a rejected pass never passes through beside one it
-/// could not rule out.
+/// read (a descriptor open write-only) is an error: the write reaches it, so it is the
+/// slot a successful pass would have filled, and it may hold the stale archive a
+/// rejected pass has to clear. The rule is reachability, not identifiability -- the
+/// bytes behind a read-only descriptor are just as unknown and that one passes
+/// through, which `a_stale_archive_behind_a_read_only_descriptor_is_not_the_archive_slot`
+/// pins with a real archive behind it.
+///
+/// The length shortcut runs after the write-reach question and before that read, so the
+/// error has a width. A write-only slot of `ARCHIVE_MAGIC.len()` bytes or more is
+/// refused at exit `2` with nothing on stdout; a shorter one is settled as foreign and
+/// the input passes through at exit `0`. The wide side is a behaviour change against
+/// `0.0.1`, which inspected no slot and passed the input through at either width, so it
+/// costs the caller a rejected document `0.0.1` handed back --
+/// `the_write_only_descriptor_slot_error_begins_at_the_magics_width` pins both widths
+/// and that cost.
 ///
 /// The magic is read at offset `0`, not at the current position. Opening a `/dev/fd`
 /// spelling on macOS duplicates the descriptor, and a duplicate shares its file offset:
@@ -1499,25 +1527,29 @@ impl From<ProfileArg> for Profile {
 
 #[cfg(test)]
 mod tests {
-    //! Unit tests for the two id→name tables.
+    //! Unit tests for what `tests/cli.rs` cannot reach.
     //!
     //! Nearly everything else in this binary is covered end to end from
     //! `tests/cli.rs`, which is the better place to assert behaviour; the exceptions
-    //! are here and in `reader_gone_tests` and `archive_identity_tests` below. The
-    //! two tables are one exception:
-    //! they translate *frozen wire ids*, and `stats` can only ever print the ids the
-    //! shipped configuration produces. Nothing on the command line selects a token
-    //! estimator, so ids 1–4 have no end-to-end path at all — yet an archive written by
-    //! another build (or by a library caller that swapped the estimator) can carry them,
-    //! which is precisely why the pairings must not drift. Testing them here is the only
-    //! way to pin them. The exit-code line every screen that claims the contract
-    //! repeats — all but `mcp`, which is excluded on purpose — is another:
-    //! `exit_codes!()` spells its numbers inside a string literal, so
-    //! `EXIT_BAD_INPUT` and `EXIT_CORRUPT` could change without a single screen
-    //! following, and `tests/cli.rs` can only check the screen against the numbers
-    //! the process returns one case at a time.
+    //! are here and in `reader_gone_tests` and `archive_identity_tests` below. Three
+    //! things live here. The two id→name tables translate *frozen wire ids*, and
+    //! `stats` can only ever print the ids the shipped configuration produces.
+    //! Nothing on the command line selects a token estimator, so ids 1–4 have no
+    //! end-to-end path at all — yet an archive written by another build (or by a
+    //! library caller that swapped the estimator) can carry them, which is precisely
+    //! why the pairings must not drift. Testing them here is the only way to pin
+    //! them. The exit-code line every screen that claims the contract repeats — all
+    //! but `mcp`, which is excluded on purpose — is the second: `exit_codes!()`
+    //! spells its numbers inside a string literal, so `EXIT_BAD_INPUT` and
+    //! `EXIT_CORRUPT` could change without a single screen following, and
+    //! `tests/cli.rs` can only check the screen against the numbers the process
+    //! returns one case at a time. The `--profile` spellings are the third: two of
+    //! the three profiles are identical in v0.0.1, so nothing the process prints can
+    //! tell them apart.
 
-    use super::{EXIT_BAD_INPUT, EXIT_CORRUPT, encoder_name, tokenizer_name};
+    use super::{
+        Cli, Command, EXIT_BAD_INPUT, EXIT_CORRUPT, Parser, Profile, encoder_name, tokenizer_name,
+    };
     use tokfold_core::estimator::ids;
 
     #[test]
@@ -1530,6 +1562,50 @@ mod tests {
             "; {EXIT_CORRUPT} a corrupt, empty, or otherwise unrecoverable archive on `expand`."
         );
         assert!(help.ends_with(&corrupt), "{help}");
+    }
+
+    /// `--profile` must reach the core [`Profile`] its spelling names, on both
+    /// subcommands that take it, and no end-to-end test can check that: `balanced` and
+    /// `aggressive` enable the same encoders in v0.0.1, so every comparison in
+    /// `tests/cli.rs` passes with those two arms swapped. Hand-mutating
+    /// `ProfileArg::Aggressive => Self::Aggressive` to `Self::Balanced` left the whole
+    /// CLI suite green, while the same mutation of the `Conservative` arm was caught,
+    /// so the chain from spelling to profile is pinned here, where the arms are
+    /// distinguishable -- as the MCP server's `profile` argument is pinned in its own
+    /// crate. The `default_value` is parsed through clap rather than restated, so
+    /// changing that literal fails here instead of silently redefining the default.
+    #[test]
+    fn each_profile_spelling_reaches_its_own_core_profile() {
+        let parse = |subcommand: &str, args: &[&str]| -> Result<Profile, String> {
+            let mut argv = vec!["tokfold", subcommand];
+            argv.extend_from_slice(args);
+            match Cli::try_parse_from(&argv) {
+                Ok(cli) => match cli.command {
+                    Command::Compress(a) => Ok(a.profile.into()),
+                    Command::Stats(a) => Ok(a.profile.into()),
+                    other => Err(format!("{other:?} does not take --profile")),
+                },
+                Err(e) => Err(format!("{argv:?} was rejected: {e}")),
+            }
+        };
+        for subcommand in ["compress", "stats"] {
+            for (spelling, expected) in [
+                ("conservative", Profile::Conservative),
+                ("balanced", Profile::Balanced),
+                ("aggressive", Profile::Aggressive),
+            ] {
+                assert_eq!(
+                    parse(subcommand, &["--profile", spelling]),
+                    Ok(expected),
+                    "{subcommand} --profile {spelling}"
+                );
+            }
+            assert_eq!(
+                parse(subcommand, &[]),
+                Ok(Profile::default()),
+                "{subcommand}: the --profile default_value must name the core default"
+            );
+        }
     }
 
     #[test]

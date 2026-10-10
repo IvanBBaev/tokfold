@@ -6,7 +6,11 @@
 This directory is its own Cargo workspace with its own `Cargo.lock`. It is **not** a
 member of the root workspace, so `cargo build`, `cargo test`, `cargo package
 --workspace` and `cargo deny check` at the repository root never compile it, and
-nothing outside this directory needs a nightly toolchain.
+no gate leg needs a nightly toolchain. "Nothing outside this directory" would be
+false: `ci.yml`'s `nightly` job installs `nightly-2026-09-28` and runs the
+workspace tests and clippy on it. That job is `continue-on-error`, runs only on a
+schedule or a manual dispatch, and is not a required check, so it gates nothing --
+but it is a use of nightly outside `fuzz/`, and the narrower claim is the true one.
 
 ## Prerequisites
 
@@ -127,6 +131,13 @@ names a branch of `decompress` by derivation rather than a document:
 | `seeds/tape_parse/` | 14 | 7 documents x 2 | `0x80` (`<doc>.json`): the unbounded parse alone, no bounded one. `0x02` (`<doc>-d2.json`): a bounded parse at depth limit 2 beside it |
 | `seeds/roundtrip/` | 28 | 7 documents x 4 | `0x00` (`<doc>-00.json`): conservative, no override. `0x01` (`-01`): balanced. `0x02` (`-02`): aggressive. `0x84` (`-84`): conservative with `min_saving_bps` overridden to 0 -- the do-no-harm gate off -- and `max_depth` lowered to 4 |
 | `seeds/mcp_handle_line/` | 14 | 7 sessions x 2 | `0x00` (`<session>.txt`): the 32 MiB frame limit. `0x50` (`<session>-small.txt`): a 351-byte limit, from `95 + 16 * (0x50 - 64)` |
+
+Re-derive any row of that table with the imported cases excluded, because one of
+them collides with the selector suffix: `find seeds/roundtrip -name '*-01.json'`
+gives eight files, the eighth being `jsonts-n_number_-01.json`, an imported case
+whose own name ends in `-01`. `! -name 'jsonts-*'` gives the seven the table
+claims, and the same exclusion is what makes the `Files` column come out at 13, 7,
+14, 28 and 14 rather than 13, 323, 330, 344 and 330.
 
 1 264 files named `jsonts-*`, 17 040 bytes in total: 316 of the 318 cases in the
 [JSONTestSuite](https://github.com/nst/JSONTestSuite) `test_parsing/` directory

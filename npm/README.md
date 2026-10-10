@@ -1,8 +1,25 @@
 # npm distribution
 
 This directory is the npm side of `tokfold`. It ships the **CLI binary**, not the
-engine: `npm i -g tokfold` gives you the `tokfold` command, exactly the binary
-`cargo build -p tokfold-cli` produces. There are no JavaScript bindings to the
+engine: `npm i -g tokfold` gives you the `tokfold` command, built from the same
+crate as `cargo build -p tokfold-cli` but not the same artefact. `release.yml`
+builds `--package tokfold-cli --release --locked --target "$TARGET"` with
+`profile.release.strip="symbols"`; a bare `cargo build -p tokfold-cli` is an
+unstripped debug build for the host. The sizes separate them: 5 254 392 bytes
+for the debug build on this machine against 981 675 bytes unpacked for
+`tokfold-darwin-arm64` 0.0.1 on the registry (both measured 2026-10-03). Those
+two are a file against a four-file package; the `bin/tokfold` inside that package
+is 968 480 bytes, and the release build of this tree — built with `release.yml`'s own
+flags, `--target aarch64-apple-darwin --locked` included — is 1 261 600 bytes without
+the `strip` config and 1 002 896 with it (measured 2026-10-10), so most of the gap is `--release`
+and not `strip`. Those two numbers are the step's: dropping `--target` gives
+1 261 712 and 1 002 912 from the same sources, so a size is a claim about the flags
+that produced it. Neither is the published 968 480, and neither can be: the published
+binary was built from a different commit (`tokfold-darwin-arm64` 0.0.1 records
+`gitHead` `81c7681`), by a different toolchain, on a GitHub runner. The tree these
+two came from was `c6f800e` plus uncommitted changes when they were measured, and
+that moves with every commit — re-derive it with `git log -1 --format=%h` rather
+than trusting it here. There are no JavaScript bindings to the
 engine here and none are planned in this directory — that would be a native addon,
 a different product with its own public surface to support.
 
@@ -78,9 +95,13 @@ first and skipped when the probe says the host started it anyway — glibc's
 binary begins life as a shell script instead of failing, and asserting a
 launcher-level failure there would be asserting something untrue.
 
-Two constraints on anything added there. It uses **`node:test` and
-`node:assert/strict` only** — the packages in this directory ship zero
-dependencies, and a `node_modules` under `npm/` would be a regression in the thing
+Two constraints on anything added there. It imports **nothing from outside
+Node's standard library** — six builtins today (`node:assert/strict`,
+`node:child_process`, `node:fs`, `node:os`, `node:path`, `node:test`) plus the
+local `./fixtures.js`. The constraint is "no third-party package", not that
+list: an enumeration here is a claim about every import in `npm/tests/`, and
+the two this sentence used to name were already four short. The packages in
+this directory ship zero dependencies, and a `node_modules` under `npm/` would be a regression in the thing
 being tested, so there is no lockfile and nothing to install. And it lives *beside*
 `tokfold/` rather than inside it, so no `files` entry can reach it and no test file
 can end up in the published tarball.
@@ -320,7 +341,7 @@ esbuild and turbo are usually named alongside it as ecosystem confirmation of th
 `@turbo/windows-64`. Neither is an unscoped rename, and a scoped name never meets
 this classifier in the first place. `git-cliff` is the only unscoped precedent
 found. Worth saying plainly rather than filing under "the ecosystem agrees": both
-of the projects cited above avoid this problem by scoping, not by renaming, so
+esbuild and turbo avoid this problem by scoping, not by renaming, so
 what they really evidence is the option this release did not take.
 
 `win32` is not categorically banned — recent unscoped `*-win32-x64` packages do

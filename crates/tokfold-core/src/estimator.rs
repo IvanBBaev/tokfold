@@ -910,12 +910,15 @@ mod tiktoken_tests {
 
     /// The sentinel's real cost, pinned per tokenizer.
     ///
-    /// The passthrough overhead is quoted in three places of published documentation
-    /// (`lib.rs`, `Stats`, and the crate README) as "about 10 estimated (11 real
-    /// `cl100k`, 13 real `o200k`)". Those were prose with nothing holding them to the
-    /// tokenizers, and the `o200k` figure was absent entirely until it was measured
-    /// here — 18% above the `cl100k` number the docs quoted, on the tokenizer a GPT-4o
-    /// caller is actually billed on.
+    /// The passthrough overhead is quoted in four places that state the current cost:
+    /// `lib.rs`, `Stats` in `compressor.rs`, the `tokfold-core` README and the
+    /// workspace root README. (`tokfold-cli`'s README names the sentinel without
+    /// pricing it, and the CHANGELOG quotes the figures as history of this fix.)
+    /// Before commit `0f759f6` all four read "about 10 estimated (11 real `cl100k`)
+    /// tokens" — prose with nothing holding it to the tokenizers — and the `o200k`
+    /// figure was absent from every one of them until it was measured here: 18% above
+    /// the `cl100k` number they quoted, on the tokenizer a GPT-4o caller is actually
+    /// billed on.
     ///
     /// The cost is measured the way the docs state it: as the *delta* a prepended
     /// sentinel adds to a real payload, not as the line's count in isolation. The two

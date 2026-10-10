@@ -40,10 +40,11 @@ cargo build --release -p tokfold-cli   # binary at target/release/tokfold
   persist a recovery archive (`--archive PATH`). Compression is an optimization,
   never a gate: an input the engine rejects is forwarded unchanged and the command
   exits `0`. That path also clears a stale archive left at `--archive` by an earlier
-  run, and only such an archive — see below. Two steps on that path can still fail
-  the command with `2`: clearing the slot, when it cannot be inspected or
-  cleared, in which case nothing is emitted; and writing the passthrough to
-  standard output, on any I/O error other than a reader closing the pipe early.
+  run, and only such an archive — see *The `--archive` path belongs to tokfold*. Two
+  steps on that path can still fail the command with `2`: clearing the slot, when it
+  cannot be inspected or cleared, in which case nothing is emitted; and writing the
+  passthrough to standard output, on any I/O error other than a reader closing the
+  pipe early.
 - `tokfold expand` — reconstruct the exact original from a recovery archive.
   Fail-closed: any integrity error exits `3` and emits nothing. An empty archive is
   reported as empty rather than as corruption, and every failure names the file (or
@@ -283,8 +284,8 @@ outcome of the pass:
   is refused with exit `2` and no output, because it would survive and still verify.
   A write-only descriptor (`3>>log`) on a file of four bytes or more cannot be read to
   find out, and exits `2` too, whatever the file holds. A pipe, socket or device is
-  not read at all, and stderr says it is not a regular file; a directory exits `2`, as
-  above.
+  not read at all, and stderr says it is not a regular file; a directory exits `2` with
+  the platform's own diagnostic, which is why the rejected pass opens one at all.
 - **The rejected pass is not contained by the successful one.** It is tempting to
   reason that deleting is safe because a successful pass would have overwritten the
   same path anyway. That is not true, because the two use different system calls with
@@ -314,39 +315,44 @@ outcome of the pass:
   on standard output — the FIFO would otherwise block until something reads it.
   Write the archive to a file and pipe it from there.
 
-Because both outcomes are destructive to that path, `--archive` may not name the
-same file as `--input`. tokfold refuses such an invocation with exit `2`
-before reading or writing anything — which is before it can know whether the pass
-would succeed, so an input that would be rejected and left untouched (one that does
-not open with the archive magic) is refused too, where `0.0.1` passed it through
-with exit `0`. The refusal is a rule about the two paths, not a prediction of the
-outcome, and its message says only that: it is also given where neither outcome could
-have touched the file — a read-only (`chmod 444`) input, which `0.0.1` refused to
-overwrite with "Permission denied" and, when it opened with the magic and was
-rejected, passed through with exit `0`; and on macOS a non-empty input reached through
-a **read-write** `/dev/fd/N` or `/dev/stdin` spelling (`3<>`, `0<>`), which a successful
-pass refuses to write because opening it does not empty it. A read-only spelling of the
-same file is not compared at all: `--input /dev/stdin --archive /dev/stdin < log.json`
-draws no same-file refusal, it reads the input and then fails at the archive write with
-the platform's `Permission denied`. That is the rule stated in the sentence "a spelling
-that operation cannot open is not compared", not an exception to it. The two are
-compared by the identity the operating system gives the files (device and inode on
-Unix), so a symlink, a
-relative spelling and a second hard link to the same file are all caught: `--input
-./log.json --archive log.json` is refused, and so is `--archive` naming a hard link
-to the input. Where no such identity is available the comparison falls back to the
+Because both outcomes are destructive to that path, `--archive` may not name the same
+file as `--input`. tokfold refuses such an invocation with exit `2` before reading or
+writing anything — which is before it can know whether the pass would succeed, so an
+input that would be rejected and left untouched (one that does not open with the archive
+magic) is refused too, where `0.0.1` passed it through with exit `0`. The refusal is a
+rule about the two paths, not a prediction of the outcome, and its message says only
+that. It is given where neither outcome could have touched the file: on macOS a
+non-empty input reached through a **read-write** `/dev/fd/N` or `/dev/stdin` spelling
+(`3<>`, `0<>`) is refused by a successful pass, because opening it does not empty it,
+and left by a rejected one, which will not unlink a path naming a descriptor. It is
+given over a read-only (`chmod 444`) input as well, which `0.0.1` neither overwrote (it
+stopped at "Permission denied") nor deleted (it passed the input through at exit `0`,
+having no clearing step) — but in this binary only the successful pass is barred there.
+The rejected pass would reach it: `fs::remove_file` needs write permission on the
+directory and ignores the file's own mode, so with the magic at its head a read-only
+input named as its own archive is exactly what the refusal saves, which is the asymmetry
+set out under "The rejected pass is not contained by the successful one". A read-only
+spelling of the same file is not compared at all:
+`--input /dev/stdin --archive /dev/stdin < log.json` draws no same-file refusal, it
+reads the input and then fails at the archive write with the platform's
+`Permission denied`. That is the rule stated in the sentence "a spelling that operation
+cannot open is not compared", not an exception to it. The two are compared by the
+identity the operating system gives the files (device and inode on Unix), so a symlink,
+a relative spelling and a second hard link to the same file are all caught:
+`--input ./log.json --archive log.json` is refused, and so is `--archive` naming a hard
+link to the input. Where no such identity is available the comparison falls back to the
 two paths with symlinks and relative spellings resolved, which still catches the
-spellings but no longer catches a hard link. On Unix, an input redirected onto
-standard input is compared the same way, by the identity of the file behind the
-descriptor, so `tokfold compress --archive log.json < log.json` is refused too;
-elsewhere standard input has neither an identity nor a path to compare, so a
-redirect is not refused, any more than a pipe is. What the guard
-cannot see is a pipe: `cat log.json | tokfold compress --archive log.json` carries
-the bytes of `log.json` and no file to compare, so it is not refused — a successful
-pass then replaces `log.json` with its archive, which `tokfold expand` turns back into
-the document, and a rejected one leaves it untouched unless it opens with the archive
-magic, in which case it *deletes* it. Name the input with `--input` or redirect it;
-do not pipe it to the path it lives at.
+spellings but no longer catches a hard link. On Unix, an input redirected onto standard
+input is compared the same way, by the identity of the file behind the descriptor, so
+`tokfold compress --archive log.json < log.json` is refused too; elsewhere standard
+input has neither an identity nor a path to compare, so a redirect is not refused, any
+more than a pipe is. What the guard cannot see is a pipe:
+`cat log.json | tokfold compress --archive log.json` carries the bytes of `log.json` and
+no file to compare, so it is not refused — a successful pass then replaces `log.json`
+with its archive, which `tokfold expand` turns back into the document, and a rejected
+one leaves it untouched unless it opens with the archive magic, in which case it
+*deletes* it. Name the input with `--input` or redirect it; do not pipe it to the path
+it lives at.
 
 Standard output is guarded the same way on Unix: `tokfold compress --archive
 a.tkfd >> a.tkfd` (or `> a.tkfd`) is refused with exit `2` before tokfold reads or

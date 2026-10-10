@@ -989,8 +989,14 @@ proptest! {
     /// Every prefix of a hostile document **of at most 256 bytes** is either refused
     /// as `InvalidJson` / `NotUtf8` (a cut inside a multi-byte character) or — when
     /// the prefix is itself valid JSON, as `12` is of `123` — accepted and held to
-    /// the whole contract. The size bound is not decoration: this loop compresses
-    /// once per byte, so it is quadratic in the document, and `arb_hostile_valid`
+    /// the whole contract. "Every" is literal and includes both ends: the empty
+    /// prefix at `cut == 0` and the untruncated document at `cut == bytes.len()`.
+    /// That last cut always takes the accepted arm: `arb_hostile_valid` emits valid
+    /// JSON and nests at most 24 openers, well inside the 512 of `DEFAULT_MAX_DEPTH`,
+    /// so no draw can be refused as `DepthExceeded` -- and the hostile survey in this
+    /// file already `.unwrap()`s a whole draw once per iteration. The size
+    /// bound is not decoration: this loop compresses once per cut -- one per byte
+    /// plus the whole document -- so it is quadratic, and `arb_hostile_valid`
     /// draws documents well past 256 bytes that the `prop_filter` below discards
     /// outright. Prefixes of a longer hostile document are therefore *not* covered
     /// here. Truncation is the commonest corruption of a captured tool output;
@@ -1001,7 +1007,7 @@ proptest! {
     ) {
         let c = compressor();
         let bytes = doc.as_bytes();
-        for cut in 0..bytes.len() {
+        for cut in 0..=bytes.len() {
             let prefix = &bytes[..cut];
             match c.compress(prefix) {
                 Ok(_) => {
@@ -1252,8 +1258,16 @@ fn table_of_exact_len(len: usize) -> String {
 /// leg. Its marginal cost inside the parallel workspace leg is the difference
 /// against `--skip <this name>`: 10.11–17.42 s in debug (leg 26.64–33.19 s, leg
 /// minus it 15.77–16.53 s) and 0.91–1.14 s under `--release` (leg 2.85–3.16 s,
-/// minus it 1.94–2.02 s). The debug spread is the leg's own run-to-run noise,
-/// wider than the gap between its two figures. `--report-time` would answer this
+/// minus it 1.94–2.02 s). The figures are run-paired, so each marginal figure is a
+/// difference of two noisy legs and the gap between them is their summed noise, not
+/// the spread of either: 33.19 - 15.77 = 17.42 and 26.64 - 16.53 = 10.11, so the
+/// debug gap is (33.19 - 26.64) + (16.53 - 15.77) = 6.55 + 0.76 = 7.31. The two legs
+/// moved in opposite directions there, so their noise added; in release they moved
+/// the same way and it partly cancelled, (3.16 - 2.85) - (2.02 - 1.94) = 0.31 - 0.08
+/// = 0.23. The debug leg's own spread, 6.55 s, is therefore *narrower* than the
+/// 7.31 s gap it produces — this comment claimed the reverse until the subtraction
+/// was done — and no number of repeats of this method pins the marginal cost tighter
+/// than that sum, so read 10–17 s as the band. `--report-time` would answer this
 /// directly but is nightly-only on a stable toolchain, so the difference is the
 /// measurement. Both legs run it now.
 /// Re-time it before adding a second document of this size — the cost is linear in
@@ -1582,8 +1596,13 @@ fn a_valid_archive_of_another_document_is_accepted() {
     // Substitution is accepted, and returns the substituted document, not the original.
     assert_eq!(c.decompress(&square).unwrap().as_slice(), b"[]");
 
-    // Uniqueness: re-compressing is byte-identical, and no single-byte change to the
-    // archive of `{}` can be accepted and still hand `{}` back.
+    // Uniqueness: re-compressing is byte-identical, and no single-byte edit of the
+    // archive of `{}` is accepted at all -- which is stronger than "accepted but not
+    // handing `{}` back", and is what the `accepted_edits == 0` assertion below pins
+    // over all 45 * 255 = 11_475 edits (45 positions, 255 other byte values each).
+    // The `assert_ne!` inside the loop is therefore reached zero times on this build
+    // and pins nothing today: it is a guard for a future loosening of the format, and
+    // it is the only one of the two that would name the offending offset and byte.
     assert_eq!(c.compress(b"{}").unwrap().archive, curly);
     let mut accepted_edits = 0_usize;
     for i in 0..curly.len() {
