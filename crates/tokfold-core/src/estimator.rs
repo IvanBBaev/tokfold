@@ -575,7 +575,7 @@ mod tests {
         }
 
         let bar = HeuristicEstimator::MEASURED_OVER_CLAIM_BPS;
-        assert_eq!(bar, 600, "the numbers below were measured against 600 bps");
+        assert_eq!(bar, 600, "this test's numbers were measured at 600 bps");
 
         // Small documents never reach the question: minification loses the strict
         // comparison by the width of the sentinel, so they take passthrough at any
@@ -972,11 +972,12 @@ mod tiktoken_tests {
 
     /// The sentinel's cost is not constant: it depends on the input's first bytes.
     ///
-    /// The test above feeds only payloads that open with a non-whitespace byte, and
-    /// the docs once called the overhead "constant". Valid JSON may open with
-    /// whitespace, and the passthrough path renders it verbatim, so the input's
-    /// leading whitespace sits directly after the sentinel's newline, where BPE (and
-    /// the heuristic's whitespace-run rule) can merge the two. This pins single cases
+    /// `the_sentinel_costs_what_the_docs_say_it_costs` feeds only payloads that open
+    /// with a non-whitespace byte, and the docs once called the overhead "constant".
+    /// Valid JSON may open with whitespace, and the passthrough path renders it
+    /// verbatim, so the input's leading whitespace sits directly after the sentinel's
+    /// newline, where BPE (and the heuristic's whitespace-run rule) can merge the two.
+    /// This pins single cases
     /// and the whole range the crate docs quote: over every prefix of up to six
     /// spaces, tabs, CRs and LFs before `{}`, 10–11 estimated, 10–12 `cl100k`, 12–13
     /// `o200k`. (A survey of the same prefixes before ten other bodies — `[]`, `1`,

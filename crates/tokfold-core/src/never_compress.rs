@@ -32,7 +32,7 @@
 //! legend, not deduped against a merely-similar line, not moved. This module decides
 //! only *membership*. It does not enforce anything, and the enforcement is not
 //! uniform across encoders, so the rule is stated here as intent and the implemented
-//! behaviour is spelled out immediately below.
+//! behaviour is spelled out under *What v0.0.1 actually implements*.
 //!
 //! ## What v0.0.1 actually implements
 //!

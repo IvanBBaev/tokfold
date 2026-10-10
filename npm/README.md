@@ -32,7 +32,7 @@ the Rust build: no crate lists it, and every crate manifest carries an explicit
 ```
 npm/
   tokfold/                     the package a user installs
-    package.json               declares optionalDependencies on all five below
+    package.json               declares optionalDependencies on the five platform packages
     bin/tokfold                the launcher (JS); npm links this onto PATH
     lib/resolve.js             platform -> package mapping, and the error messages
   platforms/

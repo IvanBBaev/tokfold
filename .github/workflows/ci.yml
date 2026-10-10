@@ -60,8 +60,8 @@
 # the branch-protection list below, and the `continue-on-error` expression on
 # that job is precisely what decides whether a failing leg still reports success.
 # Flip `required: true` to `false` on one of those three and it goes green while
-# failing -- the very thing the paragraph above says a `required:` key can no
-# longer do. The nine jobs are unreachable that way; those three legs are not.
+# failing -- the very thing a `required:` key can no longer do to the nine jobs.
+# The nine jobs are unreachable that way; those three legs are not.
 # Closing the gap would mean hoisting the required legs out of the matrix, which
 # renames the checks branch protection matches by exact string, so it is not a
 # change to make quietly.
@@ -106,13 +106,13 @@
 # this file's, and a required check is added in the repository settings.
 #
 # ---------------------------------------------------------------------------
-# Conventions that apply to every job below
+# Conventions that apply to every job in this file
 # ---------------------------------------------------------------------------
 # Every cargo invocation that resolves a dependency graph passes `--locked`: CI
 # must fail when the committed Cargo.lock no longer matches the manifests,
 # instead of silently resolving a fresh graph that nobody has reviewed or
-# audited. Five invocations below carry no `--locked`, and not one of the five is
-# an exception to that rule. Check it with
+# audited. Five invocations in this file carry no `--locked`, and not one of
+# the five is an exception to that rule. Check it with
 #
 #   grep -n 'cargo ' .github/workflows/ci.yml | grep -v '#' | grep -v 'Cache cargo'
 #
@@ -469,9 +469,9 @@ jobs:
   launcher:
     # The npm launcher (`npm/tokfold/bin/tokfold` and `lib/resolve.js`) is
     # shipped code that no other job here compiles, runs or even parses: every
-    # other gate above is a cargo command, actionlint reads only the workflow
-    # files, and none of them reads JavaScript. It is
-    # also the first thing a user meets -- `npm i -g tokfold` installs the
+    # other gate is a cargo command, actionlint reads only the workflow files,
+    # and none of them reads JavaScript. It is also the first thing a user
+    # meets -- `npm i -g tokfold` installs the
     # launcher, and the Rust binary is only ever reached through it -- so a
     # broken platform mapping or a swallowed exit code is a total outage for
     # that install path while the whole Rust gate stays green.
@@ -554,8 +554,7 @@ jobs:
           # failure paths that never start a child do run here. That is a real
           # gap, not a silent one: on Windows this leg covers the resolver, the
           # packaging check and those failure paths, and the process-level
-          # exit-code and signal contract is carried by the legs below and
-          # above.
+          # exit-code and signal contract is carried by the other legs.
           - leg: windows-node22
             os: windows-latest
             node: "22"

@@ -1087,9 +1087,9 @@ fn has_escape_above_00ff(body: &str) -> bool {
     false
 }
 
-/// Generator liveness — the properties above are only as strong as the inputs they
-/// are handed, and a property that never reaches its interesting region still passes,
-/// silently. Every assertion here corresponds to a region that was measurably
+/// Generator liveness — the properties that draw from these generators are only as strong as
+/// the inputs they are handed, and a property that never reaches its interesting region still
+/// passes, silently. Every assertion here corresponds to a region that was measurably
 /// *unreachable* before the generators were widened:
 ///
 /// - `arb_json_pair` never produced byte-distinct documents that render identically,

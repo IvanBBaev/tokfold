@@ -12,8 +12,9 @@
 //! deliberate contract — byte-identity would force us to preserve exactly the
 //! whitespace we are paid to delete. It is the floor, not a description of this
 //! version: because every archive this version writes holds the original bytes
-//! verbatim (see below), [`Compressor::decompress`] is byte-exact today, and a
-//! later encoder is allowed to give that up while keeping the value tree.
+//! verbatim (see *What an archive actually contains*),
+//! [`Compressor::decompress`] is byte-exact today, and a later encoder is
+//! allowed to give that up while keeping the value tree.
 //!
 //! The engine is never marketed as "lossless". The model reads the compressed
 //! rendering, not the reconstruction, so byte-reversibility proves nothing about

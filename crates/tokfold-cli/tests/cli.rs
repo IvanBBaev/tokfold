@@ -3068,8 +3068,8 @@ fn version_reports_the_crate_version() {
 /// usage", and every needle the tests looked for — "deletes", "overwrites", "Exit
 /// codes" — was present in both. The words were right and the outcomes they were
 /// attached to were wrong. So this pins the help against the binary's observed
-/// behaviour rather than against a word list: each of the three claims below is made
-/// by running the case the sentence describes.
+/// behaviour rather than against a word list: each of the three claims is checked by
+/// running the case the sentence describes.
 #[test]
 fn the_help_screen_agrees_with_the_outcomes_it_describes() {
     let dir = scratch_dir("help-agrees-with-behaviour");

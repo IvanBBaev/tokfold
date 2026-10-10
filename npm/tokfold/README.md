@@ -132,7 +132,7 @@ against this ceiling first — the refusal is reported, but only on stderr.
 | `0` | success — including a downstream that closed the pipe early; see below for the one signal death that also reads as `0` |
 | `2` | bad input: usage, I/O, or an input the compressor rejects on `stats` |
 | `3` | a corrupt, empty, or otherwise unrecoverable archive on `expand` |
-| `1` | **the launcher failed and tokfold never ran** — except in one documented corner, below |
+| `1` | **the launcher failed and tokfold never ran** — except for a signal Node names but cannot number |
 | `128 + N` | the binary was killed by signal `N` and re-raising `N` did not kill the wrapper — a signal Node ignores, such as `SIGXFSZ` (`153` on macOS) |
 
 `1` is not a tokfold exit code. It is emitted only by this npm wrapper, so a

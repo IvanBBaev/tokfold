@@ -622,12 +622,12 @@ fn a_damaged_archive_is_refused_with_a_code_that_names_the_damage() {
 
 #[test]
 fn each_kind_of_archive_damage_is_named_by_its_own_code() {
-    // The test above proves a damaged archive is refused by *one of* the documented
-    // codes. That is the weaker half of the contract. The other half is that the codes
-    // are distinguishable: a caller is supposed to retry on one and give up on another,
-    // and a mapping that collapsed two of them into one — or into the catch-all — would
-    // still satisfy the "refused with a documented code" assertion while making the
-    // distinction useless. So each kind of damage is provoked deliberately here.
+    // `a_damaged_archive_is_refused_with_a_code_that_names_the_damage` proves a damaged archive
+    // is refused by *one of* the documented codes. That is the weaker half of the contract. The
+    // other half is that the codes are distinguishable: a caller is supposed to retry on one
+    // and give up on another, and a mapping that collapsed two of them into one — or into the
+    // catch-all — would still satisfy the "refused with a documented code" assertion while
+    // making the distinction useless. So each kind of damage is provoked deliberately here.
     //
     // Doing that means writing into the header by offset. The layout is frozen in
     // tokfold-core's `format` module and is part of the archive format, not an internal

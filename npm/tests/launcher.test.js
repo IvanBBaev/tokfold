@@ -337,9 +337,8 @@ test("a signal this runtime cannot number exits 1 and says so", { skip: SKIP }, 
   // from this table, but on macOS with Node 22 every name that list produced for
   // signals 1-31 maps back here (measured), and an unnamed signal never reaches
   // the lookup at all (it arrives as an ordinary exit; see the SIGEMT test
-  // below). So
-  // the table itself is emptied from a preload, which is the only seam that
-  // reaches this branch without adding one to the launcher.
+  // below). So the table itself is emptied from a preload, which is the only
+  // seam that reaches this branch without adding one to the launcher.
   //
   // Two things are pinned. That the code is `1` and not `128 + undefined`,
   // which is `NaN`: `process.exit(NaN)` reports **0** on Node 18, so without
@@ -679,12 +678,12 @@ test("an installed package with no binary exits 1 and names the path", { skip: N
 });
 
 test("a binary that cannot be started exits 1, not with a stack trace", { skip: NO_PACKAGE }, () => {
-  // The case the missing-binary test above does not reach. `spawn` looks
-  // asynchronous and is only mostly so: Node defers exactly EACCES, EAGAIN,
-  // EMFILE, ENFILE and ENOENT to the `error` event and *throws* every other
-  // errno straight out of the call. ENOENT is the one the test above produces,
-  // which is why the launcher looked covered while every other way of failing
-  // to start crashed the launcher instead.
+  // The case `an installed package with no binary exits 1 and names the path`
+  // does not reach. `spawn` looks asynchronous and is only mostly so: Node
+  // defers exactly EACCES, EAGAIN, EMFILE, ENFILE and ENOENT to the `error`
+  // event and *throws* every other errno straight out of the call. ENOENT is
+  // the one that test produces, which is why the launcher looked covered while
+  // every other way of failing to start crashed the launcher instead.
   //
   // A crash is not a small difference here. The user gets a Node stack trace
   // naming `child_process.js` -- a file they did not install and cannot act on
@@ -694,7 +693,8 @@ test("a binary that cannot be started exits 1, not with a stack trace", { skip: 
   // `bin` is a plain file here, so the path resolves to nothing walkable: an
   // unglamorous state, chosen because every platform reports it the same way.
   // The realistic version of this failure -- a truncated or foreign binary --
-  // is the test below, and it is not portable.
+  // is `a truncated binary exits 1 and says which file it is`, and it is not
+  // portable.
   const result = run(blocked, ["--version"]);
 
   assert.equal(result.status, 1);
@@ -715,7 +715,8 @@ test("a truncated binary exits 1 and says which file it is", {
 }, () => {
   // What an interrupted download leaves behind: present, executable, and not a
   // program. On a host that reports it, this is the ENOEXEC that `spawn` throws
-  // synchronously -- the realistic form of the failure the test above pins
+  // synchronously -- the realistic form of the failure that
+  // `a binary that cannot be started exits 1, not with a stack trace` pins
   // portably.
   const result = run(corrupt, ["--version"]);
 
@@ -755,12 +756,14 @@ test("no launcher-level failure exits anything but 1", { skip: NO_PACKAGE }, () 
   // means tokfold never ran, so no launcher failure may borrow 2 or 3, and no
   // launcher failure may exit 0 either.
   //
-  // "No launcher-level failure" is a claim about the fixtures below, not about
-  // the launcher's whole surface, and the gap is worth naming. `corrupt` is
-  // left out because half the hosts start it (see STARTS_ANYWAY), and the
-  // unmapped-signal path is left out because it is the one exit of `1` that is
-  // not a launcher-level failure at all -- the binary ran and was killed. Both
-  // have their own tests above.
+  // "No launcher-level failure" is a claim about the fixtures this test runs,
+  // not about the launcher's whole surface, and the gap is worth naming.
+  // `corrupt` is left out because half the hosts start it (see STARTS_ANYWAY),
+  // and the unmapped-signal path is left out because it is the one exit of `1`
+  // that is not a launcher-level failure at all -- the binary ran and was
+  // killed. Both have their own tests: `a truncated binary exits 1 and says
+  // which file it is` and `a signal this runtime cannot number exits 1 and
+  // says so`.
   const failures = [
     run(bare, [], {
       preload: true,

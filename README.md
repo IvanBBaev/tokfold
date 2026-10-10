@@ -88,9 +88,10 @@ Every recovery archive this version writes is a passthrough blob — a `TKFD` he
 `max_input_bytes`) followed by the original bytes verbatim — so `tokfold expand` returns
 the input byte-for-byte today, whitespace and escape style included, and
 `expand --help` says so.
-The list above is the *floor*: the part of that behaviour a future encoder is not
-allowed to take away. An encoder that stores structure instead of bytes would still
-have to return the same value tree, and would be free to return different whitespace.
+The reversibility contract is the *floor*: the part of that behaviour a future
+encoder is not allowed to take away. An encoder that stores structure instead of
+bytes would still have to return the same value tree, and would be free to return
+different whitespace.
 Code that diffs the reconstruction against the original will pass on 0.0.1 and is
 still wrong; compare it as a value tree.
 

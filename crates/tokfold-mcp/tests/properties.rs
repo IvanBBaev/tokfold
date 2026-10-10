@@ -5,7 +5,7 @@
 //! untrusted peer over stdio. Example-based tests cover the inputs someone thought of;
 //! these cover the ones nobody did.
 //!
-//! Two shapes of property are worth the machinery, and both appear below:
+//! Two shapes of property are worth the machinery, and both appear in this file:
 //!
 //! * **Round trips.** Encoding and decoding are written separately, so they can drift
 //!   apart on an input class neither test happened to name — a lone control character,
@@ -273,7 +273,8 @@ proptest! {
     }
 }
 
-/// The floor under the property above, measured rather than described.
+/// The floor under `no_answer_ever_exceeds_the_frame_limit`, measured rather than
+/// described.
 ///
 /// `no_answer_ever_exceeds_the_frame_limit` generates from 128 upward because below some
 /// limit the refusal frame stops fitting inside the limit it reports. That size was prose
@@ -437,7 +438,8 @@ fn an_id_too_wide_for_the_addressed_refusal_is_refused_without_it() {
     );
 }
 
-/// Generator liveness for the two dispatcher properties above.
+/// Generator liveness for `the_dispatcher_answers_arbitrary_lines_without_panicking`
+/// and `no_answer_ever_exceeds_the_frame_limit`.
 ///
 /// Both state their assertions inside `if let Some(reply) = server.handle_line(&line)`,
 /// because silence is a legal answer to a notification and to a line carrying no

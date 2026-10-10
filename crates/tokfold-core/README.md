@@ -26,14 +26,15 @@ plaintext and must be stored with the same care.
 
 Semantic identity, not byte identity. Object key order, duplicate keys, array
 order and number *lexemes* are preserved exactly; insignificant whitespace and
-string escape style are canonicalized. That is the floor rather than a description
-of this version: because the archive above is the original bytes verbatim,
-`decompress` is byte-exact today, and a later encoder is allowed to give that up
-while keeping the value tree. The word "lossless" is avoided on purpose:
-the model reads the *rendering*, not the reconstruction, so byte-reversibility of
-the recovery path would prove nothing about comprehension of the read path. The one
-public API item that carries the word, `Fidelity::Lossless`, names the recovery path's class and
-nothing more.
+string escape style are canonicalized. That is the floor rather than a
+description of this version: because the v0.0.1 passthrough archive described
+under **Status** is the original bytes verbatim, `decompress` is byte-exact
+today, and a later encoder is allowed to give that up while keeping the value
+tree. The word "lossless" is avoided on purpose: the model reads the
+*rendering*, not the reconstruction, so byte-reversibility of the recovery path
+would prove nothing about comprehension of the read path. The one public API
+item that carries the word, `Fidelity::Lossless`, names the recovery path's
+class and nothing more.
 
 ## Guarantees
 

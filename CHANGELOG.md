@@ -679,7 +679,7 @@ released says so, and names what `0.0.1` does in the same case.
   were found later in its own claims, each by reading a claim back against the cases
   its inputs reach:
   - "every prefix of a hostile document" was every prefix of a document of at most
-    256 bytes — the qualification above.
+    256 bytes — the bound the prefix loop's `prop_filter` imposes.
   - "every row edit is drawn" was unasserted: `arb_table_doc` discarded the
     `RowEdit`s it applied, and a rendered document cannot be read back into them.
     The generator now hands them over and the liveness test counts all five.
@@ -732,6 +732,127 @@ released says so, and names what `0.0.1` does in the same case.
   second source of truth.
 
 ### Documentation
+
+- **`b086731`'s cross-reference sweep was scoped to the five documents it opened, and
+  published its count without that scope.** Its entry says "Thirteen cross-references
+  identified their target by position alone" — a sentence with no scope in it, and so a
+  claim about the repository, while the sweep had read `docs/privacy.md`,
+  `docs/threat-model.md`, `crates/tokfold-cli/README.md`, `npm/README.md` and
+  `crates/tokfold-mcp/README.md`. Applying the same deletion test to every file
+  `git ls-files` lists found **fifty-one more sites in twenty-three files**, counted one
+  per phrase whose only locator was a position word: seven in `CHANGELOG.md`, six in
+  `npm/tests/launcher.test.js`, five in `.github/workflows/ci.yml`, four in
+  `.github/workflows/release.yml`, three each in
+  `crates/tokfold-mcp/tests/properties.rs` and `crates/tokfold-mcp/tests/session.rs`,
+  two each in `SECURITY.md`, `crates/tokfold-cli/README.md`,
+  `crates/tokfold-cli/src/main.rs`, `crates/tokfold-core/src/estimator.rs`,
+  `crates/tokfold-core/tests/hostile.rs` and `npm/tests/preload-platform.js`, and one
+  each in `README.md`, `crates/tokfold-cli/tests/cli.rs`,
+  `crates/tokfold-core/README.md`, `crates/tokfold-core/src/lib.rs`,
+  `crates/tokfold-core/src/never_compress.rs`, `crates/tokfold-core/tests/roundtrip.rs`,
+  `crates/tokfold-mcp/src/tools.rs`, `crates/tokfold-mcp/tests/contract.rs`,
+  `npm/README.md`, `npm/tests/resolve.test.js` and `npm/tokfold/README.md`. The
+  breakdown is re-derivable from this commit's own diff: count the removed lines
+  matching `\b(above|below)\b` and discard the two that are wrapped continuations of a
+  sentence already counted (`# above.` in `ci.yml`, `// below). So` in
+  `launcher.test.js`). The three kinds of file every earlier sweep skipped are the ones
+  this project leans on hardest — a workflow, a test suite and this changelog. **A count
+  without its scope is a claim about every file.**
+
+- **A scope defined by position excludes every member added after it, and nothing
+  fails.** Three comments in `.github/workflows/ci.yml` bounded themselves by position
+  where the thing they govern is the file: the conventions banner said "Conventions that
+  apply to every job below", the `--locked` paragraph said "Five invocations below carry
+  no `--locked`", and the `required:` paragraph pointed back at "the paragraph above". A
+  job declared before the banner, or a `cargo` line added before the `--locked`
+  paragraph, falls outside a rule written to cover it. Both numbers were re-derived with
+  the paragraph's own command before the wording changed:
+  `grep -n 'cargo ' .github/workflows/ci.yml | grep -v '#' | grep -v 'Cache cargo'`
+  finds sixteen invocations and adding `| grep -v -- --locked` leaves five
+  (`cargo fmt --all --check`, `cargo fuzz build`, `cargo fuzz list`, `cargo fuzz run`,
+  `cargo audit`); all thirteen jobs are declared after the banner. The three now say "in
+  this file", and the fourth names the rule it is about instead of the paragraph that
+  states it. This narrows the carve-out `b086731` wrote for itself — "commentary that
+  describes its own file's layout instead of pointing at a target", which `ci.yml`'s job
+  legend still earns. Describing a layout is safe; **bounding a rule by that layout is
+  not**, and the banner was doing the second while reading like the first.
+
+- **A conclusion scoped by file was given a reason scoped by position, so the reason
+  supports less than the conclusion does.** The `launcher` job's comment explains why a
+  JavaScript suite needs its own leg: no other job "compiles, runs or even parses" the
+  launcher, because "every other gate above is a cargo command". The conclusion holds
+  for the file — scanning each job's non-comment lines for `node `, `npm ` or `.js`
+  matches `launcher` and no other job — but the reason covered only the jobs declared
+  before it, and the five that follow (`fuzz`, `test`, `audit`, `release-test`,
+  `nightly`) are cargo gates as well. The sentence now claims the file, which is what
+  was measured. **Evidence must be at least as wide as the conclusion it is offered
+  for.**
+
+- **Two position words pointed at a different item than their own sentence names.** In
+  `crates/tokfold-mcp/tests/properties.rs`, "The floor under the property above,
+  measured rather than described" introduces a helper whose subject is
+  `no_answer_ever_exceeds_the_frame_limit`, but the property declared immediately before
+  it is `every_reply_is_a_well_formed_jsonrpc_response`; the one the sentence means is a
+  further member up the `proptest!` block. In `crates/tokfold-mcp/tests/session.rs`,
+  "The other half of the measurement above" belongs to
+  `a_reply_outgrows_its_request_by_a_bounded_multiple_on_both_tool_paths`, while the test
+  declared immediately before it is
+  `the_small_call_figure_the_docs_quote_carries_its_counting_convention`. Both read as
+  correct, because the sentences around the pointer describe the right subject, so
+  nothing but reading the members in declaration order can see it. **A pointer that is
+  already wrong is invisible to the reordering it was supposed to survive.** Both now
+  name the property and the test they are about.
+
+- **A verbatim quotation is falsified by fixing the document it quotes.**
+  `crates/tokfold-core/src/lib.rs` carried "(see below)" in the sentence that explains
+  why `Compressor::decompress` is byte-exact today, and
+  `crates/tokfold-core/tests/hostile.rs` quotes that sentence in full, "(see below)"
+  included, as the contract `check_accepted` holds every accepted input to. Naming the
+  target in `lib.rs` (*What an archive actually contains*) stops the text in
+  `hostile.rs` from being a quotation unless it changes in the same commit, which it
+  did. No gate compares the two — the quotation is prose in a module doc, not an
+  `include_str!`. **A quoted sentence has two homes, and a fix that reaches one of them
+  is a defect in the other until it reaches both.**
+
+- **The classifier that found these sites could not count them, and the bucket that
+  looks like the answer held barely half of them.** The sweep sorts every occurrence of
+  `above`/`below` in every file `git ls-files` lists into a comparative ("sits well
+  below 32 MiB"), a pointer with a named target inside a three-line window, and a bare
+  pointer. Over the committed tree it reads
+  `occurrences=401 comparative=72 pointer-with-a-name-nearby=232 bare=97`; over the
+  fixed tree, `occurrences=350 comparative=72 pointer-with-a-name-nearby=208 bare=70`.
+  The occurrence delta is exactly the fifty-one sites, but the bare bucket accounts for
+  twenty-seven of them and the pointer bucket for twenty-four: most defective sites had
+  a backtick inside the window naming something other than their target, and sat in the
+  "has a name nearby" bucket from the start. It misreads the other direction too — one
+  *fixed* site now reads as bare, because "see the SIGEMT test below" in
+  `npm/tests/launcher.test.js` names its target on a line the window does not reach.
+  **A classifier's buckets are a search order, not a verdict**; these sites were found
+  by reading all three. That second reading is of the fixed tree as it stood before this
+  entry was written: the entry quotes the wordings it replaced, so the committed tree
+  reads `occurrences=370 comparative=73 pointer-with-a-name-nearby=227 bare=70` instead
+  — recording a fix changes the count, which is the same lesson once more, and the bare
+  bucket is the only figure the difference leaves alone. The seventy that remain are each in a stated class: comparatives
+  the pattern misses ("approached from above", "below the size of a bare error frame");
+  `//` comments annotating code in the same function; the row reference in
+  `crates/tokfold-cli/README.md`'s truncation table, which is that file's only table;
+  each security document's self-declared closing convention (`docs/privacy.md`'s "Each
+  statement above names the code that makes it true", `docs/threat-model.md`'s "Every
+  claim above names the function or file that holds it"); third-party text in
+  `fuzz/seeds/JSONTestSuite.NOTICE`; and every changelog sentence recording what an
+  earlier entry said, which is history and is not rewritten.
+
+- **rustdoc does not check intra-doc links inside `#[cfg(test)]` modules, so the gate
+  cannot be the reason to prefer one.** Replacing a positional pointer with a
+  ``[`name`]`` link was justified here by the link being checked. A deliberately broken
+  ``[`no_such_item_xyz`]`` placed in the `#[cfg(test)] mod tests` of
+  `crates/tokfold-core/src/estimator.rs` passed
+  `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps` with
+  status 0 (measured 2026-10-10, rustdoc 1.97.0, macOS arm64). Links in test modules are
+  still worth writing, because a name survives a reordering and a position does not, but
+  they are held by review alone — the standing the `doc-drift` comment in `ci.yml`
+  describes for README prose. **A reason that rests on a gate is a claim about the
+  gate.**
 
 - **The one comment in this repo whose stated purpose is to be precise about what a gate
   covers was wrong about the whole workspace.** `ci.yml`'s `doc-drift` job opens with
@@ -852,7 +973,8 @@ documentation a previous fix falsified.
   `87fb332`, the published `gitHead`: both pings answered from 386 to 549, one
   collapsed error from 550 to 645, one ping from 646, both from 694, collapsed again
   from 2 858 to 2 953, two results from 2 954 and three from 3 002 — so at 576 it
-  collapses and at 700 it answers, the reverse of the numbers above. The same
+  collapses and at 700 it answers, the reverse of the working tree's answer at 576
+  and collapse at 700. The same
   shape is reachable at the default 32 MiB limit, in `0.0.1` too, and it has both
   windows there as well. Every step into either window (the last ping losing its
   answer, then its id, then the batch) is taken exactly where the reply would exceed
@@ -1488,9 +1610,9 @@ documentation a previous fix falsified.
   says how the number is measured — on the message, with the framing newline left
   out — so the invariant it states is the one the code checks.
 - **"0.37x could not have been measured on any path this server has" was itself
-  false, and so was the floor it rested on.** The correction above derived the floor
+  false, and so was the floor it rested on.** The correction that derived the floor
   of the escaped-input direction as 2/3 from "a call that carries the payload three
-  times escaped", which is the arithmetic of one shape only: a two-byte character
+  times escaped" used the arithmetic of one shape only: a two-byte character
   spelled `\uXXXX`. An escaped character costs six bytes in the call and returns at
   its UTF-8 width *w*, twice, so the no-archive reply tends to 2*w*/6 — 2/3 for
   Cyrillic and for a surrogate pair, 1 for a three-byte script, and **1/3** for ASCII
@@ -1694,8 +1816,8 @@ documentation a previous fix falsified.
   All five hedged sites — the root README twice, `npm/tokfold/README.md`, the
   `tokfold-core` README and its crate rustdoc — now give 43 to 46 outright, and
   all of them but the npm one add the 47 an embedder reaches by raising
-  `max_input_bytes`, which the CLI's 16 MiB cap never does. The entry above is
-  left as written. Those two facts read "the npm README" and "the two
+  `max_input_bytes`, which the CLI's 16 MiB cap never does. The "full 43-byte
+  header" entry is left as written. Those two facts read "the npm README" and "the two
   library-facing ones add the 47" until 2026-10-03, and both were wrong in
   `0f759f6`, the commit that carries this entry *and* the change it describes.
   `npm/README.md` is a different file and has never held the claim in any commit;
@@ -2455,9 +2577,14 @@ documentation a previous fix falsified.
   show — replies 3 to 6 byte-identical, and those two strings accounting for the whole
   of replies 1 and 2's difference — and says explicitly that it is not a claim across
   all six.
-- **Thirteen cross-references identified their target by position alone, and four of
-  the thirteen were written by this round's own corrections.** The test applied — call
-  it the deletion test — is whether the phrase still finds its target once the position
+- **Thirteen cross-references in five documents identified their target by position
+  alone, and four of the thirteen were written by this round's own corrections.** The
+  five documents read were `docs/privacy.md`, `docs/threat-model.md`,
+  `crates/tokfold-cli/README.md`, `npm/README.md` and `crates/tokfold-mcp/README.md`;
+  the number is a claim about those five files and about nothing else. The entry
+  *b086731's cross-reference sweep was scoped to the five documents it opened* records
+  what reading every file `git ls-files` lists then found. The test applied — call it
+  the deletion test — is whether the phrase still finds its target once the position
   word is deleted: "the `expand` bullet above" and "the length in the table above" do,
   because the `expand` bullet is named and the file holds exactly one table; "the bullet above", "the row
   below" and a bare "see below" do not, and any reordering retargets them in silence
@@ -2492,7 +2619,22 @@ documentation a previous fix falsified.
 
 Defects in the suites themselves that no passing run could have shown — each
 established by mutation or by measurement before it was fixed, and re-established the
-same way afterwards — followed by the tests that pin the fixes above.
+same way afterwards — followed by the tests that pin this entry's fixes.
+
+- **`the_600_bps_bar_sits_just_above_the_flat_object_plateau` measured against a
+  constant it never read.** Every figure in it — the plateau band it spells to one
+  decimal, the rows that keep E1, the rows that fall back to passthrough — was measured
+  with `MEASURED_OVER_CLAIM_BPS` at 600, and the test reads the constant into `bar` and
+  passes it to `claimed` without ever asserting what it is. Changing the constant
+  re-measures the whole test: the assertions keep passing against the new value while
+  the bands and the "6.00 pp bar" they spell stop being about the bar the test names.
+  One `assert_eq!(bar, 600, …)` now holds it. **A number in a message is a claim**, and
+  nothing held the 600 these claims are about. Adding the line also located a boundary
+  worth knowing: written the way rustfmt writes an `assert_eq!` whose arguments exceed
+  `fn_call_width`, across four lines, it put the body at 101 lines and
+  `clippy::too_many_lines` failed the gate at `-D warnings` (100 allowed). The pin is
+  one line instead, which leaves the body at 98 — this test has room for two more lines
+  and then it has to be split.
 
 - `a_directory_at_the_archive_path_of_a_rejected_pass_costs_the_passthrough` is new. It
   pins the member of "not a regular file" that costs the caller their document: a
@@ -2590,7 +2732,7 @@ same way afterwards — followed by the tests that pin the fixes above.
 - **Neither archive-path asymmetry was asserted anywhere.** The closest existing
   tests vary the archive's *bytes* against the rejected path, or a missing *parent*
   against both; none varies one file's mode, or one path's spelling, across the two
-  outcomes — which is the only way the split above is observable. Two `cfg(unix)`
+  outcomes — which is the only way either asymmetry is observable. Two `cfg(unix)`
   tests now do, each running both halves on one file: a `0o444` archive is asserted
   byte-for-byte intact after the successful pass and gone after the rejected one, and
   a trailing-separator spelling is asserted refused by the one and resolved by the
@@ -2987,7 +3129,8 @@ and no docs.rs page.
 - `tokfold expand` — reconstruct the original from a recovery archive; fail-closed.
 - `tokfold stats` — report what a compression pass achieves without emitting the
   payload.
-- `tokfold mcp` — start the experimental MCP stdio server (see below). It exits `0`
+- `tokfold mcp` — start the experimental MCP stdio server (see the
+  `tokfold-mcp` section of this release). It exits `0`
   when the client hangs up; earlier in development this subcommand was an
   unimplemented stub that always exited `69`.
 - `--input PATH` on all three data subcommands, `--profile` on `compress` and

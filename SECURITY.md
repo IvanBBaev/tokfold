@@ -14,7 +14,7 @@ are therefore security-critical, not merely correctness concerns:
 Note the deliberate non-claim: tokfold is **not** a prompt-injection filter and is
 not marketed as reducing injection risk. Reports framed as "the compressor let a
 malicious payload through" are out of scope unless they also demonstrate one of the
-impact classes below.
+**semantic-integrity impact classes** required under *Reporting a Vulnerability*.
 
 A second deliberate non-claim: the archive's SHA-256 is **unkeyed** and travels inside
 the archive it covers, so it detects corruption, not tampering — anyone who can modify
@@ -96,13 +96,13 @@ it determines severity and triage order:
   enormously; a failing property-test case is ideal.
 
 **Scope note on `tokfold-mcp`.** That crate is EXPERIMENTAL and explicitly not
-hardened or audited — see its README and the notice it prints on startup. It shipped
-in `0.0.1` in that state, labelled, rather than being held back until hardening
-landed; hardening is a milestone this project still owes, not a gate the release
-passed. Reports against it are welcome and will be recorded, and the impact classes
-above still apply to it, but "unhardened" is the crate's declared state rather than a
-vulnerability: a report that only restates the missing hardening will be closed as
-known.
+hardened or audited — see its README and the notice it prints on startup. It
+shipped in `0.0.1` in that state, labelled, rather than being held back until
+hardening landed; hardening is a milestone this project still owes, not a gate
+the release passed. Reports against it are welcome and will be recorded, and the
+**semantic-integrity impact classes** still apply to it, but "unhardened" is the
+crate's declared state rather than a vulnerability: a report that only restates
+the missing hardening will be closed as known.
 
 ## Coordinated Disclosure
 

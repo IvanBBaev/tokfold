@@ -1634,8 +1634,8 @@ mod tests {
 
     #[test]
     fn the_five_tokenizer_ids_are_five_distinct_names() {
-        // A copy-paste that pointed two ids at one name would still satisfy the table
-        // test above if the expectation were copied with it.
+        // A copy-paste that pointed two ids at one name would still satisfy
+        // `tokenizer_ids_keep_their_frozen_names` if the expectation were copied with it.
         let names = [
             tokenizer_name(ids::HEURISTIC),
             tokenizer_name(ids::BYTE_LEN),
@@ -1755,7 +1755,9 @@ mod archive_identity_tests {
         fs::write(&archive, b"TKFD").expect("write the archive");
 
         let Some(identity) = identity_or_skip(&archive) else {
-            return; // no identity on this platform; covered by the test above
+            // No identity on this platform; covered by
+            // `a_platform_without_file_identity_refuses_nothing`.
+            return;
         };
         assert!(
             removal_is_still_the_inspected_file(&archive, Some(identity)),

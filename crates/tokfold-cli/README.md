@@ -193,30 +193,29 @@ outcome of the pass:
   write permission for. A **directory** is outside that classification on purpose —
   the rejected pass opens one so it can report the platform's own error instead of
   claiming there is nothing to clear — but it is no more writable for that: an
-  accepted input with `--archive adir` exits `2` saying `writing archive to adir: Is
-  a directory`, the platform's own diagnostic rather than the refusal above (`os
-  error 21` where the measurement was taken, macOS; the test pins the sentence
-  without the number, which is the platform's to choose). Both outcomes are exit `2`
-  with nothing on standard output; only the message differs. It also refuses, with
-  exit `2`, a path whose opening does not empty it, because the archive would land
-  after whatever the file already held: on macOS `/dev/fd/N`, `/dev/stdin`,
+  accepted input with `--archive adir` exits `2` saying `writing archive to adir: Is a
+  directory`, the platform's own diagnostic rather than tokfold's own "not a regular
+  file" refusal (`os error 21` where the measurement was taken, macOS; the test pins
+  the sentence without the number, which is the platform's to choose). Both outcomes
+  are exit `2` with nothing on standard output; only the message differs. It also
+  refuses, with exit `2`, a path whose opening does not empty it, because the archive
+  would land after whatever the file already held: on macOS `/dev/fd/N`, `/dev/stdin`,
   `/dev/stdout` and `/dev/stderr` hand back a duplicate of a descriptor that is
   already open, keeping its offset and its append mode. **The spelling is not itself
-  the refusal**; bytes behind the descriptor are.
-  A descriptor open on an *empty* file is written like any other regular file and
-  exits `0` with a valid archive: `--archive /dev/fd/3 3>fresh.tkfd` (which the shell
-  emptied before tokfold started), the same with `3>>` onto an empty file, and
-  `--archive /dev/stderr 2>fresh.tkfd` were each measured doing so, while the same
-  `/dev/fd/3` spelling over a file with bytes in it (`3<>notes.bin`) is refused.
-  It is not unconditional, and it is not a superset of what the
-  rejected pass does to the same path — see "The rejected pass is not contained by
-  the successful one" below.
-  A pass the *passthrough encoder* wins is a successful pass and writes an archive
-  like any other: the engine accepted the input and merely found no encoder that
-  paid, so the archive it writes still reconstructs the document. Only an input the
-  engine **rejects** writes none. The two read alike on stdout — both emit bytes
-  that round-trip — but they differ at `PATH`, and `tokfold stats` tells them apart:
-  the first prints `encoder: passthrough (id 0)`, the second exits `2`.
+  the refusal**; bytes behind the descriptor are. A descriptor open on an *empty* file
+  is written like any other regular file and exits `0` with a valid archive:
+  `--archive /dev/fd/3 3>fresh.tkfd` (which the shell emptied before tokfold started),
+  the same with `3>>` onto an empty file, and `--archive /dev/stderr 2>fresh.tkfd`
+  were each measured doing so, while the same `/dev/fd/3` spelling over a file with
+  bytes in it (`3<>notes.bin`) is refused. It is not unconditional, and it is not a
+  superset of what the rejected pass does to the same path — see "The rejected pass is
+  not contained by the successful one" below. A pass the *passthrough encoder* wins is
+  a successful pass and writes an archive like any other: the engine accepted the
+  input and merely found no encoder that paid, so the archive it writes still
+  reconstructs the document. Only an input the engine **rejects** writes none. The two
+  read alike on stdout — both emit bytes that round-trip — but they differ at `PATH`,
+  and `tokfold stats` tells them apart: the first prints `encoder: passthrough (id
+  0)`, the second exits `2`.
 - A pass the engine rejects **deletes** what is at `PATH` only when it opens with the
   `TKFD` archive magic, and says so on standard error. That deletion is what keeps
   the archive honest: a rejected input is not a failure, so an archive left over

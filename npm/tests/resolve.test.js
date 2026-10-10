@@ -24,8 +24,8 @@ const {
   resolveUnder,
 } = require("./fixtures.js");
 
-// The shipped table, read from the checkout. The behavioural tests below go
-// through a scratch copy instead; this one is for asserting on the table itself.
+// The shipped table, read from the checkout. The behavioural tests in this file
+// go through a scratch copy instead; this one is for asserting on the table itself.
 const { PACKAGES } = require(path.join(PACKAGE_DIR, "lib", "resolve.js"));
 
 const ALL_PACKAGES = Object.values(PACKAGES);

@@ -367,8 +367,9 @@ fn a_reply_outgrows_its_request_by_a_bounded_multiple_on_both_tool_paths() {
 
 #[test]
 fn the_documented_large_call_reply_limit_is_reached_by_the_fixture_the_docs_name() {
-    // The ratchet above bounds two ordinary shapes loosely. This one pins the number the
-    // documentation gives for a large call, with the fixture the documentation names.
+    // The ratchet in `a_reply_outgrows_its_request_by_a_bounded_multiple_on_both_tool_paths`
+    // bounds two ordinary shapes loosely. This one pins the number the documentation gives
+    // for a large call, with the fixture the documentation names.
     // That number is a limit approached from above, not a ceiling: the fixed envelope
     // lifts a small call's ratio (5.02x framed for `{"k":"z"}`, 3.53x at a 1,000-byte
     // value, 3.35x at 10,000), so the fixture has to be large for the figure to hold. The
@@ -461,8 +462,10 @@ fn the_small_call_figure_the_docs_quote_carries_its_counting_convention() {
 
 #[test]
 fn a_reply_that_would_not_fit_the_frame_is_refused_by_id_rather_than_truncated() {
-    // The other half of the measurement above. Because a reply outgrows its request,
-    // there are requests this transport will read whose answers it could not write, and
+    // The other half of the measurement in
+    // `a_reply_outgrows_its_request_by_a_bounded_multiple_on_both_tool_paths`. Because a
+    // reply outgrows its request, there are requests this transport will read whose answers
+    // it could not write, and
     // what happens then is a contract: the client gets a well-formed error carrying its
     // own id, on one line, small enough to pass back through the same reader. Anything
     // else is worse than a failure — a truncated frame desynchronises the stream, and
@@ -508,8 +511,10 @@ fn a_reply_that_would_not_fit_the_frame_is_refused_by_id_rather_than_truncated()
 
 #[test]
 fn a_reply_that_fits_is_delivered_untouched_by_the_frame_limit() {
-    // The guard on the test above: a bound that quietly rewrote ordinary replies would
-    // pass every assertion there and still be a serious defect. A limit set exactly at
+    // The guard on
+    // `a_reply_that_would_not_fit_the_frame_is_refused_by_id_rather_than_truncated`: a bound
+    // that quietly rewrote ordinary replies would pass every assertion there and still be a
+    // serious defect. A limit set exactly at
     // the length of the real answer must deliver that answer byte for byte — the same
     // bytes an unbounded server would have written.
     let line = call_line("tokfold_compress", r#"{"rows":[{"a":1},{"a":2},{"a":3}]}"#);

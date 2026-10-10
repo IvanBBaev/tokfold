@@ -48,13 +48,14 @@
 //!
 //! [`check_accepted`] applies the whole contract to one input: the crate docs say
 //! decompression reproduces "a **semantically identical** document" and that "because
-//! every archive this version writes holds the original bytes verbatim (see below),
-//! `Compressor::decompress` is byte-exact today", so the archive must give back the
-//! input byte for byte; they say "the same input bytes under the same `Config` produce
-//! byte-identical output from one build", so a second `compress` must agree; property
-//! 2 of the frozen spec says "`compress(decompress(a))` is a fixed point"; and the
-//! rendering body must stand for the input — verbatim on passthrough, semantically
-//! equal under E1, and semantically equal after table expansion under E2.
+//! every archive this version writes holds the original bytes verbatim (see *What an
+//! archive actually contains*), `Compressor::decompress` is byte-exact today", so the
+//! archive must give back the input byte for byte; they say "the same input bytes under
+//! the same `Config` produce byte-identical output from one build", so a second
+//! `compress` must agree; property 2 of the frozen spec says "`compress(decompress(a))`
+//! is a fixed point"; and the rendering body must stand for the input — verbatim on
+//! passthrough, semantically equal under E1, and semantically equal after table
+//! expansion under E2.
 //!
 //! # Case count
 //!
@@ -1290,9 +1291,10 @@ fn a_table_at_exactly_the_default_cap_holds_the_contract() {
 // Generator liveness
 // ===========================================================================
 
-/// The properties above are only as strong as the regions their generators reach.
-/// With a fixed seed, this asserts that the hostile generators put every encoder in
-/// play, that E2 bodies carry both plain and deviating rows and hostile (escaped)
+/// The properties that draw from the hostile generators are only as strong as the
+/// regions those generators reach. With a fixed seed, this asserts that the hostile
+/// generators put every encoder in play, that E2 bodies carry both plain and deviating
+/// rows and hostile (escaped)
 /// header keys, that each of the three sentinels `sentinel_for` names is spelled by
 /// some drawn input, and that each of the five [`RowEdit`] variants is drawn.
 ///

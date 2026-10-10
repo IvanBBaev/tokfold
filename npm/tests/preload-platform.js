@@ -17,8 +17,8 @@
 //   TOKFOLD_TEST_PLATFORM  value for process.platform
 //   TOKFOLD_TEST_ARCH      value for process.arch
 //   TOKFOLD_TEST_LIBC      musl | absent | anything else, which means glibc
-//   TOKFOLD_TEST_NO_SIGNAL_TABLE  empty out os.constants.signals (see below)
-//   TOKFOLD_TEST_KILL_EPERM       make ChildProcess#kill fail with EPERM (see below)
+//   TOKFOLD_TEST_NO_SIGNAL_TABLE  empty out os.constants.signals (see its block)
+//   TOKFOLD_TEST_KILL_EPERM       make ChildProcess#kill fail with EPERM (see its block)
 //
 // With none of these set this file does nothing at all, so a test that wants
 // the real machine simply does not pass `--require`.

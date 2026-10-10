@@ -878,7 +878,8 @@ mod tests {
         assert!(call(COMPRESS, Some(&bad)).is_err());
     }
 
-    /// The test above proves each advertised string is accepted, not what it selects:
+    /// `every_documented_profile_is_accepted_and_others_are_not` proves each advertised
+    /// string is accepted, not what it selects:
     /// mapping every string to one profile kept it green. The parser is checked
     /// directly for all three, because `aggressive` offers the same encoders as
     /// `balanced` in this release and no output can tell them apart. The call is then

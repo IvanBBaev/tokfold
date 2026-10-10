@@ -74,7 +74,7 @@ on:
 # reaches the five `build` legs, and `cargo build` runs `build.rs` from every
 # crate in the dependency graph -- third-party code, on a runner that could then
 # mint a short-lived OIDC token asserting this repository's identity. Exactly
-# one job needs that ability, so exactly one job is granted it, below.
+# one job needs that ability, so exactly one job is granted it: `publish`.
 permissions:
   contents: read
 
@@ -221,7 +221,7 @@ jobs:
           set -euo pipefail
           node --check npm/tokfold/bin/tokfold
           node --check npm/tokfold/lib/resolve.js
-          # As above: JavaScript template literals, not shell expansions.
+          # JavaScript template literals, not shell expansions.
           # shellcheck disable=SC2016
           node --input-type=commonjs -e '
             const fs = require("node:fs");
@@ -310,7 +310,7 @@ jobs:
         # all gates green.
         run: |
           set -euo pipefail
-          # As above: JavaScript template literals, not shell expansions.
+          # JavaScript template literals, not shell expansions.
           # shellcheck disable=SC2016
           node --input-type=commonjs -e '
             const fs = require("node:fs");
@@ -564,7 +564,7 @@ jobs:
           set -euo pipefail
 
           # The smoke step's verdict, or nothing was staged. A binary reaching a
-          # tarball without this file means the step above did not run for it,
+          # tarball without this file means the smoke step did not run for it,
           # and the whole point of the step is that a published binary has been
           # executed or is on a written list of the ones that could not be.
           verdict="smoke-$TARGET.verdict"
