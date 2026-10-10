@@ -3045,6 +3045,33 @@ documentation a previous fix falsified.
 
 ### Tests
 
+- **The suite's fixture root was shared, so the gate's own two legs destroyed each
+  other's files.** `CARGO_TARGET_TMPDIR` is baked in at compile time and resolves to
+  `<target-dir>/tmp` for every profile, so the debug and the release `tokfold-cli`
+  integration binary are handed one directory; `scratch_dir` wiped a fixed name at the
+  start of each test and `archive_path` named files directly in it. cargo serializes
+  neither leg of the documented gate — the only lock either command reports waiting on
+  is the package cache — so `cargo test --workspace --all-features` run beside the
+  same command with `--release` left both legs red, and over the two built binaries 8
+  of 8 concurrent rounds were red in both directions, with
+  `a_rejected_compress_deletes_the_archive_an_earlier_run_left_behind` and
+  `a_read_only_archive_survives_a_successful_pass_and_is_deleted_by_a_rejected_one`
+  down in all eight. Both helpers now go through a per-process `fixture_root()` at
+  `<target-dir>/tmp/<pid>`, which makes the suite re-entrant; nothing sweeps the roots,
+  `cargo clean` does. Pinned by
+  `every_fixture_path_sits_under_a_root_named_for_this_process` and
+  `two_instances_of_this_suite_do_not_wipe_each_others_fixtures` — hand-reverting the
+  root to `CARGO_TARGET_TMPDIR` itself fails exactly those two of 81. What this does
+  *not* explain: the `Bad file descriptor (os error 9)` form of the same suite's
+  intermittent failure appeared in none of the 18 concurrent runs, so concurrency is
+  not established as its cause and it stays open. Finding it is harder than it looks,
+  because the context string it carries, `inspecting the archive path <path>`, is
+  emitted from seven error arms in three functions — `inspect_archive_slot`
+  (`canonicalize`, `symlink_metadata`, `File::open`, the magic read),
+  `inspect_descriptor_slot` (`metadata`, and the open-and-read pair) and `write_file`
+  (`metadata`, on the write path) — so the message never says which check failed.
+  **A helper that wipes a fixed path asserts that nothing else runs the suite — and
+  the gate's own second leg is something else.**
 - **A claim about one binary, written in another crate, held by nothing.**
   `run_decompress` in `crates/tokfold-mcp/src/tools.rs` refuses an archive whose payload
   is not UTF-8, and the comment that justifies the refusal reads "`tokfold expand`

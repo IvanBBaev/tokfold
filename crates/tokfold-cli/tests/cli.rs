@@ -12,6 +12,7 @@ use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
+use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -108,18 +109,41 @@ fn finished_within_ten_seconds(child: &mut Child) -> bool {
     false
 }
 
-/// A per-test archive path under the package's integration-test temp directory.
-fn archive_path(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_TARGET_TMPDIR")).join(name)
+/// The root every fixture in this file lives under, named for this process.
+///
+/// `CARGO_TARGET_TMPDIR` is baked in at compile time and is `<target-dir>/tmp` for
+/// every profile, so the debug and release test binaries are handed the same path.
+/// Measured on 2026-10-10: cargo serializes neither leg of the gate — the only lock
+/// either command reports waiting on is the package cache — so
+/// `cargo test --workspace --all-features` run beside the same command with
+/// `--release` left both legs red, because every test below that wipes its fixture
+/// directory at the start wiped the other instance's; which tests go down is a race,
+/// and in that run it was nine in the debug leg and two in the release leg. Keying the root on the process id makes the suite re-entrant: a
+/// second instance — the other leg, or a filtered run beside a full one — builds its
+/// fixtures elsewhere. Nothing sweeps the roots; `cargo clean`, or removing
+/// `target/tmp`, does.
+fn fixture_root() -> &'static Path {
+    static ROOT: OnceLock<PathBuf> = OnceLock::new();
+    ROOT.get_or_init(|| {
+        let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join(std::process::id().to_string());
+        fs::create_dir_all(&root).expect("create this process's fixture root");
+        root
+    })
 }
 
-/// A fresh, empty per-test directory under the integration-test temp directory.
+/// A per-test archive path under this process's fixture root.
+fn archive_path(name: &str) -> PathBuf {
+    fixture_root().join(name)
+}
+
+/// A fresh, empty per-test directory under this process's fixture root.
 ///
-/// Tests in this file run in parallel and `CARGO_TARGET_TMPDIR` survives between
-/// runs, so anything that asserts on the *absence* of a file needs its own directory
-/// wiped at the start — otherwise a leftover from a previous run decides the result.
+/// Tests in this file run in parallel and the root outlives the run, so anything that
+/// asserts on the *absence* of a file needs its own directory wiped at the start —
+/// otherwise a leftover from an earlier run that held the same process id decides the
+/// result.
 fn scratch_dir(name: &str) -> PathBuf {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
+    let dir = fixture_root().join(name);
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).expect("create the scratch directory");
     dir
@@ -4026,4 +4050,84 @@ fn a_directory_at_the_archive_path_of_a_successful_pass_reports_the_platform_err
         "{stderr}"
     );
     assert!(archive.is_dir());
+}
+
+/// Every fixture in this file must sit under a root this process owns alone.
+///
+/// The two helpers are the only places that name the temp directory, so a revert to
+/// the shared path shows up here: `fixture_root` must end in this process's id, and
+/// both `archive_path` and `scratch_dir` must build on it rather than on
+/// `CARGO_TARGET_TMPDIR` itself.
+#[test]
+fn every_fixture_path_sits_under_a_root_named_for_this_process() {
+    let root = fixture_root();
+    assert_eq!(
+        root.parent(),
+        Some(Path::new(env!("CARGO_TARGET_TMPDIR"))),
+        "the root belongs directly under the integration-test temp directory"
+    );
+    assert_eq!(
+        root.file_name().and_then(|name| name.to_str()),
+        Some(std::process::id().to_string().as_str()),
+        "the root must be keyed on the process id, or two instances share it"
+    );
+    assert!(root.is_dir(), "the root is created before any fixture");
+
+    assert_eq!(
+        archive_path("fixture-root-check.tkfd"),
+        root.join("fixture-root-check.tkfd"),
+        "an archive path goes through the root"
+    );
+    let scratch = scratch_dir("fixture-root-check");
+    assert_eq!(
+        scratch,
+        root.join("fixture-root-check"),
+        "a scratch directory goes through the root"
+    );
+}
+
+/// Two instances of this suite must not wipe each other's fixtures.
+///
+/// While the root was shared, a test that starts by wiping its own fixture directory
+/// wiped the directory of every other instance using that name, and the gate's own
+/// two legs are two such instances: run concurrently, both came back red. Drive the
+/// narrowest case there is — one fixture-owning test, in two children of this very
+/// binary, at the same time — and require both to pass. Hand-reverting
+/// `fixture_root` to `CARGO_TARGET_TMPDIR` itself fails this test, since the two
+/// children then race over one `stale_archive` directory.
+#[test]
+fn two_instances_of_this_suite_do_not_wipe_each_others_fixtures() {
+    let exe = std::env::current_exe().expect("the path of this test binary");
+    let mut children: Vec<Child> = (0..2)
+        .map(|_| {
+            Command::new(&exe)
+                .args([
+                    "--exact",
+                    "a_rejected_compress_deletes_the_archive_an_earlier_run_left_behind",
+                ])
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("spawn a second instance of this suite")
+        })
+        .collect();
+
+    for child in &mut children {
+        assert!(
+            finished_within_ten_seconds(child),
+            "an instance was still running after ten seconds"
+        );
+    }
+    for child in children {
+        let out = child
+            .wait_with_output()
+            .expect("collect a concurrent instance's output");
+        assert!(
+            out.status.success(),
+            "a concurrent instance failed: {}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
 }
