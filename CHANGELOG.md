@@ -733,6 +733,93 @@ released says so, and names what `0.0.1` does in the same case.
 
 ### Documentation
 
+- **A required field named after three of its six members.** The field every report
+  must fill was the "**semantic-integrity impact class**" at four sites in
+  `SECURITY.md`, and the prompt-injection non-claim put the whole list behind that
+  name: a payload report was out of scope "unless they also demonstrate one of the
+  **semantic-integrity impact classes**". Three of the six members — `availability`,
+  `confidentiality` and `other` — are not semantic-integrity classes, and `other` is
+  "describe it", so the carve-out that sentence exists to enforce could be cleared by
+  naming the open-ended member. The field is now the **impact class**; the carve-out
+  names the three classes it means (`silent-meaning-change`,
+  `fail-open-on-corruption`, `integrity-check-bypass`) and says outright that naming
+  `other` does not clear the bar. The same sentence also promised that the class
+  "determines severity and triage order" — the document defines no triage order, and
+  the only ordering it states is that `silent-meaning-change` is "treated as the
+  highest severity", so the promise is narrowed to the severity a report starts from.
+  **A field's name is a claim about every member it covers, and a policy sentence is a
+  commitment.**
+- **The one availability failure this repo has measured fell outside the
+  `availability` class.** The class read "crafted input panics, aborts, hangs, or
+  exhausts memory in the engine". The measured denial of service is neither crafted
+  input nor in the engine: `docs/threat-model.md`, under *Known limitations and open
+  issues*, records that the MCP serve loop never reads while it writes, so 2,200
+  pipelined 41-byte `ping` calls deadlock where 2,195 complete. The class now covers
+  any component — the library, the CLI, the MCP server, the npm launcher — and names
+  the burst route beside the crafted-input one, with a pointer to the recorded case so
+  a report restating it is still closed as known. `confidentiality` had the same shape, scoped
+  to "core, or a path reachable from it, performs I/O"; a leak by the CLI, the server
+  or the launcher now qualifies too, with core's I/O kept as the sharpest case
+  because core claims to perform none. **A class scoped to one component is a claim
+  that no other component can produce it.**
+- **The component list omitted the component that ships in front of the binary.**
+  "**Affected component**: `tokfold-core`, `tokfold-cli`, or `tokfold-mcp`." is a
+  closed list with no entry for the npm launcher, which is inside the published
+  `tokfold` package and decides which descriptors the binary receives and what its
+  exit reports — findings have landed there with the Rust untouched.
+  `npm/tokfold/bin/tokfold` is now a fourth option.
+- **"Identified by its commit" is not something a reporter can do.** The Supported
+  Versions note ended "so a build from this repository is identified by its commit
+  rather than by a tag". No build embeds a commit: `tokfold --version` prints
+  `tokfold 0.0.1` from every build of every commit, and there is no `vergen`, no
+  `GIT_HASH` and no generated build-info module anywhere under `crates/`. The note
+  now says what a reporter can actually do — state the commit they built from
+  (`git rev-parse HEAD`), and identify an installed build by hashing the file instead
+  of asking the binary. **An identification instruction is a claim that the thing
+  identifies itself.**
+- **An issue that "contains only a sentence" cannot be opened.** The fallback channel
+  said to open a public issue "containing *only* the sentence" — the sentence being
+  "security report, requesting a private channel". GitHub will not accept an issue without a title, so
+  an issue consisting of a body alone does not exist and a reporter following that
+  instruction literally has nothing to submit. The sentence is now the title with the
+  body left empty, which discloses exactly as much. The entry in this same section
+  that introduced the fallback described it the same unfollowable way and has been
+  brought in line with the file. (The undertaking that a private channel will be
+  opened is unchanged.)
+- **A crate credited with printing a warning it does not print.** The `tokfold-mcp`
+  scope note said to "see its README and the notice it prints on startup". The crate
+  only holds the constant: `cmd_mcp` in `crates/tokfold-cli/src/main.rs` writes
+  `tokfold_mcp::EXPERIMENTAL_NOTICE` to standard error when `tokfold mcp` starts. The
+  consequence that matters for a security policy is now stated — a host that embeds
+  the crate as a library and drives its own transport shows that warning to nobody,
+  so the label travels with the CLI and not with the code.
+- **A support table that answered "No" for the version every report is assessed
+  against.** The rows were `0.0.1` ("Yes — the only supported version") and
+  "| anything else | — | No |", under a paragraph saying "a report is assessed against
+  the current `main` as well as against the published version". `main` is "anything
+  else". The table now carries a `main` row of its own ("Assessed — fixes land there
+  first, and ship to users in the next published version"), and the sentence that
+  contradicted the table is gone.
+- **One field was unanswerable for two of the three ways tokfold is used.**
+  Reproduction asked for "the exact input bytes, the `Config` used". `Config` is a
+  `tokfold-core` type (`crates/tokfold-core/src/compressor.rs`); a CLI reporter has a
+  command line and a `--profile`, and an MCP reporter has tool arguments. The field
+  now asks for whichever applies and names them: the `Config` for a library report,
+  the whole command line for the CLI, or the tool and its arguments for MCP (`text`
+  and optionally `profile` for `tokfold_compress` and `tokfold_estimate`, `archive`
+  for `tokfold_decompress`).
+- **A reason stated more widely than the fact it rests on.** The disclosure section
+  said a **RUSTSEC** entry cannot reach this project because "that database keys
+  advisories to a crates.io package name" — a claim about every advisory the database
+  carries, where the conclusion needs only the crate ones. Narrowed to "that
+  database's crate advisories are keyed to a crates.io package name"; the conclusion
+  (nothing has been published to crates.io, so no entry can be keyed to one) is
+  unchanged. **A reason is a claim like any other.**
+- **Credit promised in a section that does not exist yet.** Acknowledgments credited
+  reporters "in the `CHANGELOG.md` entry for the version that carries the fix". Every
+  fix made since `0.0.1` lives under `[Unreleased]`, and `[0.0.1]` is the only
+  released section in this file, so for anything fixed today there is no version entry
+  to be credited in. The promise now names where credit lands first and when it moves.
 - **A mechanism given for an offset, false at the one offset it was written about.**
   `crates/tokfold-cli/README.md`'s *Reading `archive corrupted at byte N`* closed with
   "An offset at or past the end of the file means the decoder needed a byte the archive
@@ -1479,8 +1566,8 @@ documentation a previous fix falsified.
 - `SECURITY.md` directed reporters to a "Report a vulnerability" button that is not
   there — Private Vulnerability Reporting is disabled on this repository — while in
   the same breath forbidding a public issue, leaving a reporter with no channel at
-  all. A safe fallback is now documented: a public issue containing *only* the
-  sentence "security report, requesting a private channel".
+  all. A safe fallback is now documented: a public issue whose title is the sentence
+  "security report, requesting a private channel", with nothing in the body.
 - The claim that esbuild and turbo publish unscoped `-windows-` names was false at
   both shipping sites. Both are scoped (`@esbuild/win32-x64`, `@turbo/windows-64`);
   `git-cliff` is the only real unscoped precedent, and scoping is the only measure
