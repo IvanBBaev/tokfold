@@ -348,10 +348,16 @@ They are listed so that nobody mistakes them for undiscovered defects.
   client").
 - **A JSON-RPC *response* arriving on the input is answered with an error.**
   `{"jsonrpc":"2.0","id":2,"result":{}}` receives a `-32600` error saying that
-  `method` must be a string (measured). Two servers of this kind wired
-  crosswise would answer each other's errors indefinitely.
+  `method` must be a string (measured). The message is the one `decode_request` in
+  `crates/tokfold-mcp/src/jsonrpc.rs` raises for an envelope whose `method` is absent
+  or not a string; nothing on that path looks for a `result` at all, so a response is
+  not recognised as one and is reported as a malformed request. Two servers of this
+  kind wired crosswise would answer each other's errors indefinitely.
 - **Batches are accepted, and `ping` is answered** (measured: a two-`ping` batch
-  returned a two-member array).
+  returned a two-member array). Both are deliberate in the code the revision does not
+  ask for: `handle_batch` walks a top-level array, and `dispatch` answers
+  `method::PING` with an empty result object, both in
+  `crates/tokfold-mcp/src/server.rs`.
 - **A batch's answer is not monotonic in the frame limit.** Each member's refusal
   takes the widest form that fits the room left at that member and reserves nothing
   for later members, so a larger limit can collapse a batch that a smaller one
@@ -397,8 +403,14 @@ They are listed so that nobody mistakes them for undiscovered defects.
 ### Engine and output
 
 - **F2.** The do-no-harm gate prices a framed candidate against an *unframed*
-  baseline. Measured: 6.67% of compressions are strictly worse in real `cl100k`
-  tokens, about two thirds of that from framing.
+  baseline. In `select` in `crates/tokfold-core/src/encoder/mod.rs` the gate is
+  `clears_margin`, and the two numbers handed to it are `estimate(&candidate)` — the
+  rendering with its `⟦tkfd:v1:…⟧` framing — and `est_before`, which is
+  `estimate(input)` on the raw input. Measured: 6.67% of compressions are strictly
+  worse in real `cl100k` tokens, about two thirds of that from framing. The
+  percentage appears nowhere else in the repository — `git grep 6.67` finds this
+  sentence and nothing more — so no test, bench or module doc records how it was
+  reached, and re-reading the gate above will not re-derive it.
 - **F6.** E2 can hoist a `never_compress`-protected key (see *Semantic integrity*).
 - **E2 shape interning by hash** (see *Semantic integrity*).
 - **Forged archives** decode successfully (see *Integrity of reconstruction*).
@@ -446,6 +458,16 @@ They are listed so that nobody mistakes them for undiscovered defects.
 
 ## Where this document can go stale
 
-Every claim above names the function or file that holds it. A change to one of those
-places can falsify a sentence here. When one changes, re-read the matching entry
-rather than assuming it still holds.
+Every claim above about what the code *does* names the function or file that holds
+it, or a section of this document that does: the *Availability* row for a client that
+stops reading and the *Confidentiality* row for file permissions are anchored through
+*Known limitations* and *Archive path handling* rather than directly. A change to one
+of those places can falsify a sentence here. When one changes, re-read the matching
+entry rather than assuming it still holds.
+
+The rule does not reach three sections, and cannot. *What tokfold is, in one
+paragraph*, *Attacker capabilities considered* and four of the five *Assets* rows say
+why something matters, or what an attacker is assumed to control — not what the code
+does — so no change to the code falsifies them, and nothing triggers a re-read of
+them. Until 2026-10-10 this section claimed the rule for *every* claim above, which
+made those sentences look guarded when review is all that holds them.

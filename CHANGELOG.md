@@ -733,6 +733,43 @@ released says so, and names what `0.0.1` does in the same case.
 
 ### Documentation
 
+- **The threat model's own closing rule was a universal claim, and it was false.**
+  *Where this document can go stale* said "Every claim above names the function or
+  file that holds it", and offered that as the mechanism for keeping the document
+  honest: when a named place changes, re-read the matching entry. Measured against
+  every row and bullet above it, the rule holds for the behavioural claims — two of
+  them transitively, the *Availability* row for a client that stops reading and the
+  *Confidentiality* row for file permissions naming a section of the document that
+  names the code rather than naming it directly — and does not reach three sections at
+  all, because they describe motivation and assumed attacker control rather than
+  behaviour: *What tokfold is, in one paragraph*, *Attacker capabilities considered*
+  and four of the five *Assets* rows. Stated of *every* claim, the rule made those
+  sentences look guarded when review is the only thing holding them. The rule is now
+  scoped to what the code does, the two transitive anchors are named as transitive,
+  and the unreachable sections are named with the reason they cannot be reached.
+  Three bullets under *Known limitations and open issues* were the real gap the rule
+  had been covering for, each a behavioural claim with no anchor of either kind, in a
+  list whose neighbouring entries cite `handle_batch`'s rustdoc: the `-32600` answer
+  to a JSON-RPC *response* now names `decode_request` in
+  `crates/tokfold-mcp/src/jsonrpc.rs` and records that nothing on that path inspects
+  a `result`, so a response is not recognised and is reported as a malformed request;
+  the accepted batch and the answered `ping` now name `handle_batch` and `dispatch` in
+  `crates/tokfold-mcp/src/server.rs`; and F2 now names the gate as `clears_margin` as
+  `select` calls it in `crates/tokfold-core/src/encoder/mod.rs`, with the two numbers
+  it is handed — `estimate(&candidate)`, where `render` wraps every body in `framed`
+  so the candidate is the `⟦tkfd:v1:<tag>⟧` rendering, against `est_before`, which is
+  `estimate(input)` on the raw input. That is the asymmetry F2 names, read off the
+  call rather than restated. F2's 6.67% is untouched, because re-measuring or hedging
+  it is owner-gated; what is recorded beside it is that `git grep 6.67` finds that
+  sentence and nothing else in the repository, so no test, bench or module doc holds
+  its derivation. A first draft of that note called it "the one figure in this
+  document with no derivation recorded anywhere", which is a claim about every other
+  number in the document and was not measured; it was narrowed to the grep that was.
+  **A scope statement offered as a maintenance procedure is the worst place for a
+  universal claim: every sentence it wrongly covers is a sentence it tells the next
+  reader not to check.**
+
+
 - **A count of the committed READMEs went stale the moment one was added.** The
   reason `compress --help` carries the plaintext warning is written in the rustdoc of
   `compress_help_says_what_an_archive_actually_holds` and in this file: "three of the
