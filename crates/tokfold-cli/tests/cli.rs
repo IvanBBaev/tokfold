@@ -370,6 +370,49 @@ fn expand_offsets_equal_the_cut_only_where_a_field_opens() {
     }
 }
 
+/// `run_decompress` in `tokfold-mcp` refuses an archive whose payload is not UTF-8 as
+/// `not_utf8`, and the comment that justifies the refusal says `tokfold expand` restores
+/// the same archive at exit `0`. That is a claim about *this* binary, written where this
+/// binary's tests cannot see it: a UTF-8 check added to `cmd_expand` would make the
+/// refusal look like a tokfold-wide limit, falsify the comment, and fail nothing. The
+/// claim is pinned here instead.
+#[test]
+fn expand_restores_an_archive_whose_bytes_are_not_utf8() {
+    use tokfold_core::format::{Flags, Header, sha256};
+
+    // Neither front end can produce this archive. `compress` meets the bytes before an
+    // archive exists and passes them through uncompressed, so the fixture is built the
+    // way any other producer of the format would build it -- through the production
+    // header writer, not a hand-rolled layout. In v0.0.1 the compressor writes only
+    // `encoder_id = 0`, and a passthrough payload is the original bytes verbatim.
+    let payload: [u8; 4] = [0xFF, 0xFE, 0x80, 0x00];
+    assert!(
+        String::from_utf8(payload.to_vec()).is_err(),
+        "the fixture must not be valid UTF-8, or it pins the wrong thing"
+    );
+    let refused = run_tokfold(&["compress"], &payload);
+    let refused_stderr = String::from_utf8_lossy(&refused.stderr);
+    assert_eq!(refused.status.code(), Some(0), "{refused_stderr}");
+    assert!(
+        refused_stderr.contains("input is not valid UTF-8"),
+        "`compress` must refuse to encode these bytes: {refused_stderr}"
+    );
+
+    let mut archive = Vec::new();
+    let original_len = u64::try_from(payload.len()).expect("four bytes fit a u64");
+    Header::new(0, 0, Flags::default(), original_len, sha256(&payload)).encode_into(&mut archive);
+    archive.extend_from_slice(&payload);
+
+    let expanded = run_tokfold(&["expand"], &archive);
+    let stderr = String::from_utf8_lossy(&expanded.stderr);
+    assert_eq!(expanded.status.code(), Some(0), "{stderr}");
+    assert_eq!(expanded.stdout, payload, "{stderr}");
+    assert!(
+        stderr.is_empty(),
+        "an intact archive must not be commented on: {stderr}"
+    );
+}
+
 #[test]
 fn compress_passes_invalid_json_through_and_succeeds() {
     let input = b"this is not json at all";

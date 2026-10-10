@@ -356,7 +356,10 @@ fn run_decompress(arguments: Option<&Value>) -> Result<Outcome, ErrorObject> {
             // This server only ever compresses `&str`, so no archive it wrote lands
             // here, but the archive argument is caller-supplied: one built elsewhere
             // over bytes that are not UTF-8 decodes cleanly and cannot be returned as
-            // `text`. `tokfold expand` restores the same archive at exit `0`.
+            // `text`. `tokfold expand` restores the same archive at exit `0`, which is
+            // this refusal's whole justification and is a claim about another binary, so
+            // it is pinned by `expand_restores_an_archive_whose_bytes_are_not_utf8` in
+            // `tokfold-cli`.
             |_| {
                 failure(
                     "not_utf8",

@@ -3045,6 +3045,31 @@ documentation a previous fix falsified.
 
 ### Tests
 
+- **A claim about one binary, written in another crate, held by nothing.**
+  `run_decompress` in `crates/tokfold-mcp/src/tools.rs` refuses an archive whose payload
+  is not UTF-8, and the comment that justifies the refusal reads "`tokfold expand`
+  restores the same archive at exit `0`" -- the whole reason the refusal is a property
+  of this transport and not a tokfold-wide limit. The sentence is true, measured against
+  the release build (`cargo build --release -p tokfold-cli`, SHA-1 `834c01f2...`): an
+  archive built over `FF FE 80 00` expands at exit `0`, writes those four bytes back
+  verbatim and says nothing on stderr. Nothing held it. No test in
+  `crates/tokfold-cli/tests/cli.rs` expanded an archive whose payload is not UTF-8, and
+  no test could -- the CLI cannot produce one, because `compress` meets such bytes
+  before an archive exists and passes them through uncompressed (exit `0`, `input is not
+  valid UTF-8 at byte 0`), so the fixture has to be built the way another producer of
+  the format would build it. `expand_restores_an_archive_whose_bytes_are_not_utf8`
+  builds it through the production header writer `Header::encode_into`, with a
+  passthrough encoder id and the payload verbatim, pins the exit code, the bytes and the
+  silence, and first pins that `compress` really does refuse them, so the provenance the
+  comment rests on is asserted rather than asserted-about. Hand-adding to `cmd_expand`
+  the one regression the comment exists to forbid -- a `str::from_utf8` gate returning
+  `EXIT_CORRUPT` -- fails this test and **only** this test: 78 others in that file pass.
+  Writing the bytes through `String::from_utf8_lossy` instead fails it on the bytes --
+  three replacement characters and the NUL -- so the verbatim half is pinned separately
+  from the exit code. The comment now names the test. **A claim about another crate's
+  binary is unpinnable where it is written; put the test where the behaviour is, and
+  make the comment point at it.**
+
 - `every_stats_row_begins_its_value_at_column_21` pins the layout three documents quoted
   wrongly. `stats_reports_the_expected_fields` asks only whether each of the eight labels
   appears in the report, which stays true at any spacing, so nothing could have caught a
