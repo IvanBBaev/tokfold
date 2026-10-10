@@ -252,11 +252,11 @@ and both links survive. The guards around both are documented in
   are the user's responsibility.
 - The archive write is not atomic (no temporary file and `rename`). An interrupted
   overwrite can leave a truncated file where a good archive was. `expand` refuses a
-  truncated archive rather than decoding it wrongly, and the offset it names is the
-  first byte of the field that came up short — which sometimes is where the cut fell
-  and sometimes is not. Measured against the built binary (`cargo build --release -p
-  tokfold-cli`, SHA-1 `834c01f2…`) on a 1664-byte archive of a 1620-byte JSON
-  original. The layout is the one
+  truncated archive rather than decoding it wrongly, and the offset it names is
+  usually the first byte of the field that came up short — but not always, and not
+  always where the cut fell either. Measured against the built binary
+  (`cargo build --release -p tokfold-cli`, SHA-1 `834c01f2…`) on a 1664-byte archive
+  of a 1620-byte JSON original. The layout is the one
   `crates/tokfold-core/src/format.rs` owns as named `*_OFFSET` constants: the 4-byte
   magic at 0, `version` at 4, `encoder_id` at 5, the little-endian `tokenizer_id` at
   6–7, the little-endian `flags` at 8–9, the `original_len` ULEB128 at 10–11 (1620
@@ -279,9 +279,18 @@ and both links survive. The guards around both are documented in
   | 1664 | `0` | — | the original, byte for byte |
 
   So do not read the offset as "where the file ends" — but do not read it as
-  independent of the cut either. It equals the cut at 4, 5, 6, 8, 10 and 11, and lags
-  it by one byte at 7 and at 9, because a two-byte field is reported at its own first
-  byte and not at the byte that is missing.
+  independent of the cut either. It equals the cut at 4, 5, 6, 8, 10, 11 and 12 —
+  at 4, 5, 6, 8, 10 and 12 because the cut fell on the first byte of the field that
+  came up short, and at 11 because a varint missing its continuation byte is reported
+  at that missing byte and not at the field's start. It lags the cut by exactly one
+  byte at 7, 9 and 13, the second byte of `tokenizer_id`, of `flags` and of the
+  checksum, because a multi-byte field is reported at its own first byte and not at
+  the byte that is missing; inside a wider field that lag widens with it, so a cut to
+  43 is reported at 12, thirty-one bytes behind. A cut below 4 names no offset at
+  all: at 1 to 3 the magic is what fails, and 0 is refused as empty.
+  `expand_offsets_equal_the_cut_only_where_a_field_opens` in
+  `crates/tokfold-cli/tests/cli.rs` builds an archive of this shape and pins both
+  sets, the checksum band's 12, the payload band's 10 and that silence below 4.
 
   The rule is the format's; the band boundaries in that table are this fixture's. They
   move with the width of the `original_len` varint, because every field after it moves.
@@ -295,10 +304,10 @@ and both links survive. The guards around both are documented in
   The last band is the one that differs in kind. There the whole frame reads and only
   the payload is short, so no digest is computed and the error is aimed at the
   `original_len` field at offset 10 — the field the payload disagrees with — for every
-  one of the 1620 cuts inside the payload. That band is the widest by three orders of
-  magnitude on this fixture, so it is where an interrupted write of a large archive
-  lands; the header bands are reachable only by a write that died inside its first 44
-  bytes.
+  one of the 1620 cuts inside the payload. That makes it the widest band by far —
+  fifty times the next widest, the 32 cuts inside the checksum — so it is where an
+  interrupted write of a large archive lands; the header bands are reachable only by a
+  write that died inside its first 44 bytes.
 
 ## Known limitations and open issues
 

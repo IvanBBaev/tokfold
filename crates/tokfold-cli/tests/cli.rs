@@ -290,6 +290,85 @@ fn expand_names_the_corrupt_offsets_the_readme_quotes() {
         );
     }
 }
+/// The truncation table in `docs/threat-model.md` is written about an archive
+/// whose `original_len` takes two ULEB128 bytes, which puts the checksum at 12-43
+/// and the payload at 44. This pins the relation that table's prose states: the
+/// offset `expand` names equals the cut at every byte that opens a short field --
+/// the checksum's first byte, 12, among them -- and at 11, where a varint missing
+/// its continuation byte is reported at the missing byte rather than at the
+/// field's start; it lags the cut by one byte at the second byte of each
+/// multi-byte field, the 32-byte checksum's included, at 13.
+#[test]
+fn expand_offsets_equal_the_cut_only_where_a_field_opens() {
+    let archive = archive_path("cut-bands.tkfd");
+    let archive_str = archive.to_str().expect("utf-8 archive path");
+    let items: Vec<String> = (0..40)
+        .map(|id| format!(r#"{{"id":{id},"name":"user-{id:03}","role":"viewer","active":true}}"#))
+        .collect();
+    let original = format!(r#"{{"items":[{}]}}"#, items.join(","));
+    let compressed = run_tokfold(&["compress", "--archive", archive_str], original.as_bytes());
+    assert!(compressed.status.success());
+    let good = fs::read(&archive).expect("read archive file");
+    // 128 <= original_len < 16384 spells the length in two bytes at 10-11: the first
+    // carries the continuation bit, the second does not.
+    assert_eq!(
+        good[10] & 0x80,
+        0x80,
+        "the length field is not two bytes wide"
+    );
+    assert_eq!(good[11] & 0x80, 0, "the length field is not two bytes wide");
+    assert_eq!(
+        good.len(),
+        44 + original.len(),
+        "the payload is not verbatim"
+    );
+
+    let offset_of_cut = |cut: usize| -> usize {
+        let expanded = run_tokfold(&["expand"], &good[..cut]);
+        let stderr = String::from_utf8_lossy(&expanded.stderr);
+        assert_eq!(expanded.status.code(), Some(3), "cut to {cut}: {stderr}");
+        let (_, offset) = stderr
+            .trim_end()
+            .rsplit_once("archive corrupted at byte ")
+            .unwrap_or_else(|| panic!("cut to {cut} named no offset: {stderr}"));
+        offset
+            .parse()
+            .unwrap_or_else(|_| panic!("cut to {cut} named {offset}, not a byte offset"))
+    };
+
+    let equals_the_cut: Vec<usize> = (4..=13).filter(|&cut| offset_of_cut(cut) == cut).collect();
+    assert_eq!(equals_the_cut, [4, 5, 6, 8, 10, 11, 12]);
+    let lags_by_one: Vec<usize> = (4..=13)
+        .filter(|&cut| offset_of_cut(cut) + 1 == cut)
+        .collect();
+    assert_eq!(lags_by_one, [7, 9, 13]);
+    // Inside the checksum the same rule widens the lag to its full width.
+    assert_eq!(offset_of_cut(43), 12);
+    // A short payload is reported at the length field it disagrees with, which is
+    // not the field that came up short.
+    assert_eq!(offset_of_cut(44), 10);
+    assert_eq!(offset_of_cut(good.len() - 1), 10);
+    // Below the magic there is no offset to name at all, and an empty archive is
+    // refused as empty rather than for its magic.
+    let empty = run_tokfold(&["expand"], b"");
+    let stderr = String::from_utf8_lossy(&empty.stderr);
+    assert_eq!(empty.status.code(), Some(3), "empty: {stderr}");
+    assert!(stderr.contains("the archive is empty"), "empty: {stderr}");
+    assert!(
+        !stderr.contains("archive corrupted at byte"),
+        "empty: {stderr}"
+    );
+    for cut in 1..4 {
+        let expanded = run_tokfold(&["expand"], &good[..cut]);
+        let stderr = String::from_utf8_lossy(&expanded.stderr);
+        assert_eq!(expanded.status.code(), Some(3), "cut to {cut}: {stderr}");
+        assert!(stderr.contains("bad magic"), "cut to {cut}: {stderr}");
+        assert!(
+            !stderr.contains("archive corrupted at byte"),
+            "cut to {cut}: {stderr}"
+        );
+    }
+}
 
 #[test]
 fn compress_passes_invalid_json_through_and_succeeds() {

@@ -733,6 +733,31 @@ released says so, and names what `0.0.1` does in the same case.
 
 ### Documentation
 
+- **A truncation table refuted by its own prose, three ways.** `docs/threat-model.md`,
+  under *Archive path handling (CLI)*, prints every band a truncated archive falls
+  into, and the paragraph reading that table back got it wrong three times. It said the
+  offset `expand` names "equals the cut at 4, 5, 6, 8, 10 and 11, and lags it by one
+  byte at 7 and at 9, because a two-byte field is reported at its own first byte":
+  re-measured against the build that section cites (`cargo build --release -p
+  tokfold-cli`, SHA-1 `834c01f2…`), the equality set has a seventh member — 12, where
+  the checksum opens — and the lag set a third, 13, that checksum's second byte. So the
+  mechanism is not "a two-byte field" but any multi-byte field, and inside the 32-byte
+  checksum the lag widens to the field's width: a cut to 43 is named at 12, thirty-one
+  bytes behind. The lead-in was wider than the table too. "The offset it names is the
+  first byte of the field that came up short" is false in two of the ten bands: at 11
+  the varint's *missing* byte is named rather than the field's first byte at 10, and
+  across 44–1663 the field named (`original_len`, at 10) is not the short one at all —
+  the payload is. And "that band is the widest by three orders of magnitude" gave a
+  magnitude with no baseline: it holds 1620 of the 1664 cuts against 32 for the next
+  widest, a factor of fifty.
+  `expand_offsets_equal_the_cut_only_where_a_field_opens` in
+  `crates/tokfold-cli/tests/cli.rs` now builds an archive of that shape and computes
+  both sets from the binary, together with the checksum band's 12, the payload band's
+  10 and the silence below offset 4, so the corrected sentence is pinned and not merely
+  restated. **An enumeration is a claim about every member, a mechanism offered for an
+  offset is a claim about every band it covers, and a magnitude without its baseline is
+  not a measurement.**
+
 - **A required field named after three of its six members.** The field every report
   must fill was the "**semantic-integrity impact class**" at four sites in
   `SECURITY.md`, and the prompt-injection non-claim put the whole list behind that
