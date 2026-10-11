@@ -247,35 +247,42 @@ outcome of the pass:
   2 097 151, 2 097 152 and 16 777 216 bytes. The magic is a necessary condition for the
   hazard, not a sufficient one, and the check is over-inclusive in that direction on
   purpose.
-- A pass the engine rejects **leaves any other readable file alone**, byte for byte,
-  and reports that on standard error instead. "Readable" is load-bearing: a file the
-  slot check cannot open at all — no read permission, an unsearchable parent — is
-  equally untouched, but there is no `left ... untouched` report and no passthrough
-  either -- stderr names the path and the platform's own error instead, and stdout is
-  empty -- because the check fails before the payload is written and the command exits
-  `2`. A `chmod 000` slot on a rejected input was measured printing `the input was
-  rejected (...) and not passed through: inspecting the archive path ...: Permission
-  denied (os error 13)` with 0 bytes on stdout; the rule is the one in the bullet
-  beginning "If the path cannot even be read". A file whose opening bytes are not the
-  magic, or that is too short to carry it, is not tokfold's to delete:
-  `compress --archive notes.md` on a rejected input does not touch `notes.md`, as long
-  as its first four bytes are not `TKFD` — which is a condition on the bytes and not
-  on the extension, since nothing here reads the name. No stale
-  document survives that restraint, because `expand` fails closed with exit `3` on
-  anything that is not an archive. A FIFO, a socket or a device is left alone without
-  even being opened — stderr says it is not a regular file, not that it is not an
-  archive, since nothing read it: it cannot hold bytes a later `expand` would read
-  back, and opening a FIFO would block until a writer appeared. A directory is the one
-  exception — it is opened on purpose, so the read fails with the platform's own
-  diagnostic and the command exits `2`, rather than reporting nothing to clear at a
-  path that plainly is not empty.
+- A pass the engine rejects **leaves any other readable file alone**, byte for byte, and
+  reports that on standard error instead. "Readable" is load-bearing: a file the slot
+  check cannot open at all — no read permission, an unsearchable parent — is equally
+  untouched, but there is no `left ... untouched` report and no passthrough either --
+  stderr names the path the failing step was given and the platform's own error instead,
+  and stdout is empty -- because the check fails before the payload is written and the
+  command exits `2`. A `chmod 000` slot on a rejected input was measured printing `the
+  input was rejected (...) and not passed through: inspecting the archive path ...:
+  Permission denied (os error 13)` with 0 bytes on stdout; the rule is the one in the
+  bullet beginning "If the path cannot even be read". A file whose opening bytes are not
+  the magic, or that is too short to carry it, is not tokfold's to delete: `compress
+  --archive notes.md` on a rejected input does not touch `notes.md`, as long as its
+  first four bytes are not `TKFD` — which is a condition on the bytes and not on the
+  extension, since nothing here reads the name. No stale document survives that
+  restraint, because `expand` fails closed with exit `3` on anything that is not an
+  archive. A FIFO, a socket or a device is left alone without even being opened — stderr
+  says it is not a regular file, not that it is not an archive, since nothing read it:
+  it cannot hold bytes a later `expand` would read back, and opening a FIFO would block
+  until a writer appeared. A directory is the one exception — it is opened on purpose,
+  so the read fails with the platform's own diagnostic and the command exits `2`, rather
+  than reporting nothing to clear at a path that plainly is not empty.
 - Both the overwrite and the deletion follow symlinks to the **target**, because a
   successful pass writes through the link and it is the target that would go stale.
   A rejected pass therefore clears the archive behind the link and leaves the link
   itself (every link of a chain survives; the warning names the file that went, as
   the one the typed link *resolves to*); it re-checks that the file it is about to unlink is still the one it
   inspected, and refuses rather than deletes if something swapped it in between.
-  That narrows the window, it does not close it: nothing here is atomic.
+  That narrows the window, it does not close it: nothing here is atomic. An
+  inspection that *fails* names both spellings, for the same reason the removal names
+  the target: the `stat` after the resolution, the open and the read of the magic are
+  each handed the resolved file, so the error reads `inspecting the archive path
+  <typed>, which resolves to <target>` and the platform's diagnostic belongs to the
+  target — a link aimed at a `chmod 000` file reports "Permission denied" for a file
+  whose own mode is `lrwxr-xr-x`, and one aimed at a directory reports "Is a
+  directory" for a path that is a symlink. A caller who typed a path that resolves to
+  itself sees the one spelling it always showed.
 - If the path cannot even be read, or the deletion itself fails, nothing is emitted
   and the command exits `2` — the same rule as a failed archive write. The context
   then reads `the input was rejected (…) and not passed through`; `… and passing it

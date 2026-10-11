@@ -1761,6 +1761,104 @@ fn an_archive_path_that_cannot_be_opened_is_not_treated_as_an_absent_archive() {
     );
 }
 
+/// An inspection error names the file the failing step was handed, not only the path
+/// the caller typed.
+///
+/// `inspect_archive_slot` resolves the archive path before it reads anything, so that
+/// the file it inspects is the file a rejected pass would remove, and three of its
+/// steps are therefore handed the resolved target rather than the typed path: the
+/// `stat` that follows the resolution, the open, and the read of the magic. Every one
+/// of those errors named the typed path alone until this was measured, which describes
+/// the wrong file as soon as the two spellings differ -- a symlink aimed at a mode-`000`
+/// file reported "Permission denied" for a link whose own mode is `lrwxr-xr-x`, and one
+/// aimed at a directory reported "Is a directory" for a path that is a symlink.
+///
+/// Two of the three are driven here, the open and the read. The `stat` between them is
+/// reachable only by a race against the resolution that precedes it -- a parent losing
+/// its search permission in the window between the two calls -- so this test makes no
+/// claim about that one.
+///
+/// The coverage next door could not see any of it.
+/// `an_archive_path_that_cannot_be_opened_is_not_treated_as_an_absent_archive` reaches
+/// `ELOOP`, where the resolution itself fails and there is no target to name, and
+/// `EACCES` on a file named directly, where the two spellings are one string. Neither
+/// input resolves anywhere else, and a test is a claim only about the cases its inputs
+/// reach.
+///
+/// Both spellings are asserted on. The typed one is what the caller wrote and the only
+/// string they can find in their own command line; the resolved one is the file whose
+/// mode and type the message is describing. The resolved spelling is taken from
+/// `canonicalize` rather than assumed to equal the path built here, so the test states
+/// what the code states and does not depend on the fixture root being free of symlinks.
+/// Root ignores the mode bits, so the `EACCES` half is skipped behind a canary, as its
+/// neighbours are; the directory half needs no privilege and runs either way.
+#[test]
+#[cfg(unix)]
+fn an_inspection_error_names_the_resolved_file_and_not_only_the_typed_path() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let dir = scratch_dir("inspection_error_names");
+
+    // (a) EISDIR through a link. The resolution lands on a directory, the open succeeds
+    //     on one and the read fails, so the step that failed was handed the directory.
+    let adir = dir.join("a_directory");
+    fs::create_dir(&adir).expect("create the directory behind the link");
+    let to_dir = dir.join("link_to_dir");
+    std::os::unix::fs::symlink(&adir, &to_dir).expect("link the archive path at it");
+    let resolved_dir = fs::canonicalize(&adir).expect("resolve the directory");
+
+    let out = run_tokfold(&["compress", "--archive", path_str(&to_dir)], b"not json");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "an archive path that cannot be inspected must fail the pass: {stderr}"
+    );
+    assert!(
+        stderr.contains("Is a directory") && stderr.contains(path_str(&resolved_dir)),
+        "the directory the link resolves to is what the read was given, so the error \
+         must name it: {stderr}"
+    );
+    assert!(
+        stderr.contains(path_str(&to_dir)),
+        "the path the caller typed must still be named: {stderr}"
+    );
+
+    // (b) EACCES through a link. Root ignores the mode bits, so prove they bite first.
+    let canary = dir.join("canary");
+    fs::write(&canary, b"canary").expect("write the permission canary");
+    fs::set_permissions(&canary, fs::Permissions::from_mode(0o000))
+        .expect("drop the canary's permissions");
+    if fs::read(&canary).is_ok() {
+        return; // running with privileges that ignore the mode bits
+    }
+
+    let unreadable = dir.join("unreadable.tkfd");
+    fs::write(&unreadable, b"TKFD and a little more").expect("write the unreadable file");
+    let resolved_file = fs::canonicalize(&unreadable).expect("resolve the file");
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000))
+        .expect("drop the file's permissions");
+    let to_file = dir.join("link_to_file");
+    std::os::unix::fs::symlink(&unreadable, &to_file).expect("link the archive path at it");
+
+    let out = run_tokfold(&["compress", "--archive", path_str(&to_file)], b"not json");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "an archive that cannot be opened must fail the pass: {stderr}"
+    );
+    assert!(
+        stderr.contains("Permission denied") && stderr.contains(path_str(&resolved_file)),
+        "the file the link resolves to is what the open was given, so the error must \
+         name it: {stderr}"
+    );
+    assert!(
+        stderr.contains(path_str(&to_file)),
+        "the path the caller typed must still be named: {stderr}"
+    );
+}
+
 /// The rejected pass is **not** contained by the successful one, and this pins the
 /// first of the two ways it escapes.
 ///

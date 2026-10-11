@@ -499,6 +499,24 @@ released says so, and names what `0.0.1` does in the same case.
   not be aimed at the output`, and for the output guard `output may not be written
   into the input it is read from` — the rustdoc and CLI README say the check is a
   rule, not a prediction, and the tests pin each line whole.
+- **An inspection error at `--archive` named the path the caller typed and not the file
+  the failing step was handed.** Never released. The archive path is resolved before
+  anything is read, so that the file that is inspected is the file a rejected pass would
+  remove, and three of the inspection's steps are therefore handed the resolved target
+  rather than the typed path: the `stat` that follows the resolution, the open, and the
+  read of the magic. Every one of those errors named the typed path alone, which
+  describes the wrong file as soon as the two spellings differ — a link aimed at a
+  `chmod 000` file reported "inspecting the archive path <link>: Permission denied" for
+  a link whose own mode is `lrwxr-xr-x`, and one aimed at a directory reported "Is a
+  directory" for a path that is a symlink. The line now reads "inspecting the archive
+  path <typed>, which resolves to <target>" where the two differ, and is unchanged
+  wherever the caller typed the resolved spelling already. The steps that hand a syscall
+  the typed path still name that path alone, because that is the path they acted on: the
+  resolution itself, every step of the descriptor-slot inspection — where the typed
+  spelling is the only one that reaches the file at all — and the `stat` in the archive
+  write. The open and the read are driven by a test; the `stat` between them is
+  reachable only by a race against the resolution that precedes it, so nothing claims to
+  cover it.
 
 ### Changed
 

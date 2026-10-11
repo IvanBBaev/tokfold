@@ -882,6 +882,36 @@ fn announce_no_archive(path: &Path, cleared: Cleared) {
     }
 }
 
+/// Name the file an inspection step was handed, for the error it may fail with.
+///
+/// Three of the steps in [`inspect_archive_slot`] are given the *resolved* target
+/// rather than the path as typed, because the file that is inspected has to be the file
+/// a rejected pass would remove. The typed path is still named -- it is the only
+/// spelling the caller wrote, and the only string they can look for in their own
+/// command line -- but the resolved one is named beside it when the two differ, because
+/// without it the diagnostic describes a file the caller cannot see: `--archive link`
+/// aimed at a mode-`000` file reported "inspecting the archive path link: Permission
+/// denied" for a link whose own mode is `lrwxr-xr-x`, and aimed at a directory it
+/// reported "Is a directory" for a path that is a symlink.
+///
+/// The steps that hand a syscall the typed path name that path alone, which is the one
+/// they acted on: the `canonicalize` above the resolution, every step of
+/// [`inspect_descriptor_slot`] -- where the typed spelling is the only one that reaches
+/// the file at all -- and the `stat` in [`write_file`]. `canonicalize` returns an
+/// absolute path, so the two spellings coincide whenever the caller typed one already,
+/// and then this says what it always said.
+fn inspecting(path: &Path, target: &Path) -> String {
+    if target == path {
+        format!("inspecting the archive path {}", path.display())
+    } else {
+        format!(
+            "inspecting the archive path {}, which resolves to {}",
+            path.display(),
+            target.display()
+        )
+    }
+}
+
 /// Classify the file at `path` by its opening bytes, reading no more of it than the
 /// magic is long.
 ///
@@ -937,8 +967,7 @@ fn inspect_archive_slot(path: &Path) -> Result<ArchiveSlot> {
         return inspect_descriptor_slot(path);
     }
 
-    let meta = fs::symlink_metadata(&target)
-        .with_context(|| format!("inspecting the archive path {}", path.display()))?;
+    let meta = fs::symlink_metadata(&target).with_context(|| inspecting(path, &target))?;
 
     // A directory falls through to the open below on purpose: `File::open` succeeds
     // on one and the read then fails with the platform's own diagnostic, which is
@@ -953,10 +982,7 @@ fn inspect_archive_slot(path: &Path) -> Result<ArchiveSlot> {
     let mut file = match fs::File::open(&target) {
         Ok(file) => file,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(ArchiveSlot::Empty),
-        Err(e) => {
-            return Err(e)
-                .with_context(|| format!("inspecting the archive path {}", path.display()));
-        }
+        Err(e) => return Err(e).with_context(|| inspecting(path, &target)),
     };
 
     let mut head = [0u8; ARCHIVE_MAGIC.len()];
@@ -964,10 +990,7 @@ fn inspect_archive_slot(path: &Path) -> Result<ArchiveSlot> {
         Ok(()) => {}
         // Shorter than the magic, so it cannot be an archive whatever else it is.
         Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(ArchiveSlot::Foreign),
-        Err(e) => {
-            return Err(e)
-                .with_context(|| format!("inspecting the archive path {}", path.display()));
-        }
+        Err(e) => return Err(e).with_context(|| inspecting(path, &target)),
     }
 
     if head == ARCHIVE_MAGIC {
