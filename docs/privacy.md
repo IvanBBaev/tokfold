@@ -64,9 +64,20 @@ stale-archive deletion and no same-file guards (see
   Process spawning lives entirely in the test targets, and it is more than "the
   binary under test": the only source file with a `Command::new` is
   `crates/tokfold-cli/tests/cli.rs` (`grep -rn 'Command::new' crates
-  --include='*.rs'`), and it starts three programs — the binary under test
+  --include='*.rs'`), and it starts four programs — the binary under test
   (`env!("CARGO_BIN_EXE_tokfold")`), `/bin/sh`, to arrange descriptor redirections
-  the Rust API cannot express, and `mkfifo`. A `cargo test` run also forks through a
+  the Rust API cannot express, `mkfifo`, and `sh`, which the umask test spells
+  without a path. It also re-runs *itself*: one test spawns two further copies of
+  the suite binary through `std::env::current_exe()`. Two of those four names are
+  bare, so `std::process::Command` searches `PATH` for them at run time, and the
+  two spellings of the shell are not interchangeable. Under `PATH=/nonexistent` the
+  suite binary fails `a_new_archives_mode_is_what_the_umask_leaves` with a
+  `NotFound` panic and exits `101`, while
+  `a_short_file_behind_a_read_only_descriptor_is_reported_like_a_long_one`, which
+  spawns `/bin/sh`, passes unchanged; the two `mkfifo` tests take a third course and
+  return early when the spawn fails, saying so in a comment, so a box without
+  `mkfifo` on its `PATH` reports them as passes that assert nothing (measured
+  2026-10-14, macOS Darwin 27.0.0 arm64). A `cargo test` run also forks through a
   dev-dependency: `proptest`'s default features include `fork`, which pulls in
   `rusty-fork 0.3.1` (`cargo tree -p tokfold-core -e features --all-features`). None
   of that is compiled into a released binary.
@@ -275,12 +286,25 @@ targets, and neither is a run-time read: `std::env::temp_dir` in
 `crates/tokfold-cli/src/main.rs`, which is inside the `#[cfg(test)] mod
 archive_identity_tests` and so not in a released binary at all, and
 `env!("CARGO_PKG_VERSION")` in `crates/tokfold-mcp/src/protocol.rs`, which cargo
-substitutes at compile time (`grep -rn 'std::env\|env!(' crates/*/src`). The test
-targets add two more compile-time substitutions (`env!("CARGO_BIN_EXE_tokfold")`,
-`env!("CARGO_TARGET_TMPDIR")`) and one run-time reader — `proptest` consults
-`PROPTEST_CASES` and its siblings through `env::vars_os` in
-`proptest-1.11.0/src/test_runner/config.rs`. The shipped binary does read some
-variables through its dependencies and the standard library:
+substitutes at compile time (`grep -rn 'std::env\|env!(' crates/*/src`). That glob
+reaches no test target, so it says nothing about them; the rest of this paragraph
+comes from running it again over `crates/*/tests`. The test targets add four more
+compile-time substitutions — `env!("CARGO_BIN_EXE_tokfold")` and
+`env!("CARGO_TARGET_TMPDIR")`, and also `env!("CARGO_PKG_VERSION")` in
+`crates/tokfold-cli/tests/cli.rs` and `env!("CARGO_PKG_DESCRIPTION")` in
+`crates/tokfold-mcp/tests/experimental_notice.rs`. At run time they read two
+variables, not one. `PROPTEST_CASES` is read by the test code itself, with
+`std::env::var`, in both `crates/tokfold-core/tests/roundtrip.rs` and
+`crates/tokfold-core/tests/hostile.rs`, over and above `proptest`'s own sweep of it
+and its siblings through `env::vars_os` in
+`proptest-1.11.0/src/test_runner/config.rs`. And `PATH` is searched by
+`std::process::Command` on behalf of the two programs that
+`crates/tokfold-cli/tests/cli.rs` spawns by bare name, as this document's
+*First-party code* bullet records. One further `std::env` call in that file reads no
+variable at all: `std::env::current_exe()` asks the loader. None of this reaches a
+released binary, and none of it bears on the sentence this section opens with. The
+shipped binary does read some variables through its dependencies and the standard
+library:
 
 | Variable | Read by | Effect |
 |---|---|---|

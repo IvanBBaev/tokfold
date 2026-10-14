@@ -751,6 +751,54 @@ released says so, and names what `0.0.1` does in the same case.
 
 ### Documentation
 
+- **`docs/privacy.md` counted the test targets' spawns and environment reads with a
+  grep that cannot see a test target.** Its *First-party code* bullet said
+  `crates/tokfold-cli/tests/cli.rs` "starts three programs" and named the binary under
+  test, `/bin/sh` and `mkfifo`; there is a fourth, `sh`, spelled without a path by
+  `a_new_archives_mode_is_what_the_umask_leaves`, and the file also spawns two further
+  copies of the suite binary through `std::env::current_exe()`. The distinction the
+  missing name carries is the one a privacy document exists to record: two of the four
+  are bare, so `std::process::Command` searches `PATH` for them at run time. Measured
+  2026-10-14 on macOS (Darwin 27.0.0, arm64) by running the built suite binary under
+  `PATH=/nonexistent`: the umask test panics `NotFound` at its `Command::new("sh")` and
+  the binary exits `101`, while
+  `a_short_file_behind_a_read_only_descriptor_is_reported_like_a_long_one`, which spawns
+  `/bin/sh`, passes unchanged. The two `mkfifo` tests behave a third way again — they
+  `return` early when the spawn fails, by design and with a comment, so on a box without
+  `mkfifo` on its `PATH` they are reported as passes that assert nothing. The same
+  three-member enumeration stood in the *First-party code opens a network connection*
+  row of `docs/threat-model.md`; both now name four programs, the self-spawn and the
+  `PATH` resolution.
+
+  The *Environment variables* section was wrong in the same place for the same reason.
+  It said the test targets "add two more compile-time substitutions
+  (`env!("CARGO_BIN_EXE_tokfold")`, `env!("CARGO_TARGET_TMPDIR")`) and one run-time
+  reader", crediting that reader to `proptest`. There are four compile-time
+  substitutions — `env!("CARGO_PKG_VERSION")` in `crates/tokfold-cli/tests/cli.rs` and
+  `env!("CARGO_PKG_DESCRIPTION")` in `crates/tokfold-mcp/tests/experimental_notice.rs`
+  were both unlisted — and two variables are read at run time, not one:
+  `crates/tokfold-core/tests/roundtrip.rs` and `crates/tokfold-core/tests/hostile.rs`
+  each read `PROPTEST_CASES` themselves with `std::env::var`, over and above
+  `proptest`'s own sweep, and `PATH` is searched for the two bare program names. A third
+  `std::env` call, `std::env::current_exe()`, reads no variable at all, and the section
+  now says so rather than leaving it uncounted. The cause of all of it is the command
+  the paragraph cites as its evidence, `grep -rn 'std::env\|env!(' crates/*/src`: that
+  glob matches no file under `crates/*/tests`, so it is silent about exactly the targets
+  the sentence describes. Both documents now say what the glob covers and where the
+  test-target figures come from.
+
+  **The guarantee itself is unchanged and was re-verified.** No file under
+  `crates/*/src` spawns a process, so the shipped binary performs no `PATH` search, and
+  the two non-test `std::env`/`env!` uses are still the `#[cfg(test)]`
+  `std::env::temp_dir` in `crates/tokfold-cli/src/main.rs` (inside `mod
+  archive_identity_tests`, confirmed by reading the enclosing module) and the
+  compile-time `env!("CARGO_PKG_VERSION")` in `crates/tokfold-mcp/src/protocol.rs`. The
+  workspace has no `build.rs`, no `benches` and no `examples`, and the non-member `fuzz`
+  crate reads no environment variable, so nothing else hides outside the glob. The shape
+  is one this changelog keeps recording: a cited command is a claim about what that
+  command can see, and an enumeration is a claim about every member of it. No test and
+  no CI job reads either document.
+
 - **The CLI README credited the npm launcher's `128 + N` to the mechanism that cannot
   produce it.** Its exit-code section said the binary "dies on `SIGXFSZ` … and a shell
   reports `153`, the npm launcher `128 + N` for the same reason", and named that reason
