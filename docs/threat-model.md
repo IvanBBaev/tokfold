@@ -121,7 +121,7 @@ or a tool get back what was really there.
 | **The rendering's meaning** | The model acts on the rendering. A rendering that reads differently from the original misleads the agent, even if the archive is intact. |
 | **Availability of the host** | tokfold runs inside, or next to, an agent. A crash, a hang or a runaway allocation takes the agent's tool path down with it. |
 | **Files at the `--archive` path** | `compress` overwrites that path, and can delete it (see *Archive path handling*). |
-| **The file standard output is redirected to** | `expand` writes the original bytes there verbatim; `compress` writes the rendering; `mcp` writes its replies. The CLI does not name that file and does not set its mode (see *Archive path handling*). |
+| **The file standard output is redirected to** | All four subcommands write there: `expand` the original bytes verbatim, `compress` the rendering, `mcp` its JSON-RPC replies, and `stats` a report whose eight lines carry six numbers and a name-with-id for the encoder and the tokenizer (`format_stats` in `crates/tokfold-cli/src/main.rs`) — the one of the four that puts nothing from the input there. `--help` and `--version` land there too, through clap's printer or `write_stdout` depending on the stream (`parse_failure` in the same file). The CLI does not name that file and does not set its mode (see *Archive path handling*). Until 2026-10-14 this row named three of the four subcommands, omitting the only one whose output is content-free. |
 
 ## Attacker capabilities considered
 

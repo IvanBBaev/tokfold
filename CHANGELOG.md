@@ -3628,6 +3628,23 @@ documentation a previous fix falsified.
   and `tests/session.rs` — are about the *protocol revision* carrying its version and
   capabilities per request, not about what the struct holds, and they are unaffected.
 
+- **The asset row for standard output named three of the four subcommands that
+  write there.** `## Assets` in `docs/threat-model.md` described the file standard
+  output is redirected to as taking the original bytes from `expand`, the rendering
+  from `compress` and the replies from `mcp`, and left out `stats`, which writes
+  there too. **An enumeration in an asset row is a claim about every member** — and
+  a reader deciding how sensitive that file is would have concluded that one of the
+  four commands never touches it.
+
+  What `stats` puts there is now measured rather than left out: `format_stats` in
+  `crates/tokfold-cli/src/main.rs` writes eight lines carrying six numbers and a
+  name-with-id for the encoder and for the tokenizer, and nothing from the input, so
+  it is the one of the four whose output on that file is content-free. The row says
+  that, instead of implying it by silence. It also now records that `--help` and
+  `--version` land in the same file — through clap's own printer for a terminal and
+  through `write_stdout` otherwise, as `parse_failure` documents — because those are
+  writers the subcommand list does not cover.
+
 ### Tests
 - **The offset in the node-budget refusal was pinned nowhere, under a comment that
   mis-stated the message.** `an_over_budget_message_reports_the_node_limit` asserted
