@@ -658,6 +658,16 @@ with a gate that exists for it — `deny.toml`'s `[bans]` list, run by the `deny
 for a claim in [`threat-model.md`](threat-model.md), not for this file. No check
 anywhere compares a sentence here with the fact behind it, because nothing in the
 build reads this document: `git grep 'privacy\.md' -- crates .github fuzz Cargo.toml`
-returns nothing, where the same pathspec set returns four files for `tokfold`.
+returns nothing, and so does the looser `privacy`, so that silence is not an artefact
+of the spelling. The control that the pathspec set reaches code at all is `tokfold`,
+and it has to be counted per element, because one total certifies no element of a
+four-part pathspec: had `fuzz` been untracked, the total would still look healthy and
+the claim about `fuzz` would be empty. It matches 28 of the 43 tracked files under
+`crates`, 2 of 3 under `.github`, 16 of 1353 under `fuzz`, and `Cargo.toml` itself —
+47 of 1400 in all, measured 2026-10-14 with git 2.54.0. Which matcher ran is worth
+naming for this section's two shell greps and not for its two `git grep` runs, because
+`git grep` is git's own: the shell `grep` here answers from ugrep 7.8.4 and from BSD
+grep 2.6.0, with the same counts from both. This sentence read "four files" between
+`f220e42` and this correction, both on 2026-10-14.
 Everything marked "true today" needs a reviewer to re-read this file when the named
 code changes.

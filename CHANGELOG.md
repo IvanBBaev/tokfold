@@ -4089,8 +4089,8 @@ documentation a previous fix falsified.
   figures are pinned by a test answering for a claim in `docs/threat-model.md`; and no
   check anywhere compares a sentence in the privacy document with the fact behind it,
   because nothing in the build reads the file — `git grep 'privacy\.md' -- crates
-  .github fuzz Cargo.toml` returns nothing, where that same pathspec set returns four
-  files for `tokfold`.
+  .github fuzz Cargo.toml` returns nothing, where that same pathspec set matches 47 of
+  its 1400 tracked files for `tokfold`.
 
   Two rules. **A scope that reaches no sentence is not a weak rule but no rule** —
   state it by where the thing it governs sits, not by a word that happens to mark it.
@@ -4175,6 +4175,32 @@ documentation a previous fix falsified.
   control measured over only one of the two paths would have certified nothing about the
   other. Measured 2026-10-14. Documentation only: no code, no behaviour and no format
   change.
+- **A control that certifies no element of what it is a control for, and a number 43
+  files wrong.** *Keeping this document true* in `docs/privacy.md` ends on the one
+  sentence that answers why no gate holds the document to the code: `git grep
+  'privacy\.md' -- crates .github fuzz Cargo.toml` returns nothing, "where the same
+  pathspec set returns four files for `tokfold`". The control is the load-bearing half
+  — without it the silence could be a pathspec that reaches no file at all — and its
+  number was wrong by 43. The command matches **47** files, the same count at `f220e42`
+  and on this tree (git 2.54.0). `git grep` is git's own matcher, so the two shell greps
+  in that section are the ones whose implementation is worth naming — both answer the
+  same counts under ugrep 7.8.4 and under BSD grep 2.6.0.
+
+  One total over a four-part pathspec is the defect, not the digit: it certifies no
+  element of the set, so had `fuzz` been untracked, 47 would still have read as a
+  healthy control while the claim about `fuzz` was empty. The figure is now derived per
+  element — 28 of the 43 tracked files under `crates`, 2 of 3 under `.github`, 16 of
+  1353 under `fuzz`, and `Cargo.toml` itself — so every pathspec answers for itself.
+  The other half is now measured at a second spelling as well: the looser `privacy`
+  returns nothing over the same set, so the silence is not an artefact of `\.md`.
+
+  The sentence was written by `f220e42`, whose subject is "State privacy.md's rules
+  about itself by what they govern": a commit that existed to correct false claims
+  about this document published another one in the same paragraph. The two controls it
+  wrote beside this one hold exactly as published — `grep -rnE '0o?(644|600|666)'
+  crates/*/src` returns nothing, and `MAGIC` over the same glob returns three files.
+  Measured 2026-10-14. Documentation only: no code, no behaviour and no format change.
+
 ### Tests
 - **The offset in the node-budget refusal was pinned nowhere, under a comment that
   mis-stated the message.** `an_over_budget_message_reports_the_node_limit` asserted
