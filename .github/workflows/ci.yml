@@ -768,8 +768,17 @@ jobs:
             toolchain: stable
             required: false
             features: "--all-features"
-          # Signal-only: the `mcp` stdio transport strips CRLF and writes bare LF,
-          # and Windows is the only platform where getting that wrong shows up.
+          # Signal-only: the `mcp` stdio transport strips CRLF and writes bare
+          # LF, and Windows is the only platform where getting that wrong shows
+          # up. It is also the only leg that compiles this workspace for a
+          # non-Unix target, which is more than that sentence covers, and
+          # `continue-on-error` means its redness blocks nothing and so has to
+          # be read rather than waited for. It was red on both push runs after
+          # commit 6d6659e of 2026-10-10 added three Unix-only CLI tests without
+          # the `#[cfg(unix)]` the suite uses on everything else -- runs
+          # 38319598908 and 38554022691, 2026-10-12 and -14, four E0433 and two
+          # E0599 each -- while the local gate stayed green, because it builds
+          # one target: whichever one the box it runs on is.
           - leg: windows-stable-all-features
             os: windows-latest
             toolchain: stable

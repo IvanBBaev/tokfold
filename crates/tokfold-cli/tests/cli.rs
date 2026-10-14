@@ -171,7 +171,10 @@ fn run_tokfold_in(dir: &Path, args: &[&str]) -> Output {
 }
 
 /// Leave a genuine recovery archive at `archive` by running a successful compress,
-/// and assert it really is one before any test builds on it.
+/// and assert it really is one before any test builds on it. Every caller is
+/// `cfg(unix)`, which the compiler says by calling this dead off Unix, so the gate
+/// here follows the callers rather than leading them.
+#[cfg(unix)]
 fn seed_real_archive(input: &Path, archive: &Path) {
     fs::write(input, COMPRESSIBLE_JSON).expect("write the compressible input");
     let out = run_tokfold_without_stdin(&[
@@ -2214,7 +2217,9 @@ fn the_same_file_guard_sees_a_hard_link_to_the_input() {
 
 /// Run the built `tokfold` binary with `args`, its standard input redirected from the
 /// file at `stdin_file` — the shell's `< file`, which hands the child a descriptor on
-/// the file itself rather than a pipe carrying its bytes.
+/// the file itself rather than a pipe carrying its bytes. Both callers are
+/// `cfg(unix)`, so this is too, for the same reason as `seed_real_archive`.
+#[cfg(unix)]
 fn run_tokfold_reading_stdin_from(args: &[&str], stdin_file: &Path) -> Output {
     let file = fs::File::open(stdin_file).expect("open the file to redirect as stdin");
     Command::new(env!("CARGO_BIN_EXE_tokfold"))
@@ -4250,7 +4255,9 @@ fn two_instances_of_this_suite_do_not_wipe_each_others_fixtures() {
 /// against `cargo build --release -p tokfold-cli` + `--workspace --all-features`
 /// (SHA-1 `ca2cfc4a…`, which commit `166873f` builds — measured 2026-10-14) on
 /// 2026-10-10: both land in `real`, both links stay links, and
-/// `expand` reads the original back out of `real`.
+/// `expand` reads the original back out of `real`. `cfg(unix)` because the fixture is
+/// two `std::os::unix::fs::symlink` calls, which do not compile off Unix.
+#[cfg(unix)]
 #[test]
 fn a_successful_pass_writes_through_a_symlink_chain_and_keeps_both_links() {
     let dir = scratch_dir("symlink_chain_write");
@@ -4308,7 +4315,9 @@ fn a_successful_pass_writes_through_a_symlink_chain_and_keeps_both_links() {
 /// a file type the check rejects. Measured against the same build as the test above:
 /// exit `2`, nothing on standard output, and the refusal names the path the caller
 /// typed — the link — because that is the path `metadata` was asked about and no write
-/// ever happened. Both the link and the FIFO are left where they were.
+/// ever happened. Both the link and the FIFO are left where they were. `cfg(unix)`
+/// because `std::os::unix::fs::symlink` does not compile off Unix, and a FIFO is POSIX.
+#[cfg(unix)]
 #[test]
 fn a_symlink_aimed_at_a_fifo_is_refused_by_the_write_path() {
     let dir = scratch_dir("symlink_to_fifo_archive");
@@ -4402,7 +4411,9 @@ fn a_symlink_aimed_at_a_fifo_is_refused_by_the_write_path() {
 /// copy would give one mode for all three. No single pass refutes it -- under `077`
 /// the archive's `0600` equals the narrowed input's mode -- so that assertion is
 /// over the set, and the narrowing is what makes the per-pass figures a claim about
-/// the input too.
+/// the input too. `cfg(unix)` because `PermissionsExt` does not compile off Unix, and
+/// a umask and an octal mode are POSIX notions in any case.
+#[cfg(unix)]
 #[test]
 fn a_new_archives_mode_is_what_the_umask_leaves() {
     use std::os::unix::fs::PermissionsExt as _;

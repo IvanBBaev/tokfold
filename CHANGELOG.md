@@ -544,6 +544,32 @@ released says so, and names what `0.0.1` does in the same case.
   between releases would otherwise cause failures unrelated to the MSRV contract -- now
   records that stable does not escape that drift but only dates it, and that whether to
   pin a version is the owner's call.
+- **The Windows CI leg has not compiled since 2026-10-10, and nothing blocked on it.**
+  Never released, and test-only. Commit `6d6659e` added
+  `a_successful_pass_writes_through_a_symlink_chain_and_keeps_both_links`,
+  `a_symlink_aimed_at_a_fifo_is_refused_by_the_write_path` and
+  `a_new_archives_mode_is_what_the_umask_leaves` to the CLI suite without the
+  `#[cfg(unix)]` that gates every other Unix-only item in that file, so `cli.rs` fails
+  to build for `x86_64-pc-windows-msvc`: four `E0433` (`cannot find unix in os`, three
+  at `std::os::unix::fs::symlink` and one at the `PermissionsExt` import) and three
+  `E0599` (`Permissions::from_mode` twice, `Permissions::mode` once). CI saw six of the
+  seven, because the `from_mode(0o600)` narrowing committed in `8b94126` is newer than
+  anything pushed. The leg was red on both push runs since the tests landed --
+  38319598908 (`d1a4b8a`, 2026-10-12) and 38554022691 (`482e5aa`, 2026-10-14) -- and the
+  last green push run is 36246733799 (`0f759f6`, 2026-09-26). It went unread because the
+  leg is `required: false` with `continue-on-error`, so its redness blocks nothing, and
+  because the local gate has no non-Unix target at all: eleven green legs on this box
+  were no evidence about it. Reproduced here with `rustup target add
+  x86_64-pc-windows-msvc` and `cargo check --workspace --all-targets --all-features
+  --locked --target x86_64-pc-windows-msvc`, which exited 101 on the seven sites and
+  exits 0 now that all three tests are `#[cfg(unix)]`, each naming in its own doc
+  comment which API does not compile off Unix. The gating then exposed two dead-code
+  warnings the compile error had masked: `seed_real_archive` and
+  `run_tokfold_reading_stdin_from` are never used off Unix, which is the compiler
+  stating that every caller of each is itself `cfg(unix)`, so both helpers are gated too
+  and the check is clean in both senses. The matrix comment for the leg now records that
+  it is the only non-Unix build in CI, that `continue-on-error` makes it something to
+  read rather than something that blocks, and this history.
 
 ### Changed
 
