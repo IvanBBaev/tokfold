@@ -4446,6 +4446,40 @@ documentation a previous fix falsified.
   dates the re-wrap and not the claim -- the `000` case looked like today's work under a
   one-line `-S` pattern and is `6d6659e`'s of 2026-10-10, which is what makes "until
   2026-10-10" the true form. Documentation only.
+- **The module that owns the varint decoder stated the fourth fault as a category, and
+  that category has 128 members.** `9dbd67c` of 2026-10-14 corrected the module's
+  enumeration from two faults to four and wrote the fourth as a field that "spends all
+  ten bytes without clearing the continuation bit", "the only one reported outside the
+  field, one past it, which for `original_len` is byte 20". Ten `0xFF` bytes answer that
+  description and are reported at 19. `read_uleb128` tests overflow before the
+  continuation bit, and at the tenth byte the shift is 63, so the ceiling `u64::MAX >>
+  63` is 1: only a payload of 0 or 1 -- a tenth byte of `0x80` or `0x81` -- survives to
+  let the loop finish and reach the error raised after it. Two of the 128
+  continuation-bearing tenth bytes land outside the field; the other 126 are reported at
+  the tenth byte, 19. The same unqualified category stood in three places in this module
+  -- the module bullet, `Header::decode`'s varint bullet, and `read_uleb128`'s own
+  fourth bullet, the one the other two tell the reader to see -- and all three now carry
+  the ordering and name the two bytes.
+- **The derivative sites were right and the authority they cite was wrong.**
+  `error.rs`'s `Corrupt` rustdoc and `crates/tokfold-cli/README.md` have both named
+  `0x80` and `0x81` and said that overflow is checked first since `0f759f6` of
+  2026-09-26, and `leb128_overflow_rejected`'s own comment states the rule exactly; the
+  loose sentences in `format.rs` were written eighteen days later. A reader who followed
+  either citation to `read_uleb128` arrived at the least precise of the three. The entry
+  recording `9dbd67c` called its sentence "exact because `read_uleb128` has a single
+  production call site": that argument makes the number 20 exact and says nothing about
+  which inputs reach it. **A justification proves the property it is about**, so read
+  which property the doubtful sentence asserts before accepting one. That entry is left
+  as written, as entries here are; this one names it.
+- **What the same lens cleared.** `leb128_overflow_rejected`'s rustdoc says the
+  all-ten-bytes check "is the only *varint* fault that can fall outside the field",
+  which is a claim about possibility and is true; the header byte-layout fence in this
+  module's rustdoc matches `encode_into` field for field, in order; and that rustdoc's
+  125-character line is not a defect, because 604 lines in the crates' sources and tests
+  are over 88 columns, `rustfmt` does not wrap comments and no gate measures width. The
+  column figure is a convention here, not a rule, so it was left alone rather than
+  folded into a correctness commit. Documentation only, except for the sweep recorded
+  under *Tests*.
 
 ### Tests
 - **The offset in the node-budget refusal was pinned nowhere, under a comment that
@@ -5256,6 +5290,27 @@ same way afterwards — followed by the tests that pin this entry's fixes.
   documented claim does not pin it. The privacy bullet now names both tests and what
   each one reads. Workspace tests 598 → 599 debug and 596 → 597 release, the delta
   between them unchanged: one test added, no behaviour and no format change.
+- **The varint category is now pinned by its whole membership.**
+  `leb128_overflow_rejected` held seven fixtures -- a tenth byte of `0x02`, `0x81`,
+  `0x80`, `0x82`, `0x00` and `0x01`, and a field of ten `0xFF` -- under a comment that
+  already stated the rule exactly, naming `0x80` and `0x81` as the only tenth bytes that
+  reach 20. The rule was stated and not held: seven points cannot pin a rule over 256
+  values, and this repo's own lesson is that **a measurement beside a rule is not a check
+  of the rule**. It now sweeps all 256: `0x01` is no fault at all, since it clears the bit and decodes 2^63; `0x80`
+  and `0x81` are reported one past the field, at 20; the remaining 253 are reported at
+  the tenth byte, 19. Whatever the leading nine bytes are they cannot overflow -- at `i
+  == 8` the shift is 56 and the ceiling `u64::MAX >> 56` is 255, above any seven-bit
+  payload -- so the tenth byte decides alone, and the sweep runs over two leading bytes,
+  `0x80` and `0xFF`, to hold that. Nine `0xFF` bytes and a `0x80`, which reaches 20, was
+  reachable by no fixture before. Hand-mutated before being believed: `0x80 | 0x81 =>
+  Some(TENTH)` fails at lead `0x80`, tenth `0x80`, and `0x01 => Some(TENTH)` fails at
+  lead `0x80`, tenth `0x01`. The test's own scope sentence had to be narrowed in the
+  same breath -- it said every offset below is what `tokfold expand` prints for the same
+  bytes, which over a 512-fixture sweep is a claim about 512 printed lines, of which
+  `expand_names_the_corrupt_offsets_the_readme_quotes` holds four -- so it now names
+  those four and says the sweep is a library-level claim only. Workspace tests unchanged
+  at 599 debug and 597 release: the sweep is inside a test that already existed, and no
+  behaviour and no format changed.
 
 ## [0.0.1] - 2026-08-29
 

@@ -12,12 +12,15 @@
 //! * **All multi-byte integers are little-endian.** `original_len` is an unsigned
 //!   `LEB128` varint (max 10 bytes). Four faults are rejected as
 //!   [`DecompressError::Corrupt`], never silently normalized: a byte the archive ends
-//!   before, an overlong spelling, a value too large for `u64`, and a field that
-//!   spends all ten bytes without clearing the continuation bit. The last is neither
-//!   an overflow nor a missing byte — ten `0x80` bytes carry no value bits at all —
-//!   and it is the only one reported outside the field, one past it, which for
-//!   `original_len` is byte 20. `read_uleb128` derives every offset and
-//!   `leb128_overflow_rejected` pins them.
+//!   before, an overlong spelling, a value too large for `u64`, and a field whose
+//!   tenth byte keeps the continuation bit without overflowing. That fourth fault is
+//!   neither an overflow nor a missing byte — ten `0x80` bytes carry no value bits at
+//!   all — and it is the only one reported outside the field, one past it, which for
+//!   `original_len` is byte 20. Only a tenth byte of `0x80` or `0x81` reaches 20,
+//!   because overflow is checked before the continuation bit and the tenth byte's
+//!   ceiling is `u64::MAX >> 63`, which is 1: ten `0xFF` bytes never clear the bit
+//!   either, yet they are the third fault, reported at 19. `read_uleb128` derives
+//!   every offset and `leb128_overflow_rejected` pins all 256 tenth bytes.
 //! * **Encoding is deterministic and bit-stable.** The same [`Header`] produces the
 //!   same bytes on every call and every build. Nondeterministic output would
 //!   invalidate a provider's prompt cache.
@@ -240,7 +243,9 @@ impl Header {
     /// * a set reserved flag bit → [`DecompressError::ReservedBitsSet`];
     /// * a varint that is overlong, overflows `u64`, or spends all ten bytes with the
     ///   continuation bit still set → [`DecompressError::Corrupt`]. Only the third is
-    ///   reported outside the field, at byte 20; see `read_uleb128`.
+    ///   reported outside the field, at byte 20, and only a tenth byte of `0x80` or
+    ///   `0x81` reaches it — overflow is checked first, so ten `0xFF` bytes are the
+    ///   second fault, at 19; see `read_uleb128`.
     pub fn decode(archive: &[u8]) -> Result<(Self, usize), DecompressError> {
         if archive.get(0..MAGIC.len()) != Some(MAGIC.as_slice()) {
             return Err(DecompressError::BadMagic);
@@ -386,7 +391,11 @@ fn write_uleb128(mut value: u64, out: &mut Vec<u8>) {
 /// * a field that does not terminate within [`ULEB128_MAX_BYTES`] bytes, reported
 ///   one past the field. This one is not an overflow and not a missing byte: ten
 ///   `0x80` bytes carry no value bits at all, so nothing about them overflows, and
-///   the error is raised after the loop without reading the offset it names.
+///   the error is raised after the loop without reading the offset it names. Only a
+///   tenth byte of `0x80` or `0x81` reaches it, because the check above runs first
+///   and at the tenth byte admits a payload of 0 or 1 alone — ten `0xFF` bytes do
+///   not terminate within ten bytes either, and that check reports them inside the
+///   field.
 fn read_uleb128(archive: &[u8], start: usize) -> Result<(u64, usize), DecompressError> {
     let mut result: u64 = 0;
     for i in 0..ULEB128_MAX_BYTES {
@@ -903,9 +912,11 @@ mod tests {
     /// the checksum begins;
     /// `truncation_behind_a_wide_length_field_is_reported_where_the_field_ends`
     /// holds that.) The field starts at 10, so its tenth byte is 19 and "one past the
-    /// field" is 20. Every offset below is what `tokfold expand` prints for the same
-    /// bytes spliced into a real archive; the CLI test
-    /// `expand_names_the_corrupt_offsets_the_readme_quotes` holds the printed line.
+    /// field" is 20. Each offset named below is what `tokfold expand` prints for the
+    /// same bytes spliced into a real archive, but only four of them are held there:
+    /// the CLI test `expand_names_the_corrupt_offsets_the_readme_quotes` drives a tenth
+    /// byte of `0x82`, `0x81` and `0x80`, and a field of ten `0xFF`. The sweep over
+    /// every tenth byte is a library-level claim only.
     #[test]
     fn leb128_overflow_rejected() {
         const TENTH: usize = ORIGINAL_LEN_OFFSET + ULEB128_MAX_BYTES - 1;
@@ -950,6 +961,36 @@ mod tests {
         // `compressor.rs` is what holds the 10 in place.
         let (header, _) = Header::decode(&archive_with_len_bytes(&nine_then(0x01))).unwrap();
         assert_eq!(header.original_len, 1u64 << 63);
+
+        // The category this test is named for -- a ten-byte field that never clears the
+        // continuation bit -- has 128 members, and the order of the two checks decides
+        // which of them land outside the field. Sweep every tenth byte, so the rule is
+        // pinned by its whole membership and not by the seven examples above. Whatever
+        // the first nine bytes are, they cannot overflow: at `i == 8` the shift is 56
+        // and the ceiling `u64::MAX >> 56` is 255, above any seven-bit payload. The
+        // tenth byte therefore decides alone, and the sweep runs over two different
+        // leading bytes to hold that.
+        for lead in [0x80u8, 0xFF] {
+            for tenth in 0u8..=u8::MAX {
+                let mut field = vec![lead; ULEB128_MAX_BYTES - 1];
+                field.push(tenth);
+                let expected = match tenth {
+                    // Clears the bit and adds bit 63 canonically: a value, not a fault.
+                    0x01 => None,
+                    // Keeps the bit with a payload of 0 or 1, the only two the tenth
+                    // byte's ceiling admits, so the loop spends all ten bytes.
+                    0x80 | 0x81 => Some(ONE_PAST),
+                    // Everything else overflows at the tenth byte, or terminates the
+                    // field overlong with a zero, and names the byte it fired on.
+                    _ => Some(TENTH),
+                };
+                assert_eq!(
+                    corrupt_at(&field),
+                    expected,
+                    "lead {lead:#04x}, tenth byte {tenth:#04x}"
+                );
+            }
+        }
     }
 
     #[test]
