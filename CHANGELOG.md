@@ -751,6 +751,26 @@ released says so, and names what `0.0.1` does in the same case.
 
 ### Documentation
 
+- **The CLI README promised a Unix-only guard on every platform, for `mcp`.**
+  `cmd_mcp` calls `ensure_output_is_not_the_input` before the experimental notice and
+  before the transport starts, so `tokfold mcp < requests >> requests` is refused with
+  `2` having read nothing — but only on Unix. `stdout_is_the_input` returns `false` the
+  moment `stdout_identity()` is `None`, and `stdout_identity` is `None` under
+  `#[cfg(not(unix))]`; the guard's own rustdoc says as much ("Unix only, like the other
+  same-file guards: elsewhere `stdout_identity` is `None` and nothing is refused").
+  *The `--archive` path belongs to tokfold* carries that qualifier on every one of
+  those refusals, down to the sentence that uses this same `tokfold mcp < requests >>
+  requests` example. The `mcp` paragraph in *Subcommands* did not. Its preceding clause
+  is qualified correctly — "which on Unix includes a standard input it cannot read and
+  a standard output it cannot write", and both of those `EBADF` probes are
+  `#[cfg(unix)]` — and then the next sentence stated the same-file refusal flat.
+  `tokfold-windows-x64` is published, so the promise was made to the one platform where
+  the guard cannot fire. The paragraph now names the platform, says that elsewhere
+  standard output has no identity to compare against and the redirect is not refused,
+  and cites the section that states the rule for every command. The shape is one this
+  changelog keeps recording: a platform-conditional guard documented without its
+  platform is a claim about every platform, and the correction that qualified the
+  guards section did not reach this mirror of the same guard.
 - **The module that owns the varint decoder enumerated two of its four faults.**
   `read_uleb128` in `crates/tokfold-core/src/format.rs` answers four distinct inputs
   with `DecompressError::Corrupt` — a byte the archive ends before, an overlong

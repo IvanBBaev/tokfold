@@ -105,11 +105,13 @@ is, the operating system stopping the process before it could report anything.
 
 `mcp` exits `0` when the client hangs up — on clean end-of-input and on a broken
 pipe alike — and `2` when its stdio fails any other way, which on Unix includes a
-standard input it cannot read and a standard output it cannot write. It also exits
-`2` before reading anything when its standard output is a regular file it would
-be writing into the same file its standard input reads from (`tokfold mcp <
-requests >> requests`). Earlier in development this subcommand was an unimplemented
-stub that always exited `69`.
+standard input it cannot read and a standard output it cannot write. On Unix too
+it exits `2` before reading anything when its standard output is a regular file it
+would be writing into the same file its standard input reads from (`tokfold mcp <
+requests >> requests`); elsewhere standard output has no identity to compare
+against and that redirect is not refused, which *The `--archive` path belongs to
+tokfold* states for every command. Earlier in development this subcommand was an
+unimplemented stub that always exited `69`.
 
 ## The size ceiling is 16 MiB, and reaching it is quiet
 
