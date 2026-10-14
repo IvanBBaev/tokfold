@@ -253,14 +253,37 @@ stale-archive deletion and no same-file guards (see
   true of the socket filter and its `bind` inside `dyld_stub_binder` (83 undefined
   symbols in the local build, 76 in the published one; measured 2026-10-14, macOS
   Darwin 27.0.0 arm64, rustc 1.97.0).
-- **What that grep would have missed.** Swept over the CLI's 34-crate graph, the three
-  Rust tokens match four crates and no clock: every hit is the substring `Instant`
-  inside "Instantiate", "Instantiates" or "Instantaneous", except a doc example in
-  `syn`'s `src/mac.rs` that really does write `Instant::now()` — `syn` is a proc-macro
-  dependency, so that file runs only during the build, and a doc example does not run
-  at all — and `libc`'s `sceKernelGetSystemTime` declarations, which are PSP-only.
-  `libc` declares 51 clock functions across its platforms, and no crate in the graph
-  calls one. The npm launcher is not a crate, so the sentence above leaves it out, and
+- **What that grep would have missed.** Swept over the library sources of the CLI's
+  34-crate graph — `src/` in each crate as cargo extracts it, the only target of a
+  dependency this workspace ever builds — the three Rust tokens match four third-party
+  crates and no clock: every hit is the substring `Instant` inside "Instantiate"
+  (`clap_builder`, twice), "Instantiates" (`typenum`, eight times) or "Instantaneous"
+  (`libc`, once), except a doc example in `syn`'s `src/mac.rs` that really does write
+  `Instant::now()` — `syn` is a proc-macro dependency, so that file runs only during the
+  build, and a doc example does not run at all — and `libc`'s `sceKernelGetSystemTime`
+  declarations, which are PSP-only.
+  That scope is load-bearing and until 2026-10-14 the sentence did not state it.
+  crates.io ships each crate's `benches/` and `tests/` as well, and over the whole
+  extracted directory of each of the 31 third-party crates the three tokens match six
+  crates, with real uses rather than substrings in four files: `use std::time::Instant`
+  and `Instant::now()` in `syn`'s `tests/test_round_trip.rs`, `tests/repo/progress.rs`
+  and `benches/rust.rs`, and `use std::time::Duration` in `unicode-ident`'s
+  `benches/xid.rs`. None of those four compiles here — cargo builds a dependency's `lib`
+  target and neither its benches nor its tests — so the conclusion is unchanged; what
+  the narrower sweep may not do is report them as absent.
+  `libc` declares 18 functions whose name contains `clock` in version 0.2.186, the one
+  `Cargo.lock` pins: 116 declarations across its platform modules, counted as
+  file-and-name pairs, and 45 distinct names if the match is case-insensitive. The extra
+  27 are eight QNX Neutrino names (`ClockAdjust`, `ClockId`, `ClockPeriod`, `ClockTime`
+  and their `_r` variants) in `src/unix/nto/neutrino.rs` and nineteen PSP `sceKernel`,
+  `scePower` and `sceRtc` names in `src/psp.rs`. The measurement is
+  `grep -rhoE 'pub fn [A-Za-z0-9_]*clock[A-Za-z0-9_]*' --include='*.rs' src` over `sort
+  -u`, with and without `-i`. Until 2026-10-14 this read "declares 51 clock functions
+  across its platforms", a number with no published derivation that no reading of the
+  locked source reproduces. The distinct-name counts are the durable part: both are the
+  same in the 0.2.189 and 0.2.190 sources this box also holds, while the declaration
+  count moves to 118 and 123. No crate in the graph calls one.
+  The npm launcher is not a crate, so the sentence above leaves it out, and
   over everything the launcher package contains the five JavaScript tokens `Date`,
   `hrtime`, `performance`, `setTimeout` and `setInterval` return exactly one match: a
   comment in `npm/tokfold/bin/tokfold` explaining why `pause` does *not* use

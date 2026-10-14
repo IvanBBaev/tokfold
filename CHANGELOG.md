@@ -4314,6 +4314,36 @@ documentation a previous fix falsified.
   unstripped, stripped at the link, stripped after it, or published. Documentation only:
   no code, no behaviour and no format change.
 
+- **A sweep's conclusion published without the scope that makes it true, and a count
+  with no derivation.** `docs/privacy.md`, under *Telemetry*, said that over "the CLI's
+  34-crate graph" the three Rust clock tokens `std::time`, `SystemTime` and `Instant`
+  "match four crates and no clock". The 34 reproduces —
+  `cargo tree -p tokfold-cli --all-features --prefix none` lists 34 unique crates — but
+  "four crates" is true only of the third-party `src/` directories, and the sentence
+  said so nowhere. crates.io ships each crate's `benches/` and `tests/` as well, and
+  over the whole extracted directory of each of the 31 third-party crates the three
+  tokens match six crates, with real uses rather than substrings in four files: `use
+  std::time::Instant` and `Instant::now()` in `syn`'s `tests/test_round_trip.rs`,
+  `tests/repo/progress.rs` and `benches/rust.rs`, and `use std::time::Duration` in
+  `unicode-ident`'s `benches/xid.rs`. The conclusion survives, because cargo builds a
+  dependency's `lib` target and neither its benches nor its tests — but it survived on
+  a reason the document did not give, and a reader checking the sentence against an
+  unpacked crate would have found it false. The scope is now stated where the sweep is.
+
+  The same bullet put `libc` at "51 clock functions across its platforms", a bare number
+  with no published derivation that no reading of the locked source reproduces. Measured
+  2026-10-14 over 0.2.186, the version `Cargo.lock` pins, with
+  `grep -rhoE 'pub fn [A-Za-z0-9_]*clock[A-Za-z0-9_]*' --include='*.rs' src` over `sort
+  -u`: 18 distinct names in 116 declarations, and 45 distinct names if the match is
+  case-insensitive — the extra 27 being eight QNX Neutrino `Clock*` names in
+  `src/unix/nto/neutrino.rs` and nineteen PSP `sceKernel`, `scePower` and `sceRtc` names
+  in `src/psp.rs`. Widening the pattern to `clock|nanosleep|cputime` gives 47 distinct
+  names, still not 51. The two distinct-name counts are the durable part: both are
+  unchanged in the 0.2.189 and 0.2.190 sources this box also holds, while the
+  declaration count moves to 118 and 123 — so what is published now is the count that
+  does not rot, with the command that produces it. Documentation only: no code, no
+  behaviour and no format change.
+
 ### Tests
 - **The offset in the node-budget refusal was pinned nowhere, under a comment that
   mis-stated the message.** `an_over_budget_message_reports_the_node_limit` asserted
