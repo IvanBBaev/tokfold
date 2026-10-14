@@ -3997,6 +3997,60 @@ documentation a previous fix falsified.
   only role it had been thinking about. Every path in that sentence needed asking
   twice, once for reading and once for writing. Documentation only: no code, no
   behaviour and no format change.
+- **"No crate reads the clock" rested on a grep over first-party sources only.** The
+  *Telemetry* bullet above it already separates the layers holding the other two
+  verbs — "the enforced dependency ban" for transmitting and "the first-party
+  `std::net` review" — so the clock bullet, whose whole evidence was "no non-test
+  source uses `std::time`, `SystemTime` or `Instant`", claimed the graph and measured
+  the workspace. The claim is true; it was under-evidenced, and the grep it named is
+  the wrong instrument for it. Swept over the CLI's 34-crate graph those three tokens
+  match four crates and no clock: every hit is the substring `Instant` inside
+  "Instantiate", "Instantiates" or "Instantaneous", except a doc example in `syn`'s
+  `src/mac.rs` that does write `Instant::now()` — `syn` is a proc-macro dependency, so
+  that file runs only during the build, and a doc example does not run at all — and
+  `libc`'s PSP-only `sceKernelGetSystemTime`. `libc` declares 51 clock functions
+  across its platforms and no crate in the graph calls one. A reader re-running the
+  published grep would therefore have had four crates to explain, every one of them a
+  false positive.
+
+  What answers for the graph is the measurement *Network* uses for sockets, now
+  published here too: `nm -u` on the built binary. Neither the release build of this
+  tree (`cargo build --release -p tokfold-cli`, SHA-1 `637795cf…`) nor the binary npm
+  ships for this platform (`tokfold-darwin-arm64` `0.0.1`, `bin/tokfold` SHA-1
+  `8e2ed283…`, from a tarball checked against the registry's `dist.shasum`
+  `2ffdfaf3…`) imports `time`, `times`, `clock`, `clock_gettime`,
+  `clock_gettime_nsec_np`, `gettimeofday`, `mach_absolute_time`,
+  `mach_continuous_time`, `getrusage`, `utimes`, `futimes` or `utimensat` as a whole
+  symbol — 83 undefined symbols locally and 76 published, 0 matches in each. Because a
+  filter that matches nothing proves nothing, it was run against controls: fed those
+  twelve names each prefixed with `_`, plus `_time$UNIX2003`, it matches all thirteen,
+  and fed `dyld_stub_binder`, `_realpath$DARWIN_EXTSN`, `_pthread_get_stackaddr_np`,
+  `_read` and `_write` it matches none. Unlike the socket filter and its `bind` inside
+  `dyld_stub_binder`, the naive spelling agrees here — a case-insensitive substring
+  search for `time` or `clock` also answers 0 on both lists — and the bullet says so,
+  so nobody reads the careful regex as a dodge. The npm launcher is not a crate and is
+  scoped separately: its one match for `Date`, `hrtime`, `performance`, `setTimeout`
+  or `setInterval` is a comment explaining why it does *not* use `setTimeout`.
+
+  **The same bullet's closing half was false.** "Outputs are therefore free of
+  timestamps, and a run leaves no record of when it happened" — the first half holds
+  (a twelve-row fixture gives 323 bytes on standard output and an 831-byte archive,
+  and neither contains `20[0-9]{2}-[01][0-9]-[0-3][0-9]` or a ten-digit epoch), the
+  second does not. `write_file` opens the archive with `create` and `truncate`, so
+  tokfold brings that file into being and the kernel stamps it: the same run left the
+  archive an mtime and a birth time of the second it ran, seventeen seconds after the
+  mtime of the input it read. The sharper fixture is a *rejected* pass, which writes
+  no archive at all and still leaves a record — clearing a stale one unlinks it, and
+  that moves the containing directory's mtime (`18:44:34Z` before the run, `18:44:37Z`
+  after, exit `0`, nine bytes of passthrough). The two halves are now intelligible
+  together: tokfold reads no clock, so every timestamp here is the kernel's, set
+  because a file was written or removed.
+
+  The rule: **a category claim over a dependency graph is answered by the linker, not
+  by a first-party grep** — and a grep published beside it has to come with what it
+  matches, because here that was four crates of "Instantiate". Measured 2026-10-14,
+  macOS Darwin 27.0.0 arm64, rustc 1.97.0. Documentation only: no code, no behaviour
+  and no format change.
 ### Tests
 - **The offset in the node-budget refusal was pinned nowhere, under a comment that
   mis-stated the message.** `an_over_budget_message_reports_the_node_limit` asserted

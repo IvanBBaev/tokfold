@@ -187,10 +187,57 @@ stale-archive deletion and no same-file guards (see
   verbs are held in different places: *Network* above for transmitting, both by the
   enforced dependency ban and by the first-party `std::net` review, and *Files* and
   *Caches and temporary files* below for collecting and storing.
-- No crate reads the clock: no non-test source uses `std::time`, `SystemTime` or
-  `Instant`.
-- Outputs are therefore free of timestamps, and a run leaves no record of when it
-  happened.
+- **No clock is read — first-party review, and the binary's imports.** No non-test
+  source in the workspace uses `std::time`, `SystemTime` or `Instant`. The one match a
+  grep for those three returns in `crates/*/src` is a doc comment in
+  `crates/tokfold-mcp/src/lib.rs`, which names `std::time` to say a dependency ban
+  cannot reach it; "non-test" is load-bearing, because
+  `crates/tokfold-cli/tests/cli.rs` imports `Duration` and `Instant` and polls a
+  deadline with them. As with `std::net` above, no gate enforces this, and a grep over
+  first-party sources says nothing about the dependency graph — so what answers for the
+  graph is the measurement *Network* uses for sockets. `637795cf…` imports none of
+  `time`, `times`, `clock`, `clock_gettime`, `clock_gettime_nsec_np`, `gettimeofday`,
+  `mach_absolute_time`, `mach_continuous_time`, `getrusage`, `utimes`, `futimes` or
+  `utimensat` as whole symbols, and neither does the binary npm ships for this platform
+  (`tokfold-darwin-arm64` `0.0.1`, `bin/tokfold` SHA-1 `8e2ed283…`, taken from a
+  tarball checked against the registry's `dist.shasum` `2ffdfaf3…`). The measurement is
+  `nm -u <binary>` filtered with
+  `grep -E '^_?(times?|clock(_gettime(_nsec_np)?)?|gettimeofday|mach_(absolute|continuous)_time|getrusage|f?utimes|utimensat)(\$.*)?$'`,
+  and because a filter that matches nothing proves nothing it was run against controls:
+  fed the thirteen underscored spellings those twelve names generate — the twelve bases
+  each prefixed with `_`, plus `_time$UNIX2003` — it matches all thirteen, and fed
+  `dyld_stub_binder`, `_realpath$DARWIN_EXTSN`, `_pthread_get_stackaddr_np`, `_read`
+  and `_write` it matches none. Here the naive spelling agrees with the careful one: a
+  case-insensitive substring search for `time` or `clock` over either list also answers
+  0, so a reader who re-runs the obvious grep has nothing to explain away, which is not
+  true of the socket filter and its `bind` inside `dyld_stub_binder` (83 undefined
+  symbols in the local build, 76 in the published one; measured 2026-10-14, macOS
+  Darwin 27.0.0 arm64, rustc 1.97.0).
+- **What that grep would have missed.** Swept over the CLI's 34-crate graph, the three
+  Rust tokens match four crates and no clock: every hit is the substring `Instant`
+  inside "Instantiate", "Instantiates" or "Instantaneous", except a doc example in
+  `syn`'s `src/mac.rs` that really does write `Instant::now()` — `syn` is a proc-macro
+  dependency, so that file runs only during the build, and a doc example does not run
+  at all — and `libc`'s `sceKernelGetSystemTime` declarations, which are PSP-only.
+  `libc` declares 51 clock functions across its platforms, and no crate in the graph
+  calls one. The npm launcher is not a crate, so the sentence above leaves it out: its
+  one match for `Date`, `hrtime`, `performance`, `setTimeout` or `setInterval` is a
+  comment in `npm/tokfold/bin/tokfold` explaining why it does *not* use `setTimeout`.
+- **Outputs carry no timestamp; the filesystem records the run anyway.** Neither the
+  rendering on standard output nor the archive holds a date. A twelve-row fixture
+  compressed with `--archive` gives 323 bytes on stdout and an 831-byte archive, and
+  searching both for `20[0-9]{2}-[01][0-9]-[0-3][0-9]` or a ten-digit epoch matches
+  nothing. What is not free of timestamps is the filesystem. `write_file` opens the
+  archive with `create` and `truncate`, so tokfold brings that file into being and the
+  kernel stamps it: the same run left the archive an mtime and a birth time of the
+  second it ran, seventeen seconds after the mtime of the input it read. A *rejected*
+  pass leaves a record too, although it writes no archive at all — clearing a stale one
+  unlinks it, and that moves the containing directory's mtime (measured 2026-10-14:
+  `18:44:34Z` before the run, `18:44:37Z` after, exit `0`, nine bytes of passthrough on
+  standard output). Until 2026-10-14 this bullet ended "and a run leaves no record of
+  when it happened", which both of those falsify. tokfold reads no clock to do any of
+  it: every timestamp here is the kernel's, set because a file was written or removed,
+  which is why the first half of this bullet holds while the second did not.
 
 ## Files
 
