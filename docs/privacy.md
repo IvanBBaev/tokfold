@@ -557,13 +557,21 @@ decides what enters the model's context and what it logs.
   archive of `{"secret":"hunter2","rows":[{"a":1},{"a":2}]}`: both fields carried
   that document in full. A client that stores only one of the two still stores the whole
   original.
-- **`tokfold_estimate`** returns the statistics without the payload: neither the text
-  block nor `structuredContent` carries any part of the input back. The
-  `estimate_reports_stats_without_the_payload` test in `tools.rs` pins that over the
-  whole reply rather than over two key names -- each of its three documents holds a
-  marker string and reaches a different encoder, and the marker must appear in neither
-  half. The compressing documents are the cases that matter: on a passthrough input
-  there is no rendering for the reply to withhold in the first place.
+- **`tokfold_estimate`** returns the statistics without the payload: no part of the
+  input comes back, neither in the reply nor in either half of the tool result the
+  reply is built from. Two tests hold that, one per layer, because neither can see the
+  other's: `estimate_reports_stats_without_the_payload` in `tools.rs` reads the tool's
+  `Outcome` -- the text block and `structuredContent` before anything wraps them --
+  and `an_estimate_reply_carries_no_part_of_the_document` in `server.rs` reads the
+  serialized line the server writes, which adds `isError`, `resultType` and `_meta`
+  around those two. Each test carries a marker through documents that reach all three
+  encoders and asserts which encoder each one reached; the reply test adds a fourth
+  document of 108 900 bytes, because a leak conditional on size would sail past three
+  fixtures of 30, 252 and 636 bytes. The reply test also sends each document to
+  `tokfold_compress`, whose reply does carry the marker, so the absence it asserts is
+  the tool's doing and not the fixture's. The compressing documents are the cases that
+  matter: on a passthrough input there is no rendering for the reply to withhold in
+  the first place.
 - Every result also carries the server's name and version in `_meta`.
 - **The experimental notice is not part of any reply, and the crate does not print
   it.** `EXPERIMENTAL_NOTICE` is a constant in `crates/tokfold-mcp/src/lib.rs`; the

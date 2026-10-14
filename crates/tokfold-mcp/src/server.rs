@@ -1312,6 +1312,109 @@ mod tests {
         assert!(structured.get("stats").and_then(Value::as_object).is_some());
     }
 
+    /// The document must be absent from the *reply*, not merely from the tool outcome.
+    ///
+    /// `tools::estimate_reports_stats_without_the_payload` reads the `Outcome` that
+    /// `tools_call` then wraps, so it cannot see what this module adds around it: the
+    /// content block, the two envelope keys, and the serialization of the whole line.
+    /// Each of the four documents carries a marker, the first three reach a different
+    /// encoder each and the fourth repeats the widest one at 108 900 bytes, and the
+    /// marker must occur nowhere in the line the server writes. `tokfold_compress` on
+    /// the same document is the control: its reply does carry the marker, so the
+    /// absence asserted here is the tool's doing and not the fixture's.
+    #[test]
+    fn an_estimate_reply_carries_no_part_of_the_document() {
+        const MARKER: &str = "payload-marker-7e51";
+        const INDENTED: &str = r#"{
+  "note": "payload-marker-7e51",
+  "tree": {
+    "a": {
+      "b": {
+        "c": [
+          1,
+          2,
+          3
+        ],
+        "d": "x"
+      }
+    },
+    "e": [
+      {
+        "p": 1
+      },
+      {
+        "q": 2
+      }
+    ]
+  }
+}"#;
+        assert!(
+            INDENTED.contains(MARKER),
+            "the fixture must carry the marker the reply is searched for"
+        );
+        let rows = |count: u32| {
+            let rows = (0..count)
+                .map(|n| format!(r#"{{"kind":"alpha","note":"{MARKER}","n":{n}}}"#))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(r#"{{"rows":[{rows}]}}"#)
+        };
+        // The last one is here because a leak conditional on size would sail past the
+        // other three, which are 30, 252 and 636 bytes: at 2 000 rows the document is
+        // 108 900 bytes.
+        let documents = [
+            (
+                "small object",
+                "passthrough",
+                format!(r#"{{"note":"{MARKER}"}}"#),
+            ),
+            ("indented object", "minify", INDENTED.to_owned()),
+            ("12 rows", "tabular", rows(12)),
+            ("2 000 rows", "tabular", rows(2_000)),
+        ];
+        let mut server = Server::new();
+        for (name, expected, document) in documents {
+            // The crate's own encoder does the escaping, so the line is valid for any
+            // document and the marker still reads literally once it is in.
+            let quoted = Value::string(document).to_string();
+            let call = |tool: &str| {
+                format!(
+                    r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"{tool}","arguments":{{"text":{quoted}}}}}}}"#
+                )
+            };
+            let reply = server
+                .handle_line(&call("tokfold_estimate"))
+                .expect("an estimate is answered");
+            assert!(
+                !reply.contains(MARKER),
+                "{name}: the document reached the reply: {reply}"
+            );
+            let result = parse(&reply)
+                .unwrap()
+                .get("result")
+                .cloned()
+                .expect("no result member");
+            assert_eq!(result.get("isError"), Some(&Value::Bool(false)));
+            assert_eq!(
+                result
+                    .get("structuredContent")
+                    .and_then(|structured| structured.get("stats"))
+                    .and_then(|stats| stats.get("encoder"))
+                    .and_then(Value::as_str),
+                Some(expected),
+                "{name}: the fixture must reach the encoder it was written for"
+            );
+            let control = server
+                .handle_line(&call("tokfold_compress"))
+                .expect("a compression is answered");
+            assert!(
+                control.contains(MARKER),
+                "{name}: the marker is undetectable in a reply that does return the \
+                 document, so its absence above would prove nothing"
+            );
+        }
+    }
+
     #[test]
     fn a_failing_tool_is_a_result_not_a_transport_error() {
         // The model has to be able to see this and react; a JSON-RPC error would be

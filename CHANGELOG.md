@@ -5084,7 +5084,7 @@ same way afterwards — followed by the tests that pin this entry's fixes.
 
 - **The test cited as the pin for "returns the statistics without the payload" pinned
   the absence of two key names, on an input with no payload to withhold.**
-  `docs/privacy.md` names `estimate_reports_stats_without_the_payload` as what holds
+  `docs/privacy.md` named `estimate_reports_stats_without_the_payload` as what held
   that claim for `tokfold_estimate`. The test asserted `stats` present,
   `structured.get("archive").is_none()`, `structured.get("rendering").is_none()` and
   that the text block contains `encoder=`. A third key carrying the input back, or the
@@ -5093,24 +5093,66 @@ same way afterwards — followed by the tests that pin this entry's fixes.
   rendering and no compressed archive for the reply to withhold in the first place, so
   nothing in the test reached the minify or tabular paths that actually build one.
 
-  The test now carries a marker through the whole reply, once per encoder. The
-  fixtures and what selects each: `{"note":"payload-marker-9f3a"}` at 30 bytes stays
-  `passthrough`; a 252-byte indented document is minified to 111 bytes; twelve uniform
-  rows reach E2 at 636 → 473. Each reply must report the expected `stats.encoder` --
-  without that, a fixture that drifted onto another path would quietly make the test a
-  claim about a path it no longer reaches -- and the marker must appear neither in the
-  serialized `structuredContent` nor in `content[0].text`.
+  The test now carries a marker through both halves of the tool result, once per
+  encoder. The fixtures and what selects each: `{"note":"payload-marker-9f3a"}` at 30
+  bytes stays `passthrough`; a 252-byte indented document is minified to 111 bytes;
+  twelve uniform rows reach E2 at 636 → 473. Each reply must report the expected
+  `stats.encoder` -- without that, a fixture that drifted onto another path would
+  quietly make the test a claim about a path it no longer reaches -- and the marker must
+  appear neither in the serialized `structuredContent` nor in `content[0].text`.
 
   Hand-mutated before being believed, with the mutation the old test could not see:
   adding `.set("source", Value::string(artifact.rendering.clone()))` to
   `compressed_outcome` leaks the payload under a third key, which the old assertions
   pass and the new one fails with the marker quoted. Making the text block
-  unconditional (`let text = if true`) fails too. The privacy bullet now states what is
-  pinned -- the whole reply, for three encoders -- instead of citing a test name.
+  unconditional (`let text = if true`) fails too. The privacy bullet was reworded to
+  state what is pinned -- both halves of the tool result, for three encoders -- instead
+  of citing a test name; the entry below replaces that wording again, because "the
+  whole reply" is not what this test reads.
 
   **A test named after a claim is a claim about its coverage**, and a check on key
   names is not a check on the payload. Test count unchanged at 598 debug / 596
   release: one test rewritten, no behaviour and no format change.
+
+- **A claim about the reply pinned one layer below the reply.** `docs/privacy.md` said
+  that `estimate_reports_stats_without_the_payload` in `tools.rs` pins "returns the
+  statistics without the payload" over "the whole reply". That test reads the tool
+  `Outcome` — `outcome.structured` and `outcome.text` — and never a reply. `tools_call`
+  in `crates/tokfold-mcp/src/server.rs` wraps those two values as `structuredContent`
+  and `content[0].text`, adds `isError`, `resultType` and `_meta`, and serializes the
+  line; nothing it adds is input-derived, so the conclusion held — but it held through a
+  step no test took.
+
+  What the gap costs shows in what a leak there would be reported as. Adding
+  `.set("echo", arguments.cloned().unwrap_or(Value::Null))` to that envelope copies the
+  whole argument object, document included, into every tool reply. Eight of the 599
+  workspace tests then fail, and the seven besides the new one are all assertions about
+  size or about byte-exact quoted examples:
+  `the_engines_own_size_ceiling_is_unreachable_through_the_echoing_tool` in
+  `tests/contract.rs`, `every_quoted_reply_matches_the_reply_the_server_gives` and
+  `the_quoted_replies_anchor_only_part_of_what_they_quote` in `tests/quickstart.rs`, and
+  four in `tests/session.rs`. Both tests named after `estimate` pass. Make the same leak
+  conditional on a serialized argument object over 4 096 bytes and the two byte-exact
+  ones go green as well, along with two of the four in `tests/session.rs`, leaving the
+  size ceiling and the two large-reply ones. A regression that returned the document
+  would have been reported as a ratio, by a test whose subject is not exposure.
+
+  `an_estimate_reply_carries_no_part_of_the_document` sends `tools/call` for
+  `tokfold_estimate` and searches the raw string `handle_line` returns, so the envelope
+  and the serialization are inside the claim. Four documents carry the marker: 30 bytes
+  staying `passthrough`, the 252-byte indented one minified, twelve uniform rows
+  reaching E2, and 2 000 of those rows at 108 900 bytes, because a leak conditional on
+  size sails past three fixtures that are all under a kilobyte. Each reply must report
+  the `stats.encoder` its fixture was written for, and each document also goes to
+  `tokfold_compress`, whose reply must carry the marker — without that control, the
+  absence asserted above would hold just as well for a marker that can appear in no
+  reply at all. Hand-mutated before being believed:
+  `ESTIMATE => run_compress(arguments, true)` in `tools.rs` fails it too.
+
+  **A test is a claim about the layer it reads**, and a test one layer below a
+  documented claim does not pin it. The privacy bullet now names both tests and what
+  each one reads. Workspace tests 598 → 599 debug and 596 → 597 release, the delta
+  between them unchanged: one test added, no behaviour and no format change.
 
 ## [0.0.1] - 2026-08-29
 
