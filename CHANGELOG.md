@@ -3183,6 +3183,34 @@ documentation a previous fix falsified.
 
 ### Tests
 
+- **Four byte figures in a batch comment were measurements in prose, and one of them
+  described a limit the test does not run.** The comment on
+  `one_oversized_member_of_a_batch_is_refused_without_taking_the_others_down` quoted two
+  143-byte answers, a 130-byte refusal, an aggregate of 420 and the behaviour "at 400
+  the refusal for member 2 still fit, but it left member 3 too little room for its
+  answer", while the test asserted only that the aggregate fits its own 480-byte limit —
+  so every one of those numbers could have moved with the suite green, and the 400-byte
+  case was never run at all. The three widths and the derivation `143 + 130 + 143 + 4`
+  are now asserted, and the limits are pinned by a new
+  `the_room_left_for_the_last_member_costs_its_answer_then_its_id`: 420 is both the
+  aggregate and the smallest limit that fits it, at 419 member 3 trades its 143-byte
+  answer for the 130-byte refusal, which still carries its id, and at 400 the refusal is
+  answered id-less at 123 bytes. The prose understated the cost — member 3 loses its id,
+  not only its answer — and it asked for nothing expensive, being a `ping`.
+  Hand-mutating each of the four assertions fails exactly one of the two tests. The
+  comment's attribution is sound:
+  `a_larger_limit_can_collapse_a_batch_that_a_smaller_one_answered` does close on
+  `catalogue.len() - 2 == 2_521`. Behaviour unchanged; the batch's non-monotonicity in
+  the frame limit remains an open contract question.
+
+- **`0.0.1`'s catalogue width now has a derivation that needs no build.** That the tool
+  catalogue is 2 521 bytes as a batch member on the working tree and 2 411 in `0.0.1`
+  was measured against the published `tokfold-darwin-arm64` binary, which is the only
+  way to measure a reply. The difference is attributable from the source alone: all 110
+  bytes of it are `compress_tool`'s description, 473 bytes in `git show
+  87fb332:crates/tokfold-mcp/src/tools.rs` against 583 in the working tree (475 and 585
+  with the two quotes a JSON string adds), and no other string in the catalogue changed.
+
 - **The test named after the node budget's documentation carried the premise that
   documentation's own correction had deleted.** The `MAX_NODES` rustdoc once read "not
   even the densest *legal* line reaches it"; that was replaced with "no envelope the

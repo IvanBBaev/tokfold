@@ -1504,10 +1504,11 @@ mod tests {
     fn one_oversized_member_of_a_batch_is_refused_without_taking_the_others_down() {
         // Enough for two `ping` results and a refusal, not enough for the tool catalogue
         // (2 521 bytes as a batch member, pinned by
-        // `a_larger_limit_can_collapse_a_batch_that_a_smaller_one_answered`). Two
-        // 143-byte answers, a 130-byte refusal and the framing make 420; at 400 the
-        // refusal for member 2 still fit, but it left member 3 too little room for its
-        // answer.
+        // `a_larger_limit_can_collapse_a_batch_that_a_smaller_one_answered`). The three
+        // member widths are measured below and the aggregate is derived from them: two
+        // 143-byte answers, a 130-byte refusal and four bytes of framing -- the brackets
+        // and two separators -- make 420. What a limit below 420 costs the last member is
+        // pinned by `the_room_left_for_the_last_member_costs_its_answer_then_its_id`.
         const MAX: usize = 480;
         let mut server = Server::new().with_max_message_bytes(MAX);
         let batch = concat!(
@@ -1549,6 +1550,90 @@ mod tests {
             replies[1].get("id"),
             Some(&Value::Int(2)),
             "and it fails by id"
+        );
+        assert_eq!(
+            [
+                replies[0].to_string().len(),
+                replies[1].to_string().len(),
+                replies[2].to_string().len(),
+            ],
+            [143, 130, 143],
+            "the widths the aggregate is derived from"
+        );
+        assert_eq!(
+            frame.len(),
+            143 + 130 + 143 + 4,
+            "the brackets and two separators are the framing"
+        );
+        assert_eq!(frame.len(), 420);
+    }
+
+    /// What the room left for the last member of a batch buys it: its answer, then its id.
+    ///
+    /// The batch path fills against a running budget, so each member is answered with the
+    /// widest form that fits what its predecessors left. On the fixture of
+    /// `one_oversized_member_of_a_batch_is_refused_without_taking_the_others_down` that
+    /// gives three distinct shapes, and the widths in that test follow the boundaries
+    /// here: 420 is both the aggregate and the smallest limit that fits it; one byte less
+    /// and the last member trades its 143-byte answer for the 130-byte refusal, which
+    /// still carries its id; at 400 not even the id fits, and the caller of member 3 is
+    /// left with a refusal it cannot correlate.
+    ///
+    /// Member 3 asked for nothing expensive -- it is a `ping`. What it loses is the room
+    /// member 2 took for its own refusal, which is the batch behaviour recorded as an open
+    /// contract question for this server, not a bound this test endorses.
+    #[test]
+    fn the_room_left_for_the_last_member_costs_its_answer_then_its_id() {
+        let batch = concat!(
+            r#"[{"jsonrpc":"2.0","id":1,"method":"ping"},"#,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"},"#,
+            r#"{"jsonrpc":"2.0","id":3,"method":"ping"}]"#
+        );
+        let shape = |max: usize| {
+            let frame = Server::new()
+                .with_max_message_bytes(max)
+                .handle_line(batch)
+                .expect("a batch of requests is answered");
+            let replies = parse(&frame).expect("the answer parses");
+            let members = replies
+                .as_array()
+                .expect("a batch is answered with an array")
+                .iter()
+                .map(|reply| {
+                    (
+                        reply.get("id").map(std::string::ToString::to_string),
+                        reply.get("result").is_some(),
+                        reply.to_string().len(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            (frame.len(), members)
+        };
+        let id = |n: u8| Some(n.to_string());
+
+        assert_eq!(
+            shape(420),
+            (
+                420,
+                vec![(id(1), true, 143), (id(2), false, 130), (id(3), true, 143)]
+            ),
+            "420 is the aggregate and the smallest limit that fits it"
+        );
+        assert_eq!(
+            shape(419),
+            (
+                407,
+                vec![(id(1), true, 143), (id(2), false, 130), (id(3), false, 130)]
+            ),
+            "one byte less costs member 3 its answer, not yet its id"
+        );
+        assert_eq!(
+            shape(400),
+            (
+                400,
+                vec![(id(1), true, 143), (id(2), false, 130), (None, false, 123)]
+            ),
+            "at 400 member 3's refusal cannot carry its id"
         );
     }
 
