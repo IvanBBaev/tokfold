@@ -138,9 +138,20 @@ or a tool get back what was really there.
   `tokfold_decompress`. The archive may be corrupted, truncated, or deliberately
   forged with a recomputed checksum.
 - **A5 — a compromised dependency.** Code that arrives through the dependency graph.
+- **A6 — another local user on the same machine.** The attacker has an account on the
+  host and no more: they read, and where the mode allows it write, the files whose
+  permissions let them, but they do not run code as tokfold's user. This is the
+  shared-machine case that *The archive leaks through file permissions* and *Archive
+  path handling* reason about.
 
 Out of scope: an attacker who already runs code as the same user as tokfold. They
-can read the input without tokfold's help.
+can read the input without tokfold's help, which is the reason that case is excluded
+and A6 is not — a different local user has no such shortcut, so what tokfold leaves
+readable beside the input is a question about tokfold. Until 2026-10-15 this list
+stopped at A5 and this note covered only the same-user attacker, while the two
+sections named in A6 reasoned about "any local user" and "a shared machine" — a
+capability no entry on the list named, under a *Confidentiality* heading that
+labelled its rows A1 and A5.
 
 ## Threats and mitigations
 
@@ -219,7 +230,7 @@ What the code does, and does not do, about it:
   claim to reduce injection risk (`SECURITY.md`). Hostile text in the input reaches
   the rendering, and therefore the model, like any other text.
 
-### Confidentiality (A1, A5)
+### Confidentiality (A1, A5, A6)
 
 | Threat | Mitigation in code |
 |---|---|
@@ -322,21 +333,28 @@ input as a rejected document and clear the stale archive beside it.
   output against the input — do not apply on Windows**. What remains there is the
   `--input`/`--archive` pair, which `is_same_file` compares by `fs::canonicalize`
   (read from the source; not measured on Windows).
-- **The archive is created with the process umask, not with a restrictive mode.**
+- - **The archive is created with the process umask, not with a restrictive mode.**
   `write_file` uses `OpenOptions` with `write`, `create` and `truncate` and sets no
   mode. Measured on macOS against `cargo build --release --workspace --all-features`
-  (SHA-1 `ca2cfc4a…`, which commit `166873f` builds — measured 2026-10-14),
-  re-measured 2026-10-10: under umask `022` a new archive is
-  `0644`, which any local user can read; under `077` it is `0600`; and under `000` it
-  is `0666`, which any local user can also **write** — the member this bullet did not
-  name until that date. Overwriting an existing file re-applies nothing and keeps that
-  file's own mode: a pre-existing `0666` file stayed `0666` under umask `077`. The
-  archive holds the input verbatim, so on a shared machine the archive's permissions
-  are the user's responsibility. All four figures are pinned in
-  `crates/tokfold-cli/tests/cli.rs` by `a_new_archives_mode_is_what_the_umask_leaves`,
-  which drives each pass under `sh -c 'umask N; …'` because std cannot set a umask;
-  before it, no test in that file read a produced file's mode at all — its eight
-  `set_permissions` calls all write a mode onto a fixture.
+  (SHA-1 `ca2cfc4a…`, which commit `166873f` builds — measured 2026-10-14), re-measured
+  2026-10-10: under umask `022` a new archive is `0644`, which any local user can read;
+  under `077` it is `0600`; and under `000` it is `0666`, which any local user can also
+  **write** — the member this bullet did not name until that date. Overwriting an
+  existing file re-applies nothing and keeps that file's own mode: a pre-existing `0666`
+  file stayed `0666` under umask `077`. The mode is the umask's and not the input's:
+  with the input narrowed to `0600` the same three passes still gave `0644`, `0600` and
+  `0666`, so under `022` tokfold writes a world-readable copy of a document only its
+  owner could read, which is what A6 reaches. The archive holds the input verbatim, so
+  on a shared machine the archive's permissions are the user's responsibility. All four
+  figures and that independence are pinned in `crates/tokfold-cli/tests/cli.rs` by
+  `a_new_archives_mode_is_what_the_umask_leaves`, which drives each pass under `sh -c
+  'umask N; …'` because std cannot set a umask and which until 2026-10-15 left the input
+  at whatever the suite's own umask gave -- under the usual `022` that is `0644`, the
+  very mode the first pass expects of the archive, so no pass exhibited a widening and
+  the `0600`-to-`0644` case this bullet describes was absent from it; the three passes
+  refuted a copied mode then as now, because a copy would give one archive mode for all
+  three and they give three; before it, no test in that file read a produced file's mode
+  at all — its eight `set_permissions` calls all write a mode onto a fixture.
 - The archive write is not atomic (no temporary file and `rename`). An interrupted
   overwrite can leave a truncated file where a good archive was. `expand` refuses a
   truncated archive rather than decoding it wrongly, and the offset it names is
@@ -595,7 +613,7 @@ change to one of those places can falsify a sentence here. When one changes, re-
 matching entry rather than assuming it still holds.
 
 The rule does not reach *Attacker capabilities considered* or three of the six
-*Assets* rows, and cannot. A1 to A5, the out-of-scope note, and the rows for the
+*Assets* rows, and cannot. A1 to A6, the out-of-scope note, and the rows for the
 original bytes, the rendering's meaning and the availability of the host say why
 something matters, or what an attacker is assumed to control — not what the code
 does — so no change to the code falsifies them, and nothing triggers a re-read of

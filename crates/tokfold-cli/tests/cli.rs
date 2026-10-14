@@ -4386,6 +4386,19 @@ fn a_symlink_aimed_at_a_fifo_is_refused_by_the_write_path() {
 /// `077` gives `0600`, and `000` gives `0666` — world-*writable*, the member the
 /// bullet did not name — while an overwrite re-applies nothing, so a pre-existing
 /// `0666` file stays `0666` even under `077`.
+///
+/// The input is narrowed to `0600` first, so the `022` pass exhibits the case the
+/// threat model describes: a `0600` document copied verbatim into a `0644` archive
+/// is the whole of what *another local user on the same machine* (A6) reaches
+/// there. Until 2026-10-15 the input kept whatever this suite's umask gave it,
+/// which under the usual `022` is the `0644` the first pass already expects of the
+/// archive, so no pass widened anything and that case was absent from the file.
+/// What refutes a *copied* mode is not the narrowing and held without it: three
+/// umasks give three archive modes while the input's own mode never moves, and a
+/// copy would give one mode for all three. No single pass refutes it -- under `077`
+/// the archive's `0600` equals the narrowed input's mode -- so that assertion is
+/// over the set, and the narrowing is what makes the per-pass figures a claim about
+/// the input too.
 #[test]
 fn a_new_archives_mode_is_what_the_umask_leaves() {
     use std::os::unix::fs::PermissionsExt as _;
@@ -4393,6 +4406,13 @@ fn a_new_archives_mode_is_what_the_umask_leaves() {
     let dir = scratch_dir("archive_umask");
     let input = dir.join("good.json");
     fs::write(&input, COMPRESSIBLE_JSON).expect("write the compressible input");
+    // The archive's mode comes from the umask and not from the input's, and narrowing
+    // the input is what makes the figures below say so. Left at what this suite's own
+    // umask gives, the input is `0644` under the usual `022` -- the mode the first pass
+    // already expects of the archive -- so no pass would exhibit the widening the
+    // threat model describes.
+    fs::set_permissions(&input, fs::Permissions::from_mode(0o600))
+        .expect("narrow the input the archive must not copy");
 
     let quote = |path: &Path| {
         let text = path_str(path).to_string();
@@ -4420,12 +4440,13 @@ fn a_new_archives_mode_is_what_the_umask_leaves() {
     };
     let mode_of = |path: &Path| {
         fs::metadata(path)
-            .expect("stat the archive")
+            .expect("stat the file whose mode this reads")
             .permissions()
             .mode()
             & 0o777
     };
 
+    let mut observed = Vec::new();
     for (umask, expected) in [("022", 0o644), ("077", 0o600), ("000", 0o666)] {
         let archive = dir.join(format!("u{umask}.tkfd"));
         let out = drive(umask, &archive);
@@ -4439,7 +4460,25 @@ fn a_new_archives_mode_is_what_the_umask_leaves() {
             expected,
             "a new archive under umask {umask} carries the mode the umask leaves"
         );
+        assert_eq!(
+            mode_of(&input),
+            0o600,
+            "umask {umask}: the pass must leave the input's own mode alone, or the \
+             comparison below says nothing"
+        );
+        observed.push(mode_of(&archive));
     }
+    // The archive's mode is the umask's and not the input's. Per pass that is not
+    // visible -- under `077` the archive's `0600` is the narrowed input's mode as well
+    // -- so the claim lives in the set: a copied mode would be one value for all three
+    // passes, and these are three, while the input never moved off `0600`.
+    observed.sort_unstable();
+    observed.dedup();
+    assert_eq!(
+        (observed.len(), mode_of(&input)),
+        (3, 0o600),
+        "three umasks must give three archive modes while the input keeps its own"
+    );
 
     let existing = dir.join("existing.tkfd");
     fs::write(&existing, b"").expect("create the file the pass will overwrite");

@@ -4344,6 +4344,34 @@ documentation a previous fix falsified.
   does not rot, with the command that produces it. Documentation only: no code, no
   behaviour and no format change.
 
+- **A capability list falsified by two sections that reasoned past its end.**
+  `docs/threat-model.md`'s *Attacker capabilities considered* listed A1 to A5, and its
+  out-of-scope note excluded exactly one case: an attacker already running code as
+  tokfold's user. Meanwhile *The archive leaks through file permissions* reasoned about
+  what "any local user can read" and the *Archive path handling* umask bullet about "a
+  shared machine" -- an attacker that is neither A1 nor A5, that no entry on the list
+  named, under a heading labelling its rows `(A1, A5)`. A6, another local user on the
+  same machine, is now on the list; the out-of-scope note says why the same-user case is
+  excluded and A6 is not; the heading reads `(A1, A5, A6)`; and the staleness section's
+  enumeration runs A1 to A6. Measured against the same release build the bullet already
+  cites: with the input narrowed to `0600` the three passes still give `0644`, `0600`
+  and `0666`, so under the usual `022` tokfold writes a world-readable copy of a
+  document only its owner could read, which is the whole of what A6 reaches there.
+  `a_new_archives_mode_is_what_the_umask_leaves` had left the input at whatever the
+  suite's own umask gave it -- under `022` the `0644` the first pass already expects of
+  the archive, so no pass exhibited that widening -- and it now narrows the input and
+  asserts every pass leaves it narrowed. Two corrections inside this entry's own work
+  were false until they were measured: a per-pass "the archive's mode is not the
+  input's" is refuted by umask `077`, where the archive's `0600` *is* the narrowed
+  input's mode, so that claim is asserted over the set of three; and the narrowing is
+  not what refutes a *copied* mode at all -- three umasks giving three archive modes did
+  that before the change and at any ambient umask -- it is what makes the per-pass
+  figures a claim about the input too. The permissions row is deliberately left anchored
+  only through a section pointer and the *Assets* counts untouched, so the entries
+  quoting those counts stay true, and A6 is written as a capability and not as tokfold
+  behaviour, so the staleness section's "not what the code does" holds. Documentation
+  and one test only: no code, no behaviour and no format change.
+
 ### Tests
 - **The offset in the node-budget refusal was pinned nowhere, under a comment that
   mis-stated the message.** `an_over_budget_message_reports_the_node_limit` asserted
