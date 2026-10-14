@@ -751,6 +751,32 @@ released says so, and names what `0.0.1` does in the same case.
 
 ### Documentation
 
+- **The module that owns the varint decoder enumerated two of its four faults.**
+  `read_uleb128` in `crates/tokfold-core/src/format.rs` answers four distinct inputs
+  with `DecompressError::Corrupt` — a byte the archive ends before, an overlong
+  spelling, a value too large for `u64`, and a field that spends all ten bytes without
+  clearing the continuation bit — and its own rustdoc singles out the fourth as "not an
+  overflow and not a missing byte". Two other enumerations in the same module said
+  two: the module-level bullet on multi-byte integers ("overlong and overflowing
+  encodings are rejected ... never silently normalized") and `Header::decode`'s
+  failure list ("an overlong or overflowing varint"). The module bullet now names all
+  four; `Header::decode`'s varint bullet names the three value faults beside its
+  existing "a field truncated at its boundary" bullet. Both now say that only the
+  all-ten-bytes fault is reported outside the field, one past it at byte 20 — exact
+  because `read_uleb128` has a single production call site, at `ORIGINAL_LEN_OFFSET` —
+  and both point at `read_uleb128`, which derives every offset.
+- **The derivative sites were already correct, which is the shape worth recording.**
+  `error.rs`'s `Corrupt` rustdoc and `crates/tokfold-cli/README.md` each enumerate all
+  four, each with the qualifier that only a tenth byte of `0x80` or `0x81` reaches 20,
+  because overflow is checked before the continuation bit. The correction that wrote
+  those two left the owning module at its pre-correction wording, so the downstream
+  documents were true while their source was not. No test changed:
+  `format::tests::leb128_overflow_rejected` already pins every offset these sentences
+  describe — 19 for an overflowing tenth byte, for nine `0x80` bytes and a `0x82`, for
+  ten `0xFF` bytes and for a terminating zero, and 20 for a tenth byte of `0x80` or
+  `0x81` — so the drift was in prose alone, with the pin already in place. All four
+  arms are in the initial commit `9e1e1f5` and in 0.0.1's source `87fb332`, so no
+  published behaviour changed.
 - **`docs/privacy.md` gave itself two different rules for its own honesty, and the
   stricter one was false.** The header said "Every statement names the code that
   makes it true, **or the measurement that showed it**"; *Keeping this document true*

@@ -10,8 +10,14 @@
 //! Invariants this module upholds:
 //!
 //! * **All multi-byte integers are little-endian.** `original_len` is an unsigned
-//!   `LEB128` varint (max 10 bytes); overlong and overflowing encodings are rejected
-//!   as [`DecompressError::Corrupt`], never silently normalized.
+//!   `LEB128` varint (max 10 bytes). Four faults are rejected as
+//!   [`DecompressError::Corrupt`], never silently normalized: a byte the archive ends
+//!   before, an overlong spelling, a value too large for `u64`, and a field that
+//!   spends all ten bytes without clearing the continuation bit. The last is neither
+//!   an overflow nor a missing byte — ten `0x80` bytes carry no value bits at all —
+//!   and it is the only one reported outside the field, one past it, which for
+//!   `original_len` is byte 20. `read_uleb128` derives every offset and
+//!   `leb128_overflow_rejected` pins them.
 //! * **Encoding is deterministic and bit-stable.** The same [`Header`] produces the
 //!   same bytes on every call and every build. Nondeterministic output would
 //!   invalidate a provider's prompt cache.
@@ -232,7 +238,9 @@ impl Header {
     /// * any other unshipped version, or a field truncated at its boundary →
     ///   [`DecompressError::Corrupt`];
     /// * a set reserved flag bit → [`DecompressError::ReservedBitsSet`];
-    /// * an overlong or overflowing varint → [`DecompressError::Corrupt`].
+    /// * a varint that is overlong, overflows `u64`, or spends all ten bytes with the
+    ///   continuation bit still set → [`DecompressError::Corrupt`]. Only the third is
+    ///   reported outside the field, at byte 20; see `read_uleb128`.
     pub fn decode(archive: &[u8]) -> Result<(Self, usize), DecompressError> {
         if archive.get(0..MAGIC.len()) != Some(MAGIC.as_slice()) {
             return Err(DecompressError::BadMagic);
