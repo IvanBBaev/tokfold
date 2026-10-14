@@ -602,21 +602,27 @@ mod tests {
         }
     }
 
-    /// The header's byte count, which the crate docs quote as "43 to 46 bytes — 47
-    /// for an original of 2^28 bytes or more". It is not a constant and no constant
-    /// in this module states it: the layout is ten fixed bytes, then the
-    /// `original_len` varint, then the 32-byte checksum, so a header is
-    /// `42 + varint` wide and the varint's width is the only variable. Measured at
-    /// every boundary it has, and paired with `decode`'s payload offset, which must
-    /// be the same number.
+    /// The header's byte count, which the crate docs state as "a header of 43 to 46
+    /// bytes — 47 once the original is 2^28 bytes or larger" and the crate README
+    /// restates in its own words. It is not a constant and no constant in this module
+    /// states it: the layout is ten fixed bytes, then the `original_len` varint, then
+    /// the 32-byte checksum, so a header is `42 + varint` wide and the varint's width
+    /// is the only variable. Measured at every boundary it has, and paired with
+    /// `decode`'s payload offset, which must be the same number.
     ///
-    /// Two ceilings are easy to confuse. [`ULEB128_MAX_BYTES`] would allow ten bytes
-    /// of varint, hence a 52-byte header, for an arbitrary `u64`; but `original_len`
-    /// is an input length and `compress` rejects an input longer than `u32::MAX`, so
-    /// no archive this crate writes can carry more than five varint bytes. 47 is
-    /// therefore the ceiling, and 46 is the ceiling under the default
-    /// `max_input_bytes` of 16 MiB, which is why the docs name 47 as needing a
-    /// raised one.
+    /// Two ceilings are easy to confuse, and both are reachable. [`ULEB128_MAX_BYTES`]
+    /// allows ten bytes of varint, hence a 52-byte header, for an arbitrary `u64`;
+    /// `original_len` is an input length and `compress` rejects an input longer than
+    /// `u32::MAX`, so no archive *`compress`* writes carries more than five varint
+    /// bytes. 47 is therefore the ceiling of the compress path, and 46 its ceiling
+    /// under the default `max_input_bytes` of 16 MiB, which is why the docs name 47 as
+    /// needing a raised one. Neither number is a property of the format or of this
+    /// module's API: [`Header::new`] takes a `u64`, so a caller writes 48 bytes at
+    /// 2^35 and 52 at 2^63, and [`Header::decode`] reads those back with a payload
+    /// offset to match -- the rows below the band are what tokfold emits, the rows
+    /// above it are what a caller can hand it. Nothing round-trips up there:
+    /// `a_well_formed_ten_byte_length_is_refused_at_the_length_field` in `compressor`
+    /// pins that refusal, at the length field rather than in the varint.
     #[test]
     fn header_byte_count_at_every_varint_boundary() {
         for (original_len, expected) in [
@@ -631,6 +637,15 @@ mod tests {
             (268_435_455, 46),         // 2^28 - 1
             (268_435_456, 47),         // 2^28, the first length needing a raised limit
             (u64::from(u32::MAX), 47), // the longest input the parser addresses
+            // Above the compress path's band, and reachable only by a caller
+            // building a header by hand, because `Header::new` takes a `u64`. Each
+            // row is the first length of its width, seven bits above the one before.
+            (1 << 35, 48),
+            (1 << 42, 49),
+            (1 << 49, 50),
+            (1 << 56, 51),
+            (1 << 63, 52),
+            (u64::MAX, 52),
         ] {
             let header = Header::new(1, 0, Flags::default(), original_len, [0u8; CHECKSUM_LEN]);
             let mut buf = Vec::new();

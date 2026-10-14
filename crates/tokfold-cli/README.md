@@ -257,9 +257,12 @@ outcome of the pass:
   ULEB128, so the header gains a byte for every 7 bits the original grows — 43 bytes
   while the original is under 128, 44 under 16 384, 45 under 2 097 152, and 46 from
   there up to this binary's 16 MiB input ceiling, which is where the ladder ends. The
-  field can occupy ten bytes, but the tenth needs an original of 2^63 bytes, and no path
-  produces one: an embedder who raises the engine's `max_input_bytes` stops at 47,
-  because the parser refuses anything past `u32::MAX`. Subtracting the input size from
+  field can occupy ten bytes, but the tenth needs a declared length of 2^63, and no
+  input to this binary produces one: an embedder who raises the engine's
+  `max_input_bytes` stops at 47, because the parser refuses anything past `u32::MAX`.
+  An embedder who builds a header through `Header::new` instead passes that length
+  directly and can write any width up to 52, which `expand` refuses at the length
+  field. Subtracting the input size from
   the archive size measures it — 43, 44, 45, 46 and 46 for originals of 127, 128,
   2 097 151, 2 097 152 and 16 777 216 bytes. The magic is a necessary condition for the
   hazard, not a sufficient one, and the check is over-inclusive in that direction on

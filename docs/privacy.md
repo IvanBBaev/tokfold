@@ -234,11 +234,17 @@ stale-archive deletion and no same-file guards (see
   `crates/tokfold-cli/README.md` derives that ladder and gives the five measured
   sizes. Do not read the range off `crates/tokfold-core/src/format.rs`'s module
   docs: they give the field layout, in which the length is 1 to 10 bytes, so the
-  *layout* admits 43 to 52. Nothing tokfold writes reaches the top of that, and 48 to
-  52 is unreachable: `compress` rejects an input longer than `u32::MAX`, whose
-  ULEB128 encoding is five bytes, so 47 is the widest header a length can ever be
-  written into. `format.rs` draws that distinction itself, in the rustdoc that pins
-  `(u64::from(u32::MAX), 47)` as "the longest input the parser addresses".
+  *layout* admits 43 to 52. Nothing tokfold writes reaches the top of that:
+  `compress` rejects an input longer than `u32::MAX`, whose ULEB128 encoding is five
+  bytes, so 47 is the widest header a length `compress` can be made to write. The
+  wider headers are not unreachable, only unreachable through compression —
+  `Header::new` in `crates/tokfold-core/src/format.rs` takes a `u64`, so an embedder
+  writes 48 bytes at 2^35 and 52 at 2^63, and `expand` refuses such an archive at its
+  length field. Reading a plaintext out of an archive you did not write therefore
+  means skipping the header by the payload offset `Header::decode` reports, not by a
+  constant. `format.rs` draws the distinction between the two ceilings itself, in the
+  rustdoc that pins `(u64::from(u32::MAX), 47)` as "the longest input the parser
+  addresses".
 - Any secret in the input is in the archive, readable with any text viewer. Treat the
   archive exactly as you would treat the input.
 - The header's SHA-256 is a checksum of the original. It detects corruption, but it

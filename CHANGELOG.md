@@ -753,6 +753,54 @@ released says so, and names what `0.0.1` does in the same case.
   second source of truth.
 
 ### Documentation
+- **A five-byte varint ceiling was stated as a property of every archive.** Four tracked
+  files gave 47 bytes as the widest header that can exist, each in its own words:
+  `crates/tokfold-core/src/lib.rs` ("no archive can carry a sixth varint byte"), the
+  rustdoc on `header_byte_count_at_every_varint_boundary` in
+  `crates/tokfold-core/src/format.rs` ("no archive this crate writes can carry more than
+  five varint bytes. 47 is therefore the ceiling"), `docs/privacy.md` ("48 to 52 is
+  unreachable ... 47 is the widest header a length can ever be written into") and
+  `crates/tokfold-cli/README.md` ("the tenth needs an original of 2^63 bytes, and no
+  path produces one"). The reason each of them gives is true and is about `compress`:
+  the parser refuses an input longer than `u32::MAX`, whose ULEB128 encoding is five
+  bytes. The conclusion is about the format, and the format does not enforce it.
+  `format::Header::new` is a `pub const fn` taking `original_len: u64`, `encode_into`
+  and `decode` are `pub`, and `Header`'s own rustdoc tells a caller to construct through
+  `Header::new` — so an embedder writes any width the varint allows. Measured through
+  that route, writing a header and reading it back, each width paired with the payload
+  offset `decode` reports: 48 bytes at 2^35, 49 at 2^42, 50 at 2^49, 51 at 2^56, 52 at
+  2^63 and 52 at `u64::MAX`. The first of those is not `u32::MAX + 1`, which the
+  arithmetic suggests and which measures 47: five ULEB128 bytes reach 2^35 - 1, so 47
+  covers the whole compress band and one bit more. Those six widths are now rows in the
+  same test, under a comment separating what tokfold emits from what a caller can hand
+  it, and nothing round-trips up there —
+  `a_well_formed_ten_byte_length_is_refused_at_the_length_field` in `compressor` pins
+  the refusal, at the length field rather than in the varint. The format is read as
+  input and not only written as output, which is what makes the distinction visible from
+  outside the crate: a 43-byte header built by `Header::new` with a declared length of
+  5, the real `SHA-256` of `hello` and `hello` as the payload expands at exit `0` and
+  emits the five bytes on both builds — the working tree's release binary (SHA-1
+  `30e9393951f14769ecd0b2279a064d86aac4097a`) and a release build of `0.0.1`'s source at
+  `87fb332` (SHA-1 `4e31298812bf577daa690cd758fcc56103fc463b`), on macOS Darwin 27.0.0
+  arm64. A header whose declared length is out of the compress band is refused on both,
+  and the difference in message is the one the entry headed "A truncated archive is
+  reported as framing corruption, not as a failed integrity check" records: `archive
+  corrupted at byte 10` on the working tree, where `0.0.1` reaches `ChecksumMismatch`
+  and prints `integrity checksum mismatch`. A declared length that disagrees with the
+  payload following it is the branch a truncated copy takes, which is the row
+  `docs/threat-model.md` tabulates as "no field — the payload is short". All four files
+  now say whose ceiling 47 is, that `ULEB128_MAX_BYTES` allows ten varint bytes and so a
+  52-byte header, and that `Header::new` takes a `u64`. Two smaller claims went with it:
+  the same rustdoc introduced "43 to 46 bytes — 47 for an original of 2^28 bytes or
+  more" as what "the crate docs" state, and those are the words of neither document —
+  `lib.rs` writes "a header of 43 to 46 bytes — 47 once the original is 2^28 bytes or
+  larger" and the crate README restates it in its own wording, so the rustdoc now quotes
+  `lib.rs` verbatim and credits the README separately; and the CLI README's tenth byte
+  "needs an original of 2^63 bytes", which no input to this binary can be, where what it
+  needs is a declared length of 2^63, which is a number a caller passes. Behaviour and
+  wire format unchanged.
+  **A ceiling is a claim about the path that enforces it: name the path, or it reads as
+  a property of the format.**
 - **A guard's "never refused" named three things tokfold refuses.** The entry on
   `--archive` aimed at its own standard output closed with `A pipe, a terminal and
   /dev/null are not regular files and are never refused` — a sentence about the
