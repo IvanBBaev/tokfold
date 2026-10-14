@@ -772,6 +772,33 @@ released says so, and names what `0.0.1` does in the same case.
   is worth recovering on every path that refuses a message *before* it is a `Request`"
   while naming the two callers that have a value to read; it now says which paths that
   covers, because the parser's own refusals are not among them.
+- **A category claim about three MCP tool schemas was evidenced on one of them.**
+  `docs/threat-model.md`'s *MCP transport and protocol* bullet said "the tool schemas
+  declare `additionalProperties: false`" and "an unknown argument key is accepted", then
+  measured one `tokfold_estimate` call. The acceptance is a property of the routing, not
+  of a tool: `tools::call` sends all three through one `object_arguments`, which rejects
+  only an `arguments` that is neither an object nor null, after which each tool reads
+  what it needs by key (`required_str`, `optional_profile`). The first draft of this
+  correction said that nothing enumerates the keys of that object and that there was
+  therefore no point at which an unexpected one could be noticed; `has_duplicate_key`
+  refutes both halves, since `parse` sorts every object's keys and an `arguments`
+  carrying `text` twice is answered `-32700` with "duplicate key in object" before any
+  tool runs. The key set is examined; what no site asks is whether a key is one the
+  schema names. The bullet now publishes that derivation together with a measurement of
+  all three tools, each beside the same call without the key, against `cargo build
+  --release -p tokfold-cli` on macOS arm64 (SHA-1 `637795cf…`, rustc 1.97.0):
+  `tokfold_estimate`, `tokfold_compress` and `tokfold_decompress` each returned a result
+  equal to its control in every field, and `tokfold_decompress` still restored its
+  archive. The three declaring sites are exactly `compress_tool`, `decompress_tool` and
+  `estimate_tool`, which are also the only sites in `tools.rs` that set the key apart
+  from the assertion in `every_catalogue_entry_carries_the_fields_a_client_needs`; the
+  bullet now names that test and `the_catalogue_lists_every_tool_in_a_fixed_order` for
+  what is pinned — the declaration on every catalogue entry, and the catalogue's length
+  against `NAMES` — and says that the acceptance is pinned by nothing, because enforcing
+  it is the open question and a test would entrench the answer.
+  `crates/tokfold-mcp/README.md`'s copy of the claim is left as it stands: it is a
+  one-clause example under "**Experimental** means", it enumerates no schema and cites
+  no measurement, so the rewrite does not falsify it.
 - **"The only file the CLI writes" was false, and said so in a privacy document.**
   `docs/threat-model.md`'s *Archive path handling (CLI)* opened with that sentence, and
   the same section's own bullet on the same-file guards documents

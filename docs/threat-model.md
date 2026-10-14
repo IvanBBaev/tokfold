@@ -406,10 +406,28 @@ They are listed so that nobody mistakes them for undiscovered defects.
   null id is not an address, and `properties.rs` pins the absence as what id-less means.
   A request whose id alone is too wide for an addressed refusal reaches the same outcome
   by the other route (`MAX_MESSAGE_BYTES` rustdoc in `crates/tokfold-mcp/src/lib.rs`).
-- **`additionalProperties: false` is declared but not enforced.** The tool schemas
-  declare it (`compress_tool`, `decompress_tool` and the estimate schema in
-  `tools.rs`), but an unknown argument key is accepted: a `tokfold_estimate` call
-  carrying `"bogus":7` was answered normally (measured).
+- **`additionalProperties: false` is declared but not enforced.**
+  All three tool schemas declare it — `compress_tool`, `decompress_tool` and
+  `estimate_tool` in `tools.rs`, which are also the only three sites in that file that
+  set the key — and all three tools accept an unknown argument key. That holds by
+  construction rather than by accident: `tools::call` routes every tool through
+  `object_arguments`, which rejects only an `arguments` that is neither an object nor
+  null, and each tool then reads what it needs by key (`required_str`,
+  `optional_profile`). The key set is not unexamined on the way in — `parse` sorts every
+  object's keys and refuses a duplicate, so an `arguments` carrying `text` twice is
+  answered `-32700` with "duplicate key in object" after the byte offset, before any
+  tool runs. What no site asks is whether a key is one the schema names, and that is the
+  only question that would reject an extra one. Measured on all three tools, each beside
+  the same call without the key, against `cargo build --release -p tokfold-cli` on macOS
+  arm64 (SHA-1 `637795cf…`, rustc 1.97.0): adding `"bogus":7` to `tokfold_estimate`,
+  `tokfold_compress` and `tokfold_decompress` gave a result equal to its control in
+  every field, and the `tokfold_decompress` call still restored its archive. The
+  declaration itself is held on every tool —
+  `every_catalogue_entry_carries_the_fields_a_client_needs` asserts it over the whole
+  catalogue, which is those three functions, and
+  `the_catalogue_lists_every_tool_in_a_fixed_order` ties that catalogue's length to
+  `NAMES` — but nothing pins the acceptance, because enforcing it is the open question
+  and a test would entrench the answer.
 - **A valid-JSON input that saves nothing is reported as compressed.**
   `tokfold_compress` on `{"a":1}` returned `"compressed": true` with encoder
   `passthrough` and a rendering behind a `⟦tkfd:v1:raw⟧` marker (measured).
