@@ -61,10 +61,15 @@ stale-archive deletion and no same-file guards (see
 - The only file it opens *to write* is the one you name with `--archive` — or, when
   that name is a symlink, the file it resolves to. It opens one other file by name and
   only reads it: the one you name with `--input`, where a symlink is followed too. The
-  archive is read as well as written — four bytes of it, on the one path that clears a
-  stale archive. Until 2026-10-14 this bullet, and two more below it, said "opens by
-  name", which the input read falsifies, and none of the three said the archive is read
-  at all — see *What the CLI reads*.
+  archive is read as well as written — at most four bytes of it, on the one path that
+  clears a stale archive, and on one spelling of that path none at all. Until
+  2026-10-14 this bullet said "opens by name", which the input read falsifies, and
+  neither it nor the two bullets `7a005e3` rescoped alongside it — *What the CLI
+  writes* on "the only function that opens a file to write it", *Caches and temporary
+  files* on "no file of its own other than the `--archive` path" — said the archive is
+  read at all. The quoted phrase was this bullet's alone: the note that attributed it
+  to all three was written by `7a005e3` itself, and only its last clause held of the
+  other two. See *What the CLI reads*.
 - A redirect is the other way your data reaches disk: `tokfold expand > restored.json`
   writes your original bytes into `restored.json` verbatim. tokfold never names that
   file and never sets its mode; your shell does both.
@@ -262,18 +267,19 @@ stale-archive deletion and no same-file guards (see
   (`ensure_archive_is_not_the_input` and `ensure_output_is_not_the_input` in `main.rs`).
   It reads *bytes* out of that file on one path only: when the input is rejected,
   `clear_stale_archive` has `inspect_archive_slot` decide whether a previous archive
-  there must be cleared, and on the plain path that function opens the *resolved*
-  target read-only and reads its first four bytes (the `TKFD` magic) sequentially,
-  from a fresh handle. A
+  there must be cleared, and on the plain path that function opens the *resolved* target
+  read-only and reads up to four bytes (the `TKFD` magic) sequentially, from a fresh
+  handle — fewer if the file is shorter than the magic, which it answers as a foreign
+  file and leaves alone (*Caches and temporary files* lists the measured slots). A
   successful pass reads nothing there — it truncates the file and writes over it.
-  Measured against a release build of this tree (`cargo build --release -p
-  tokfold-cli`, SHA-1 `637795cf…`, macOS Darwin 27.0.0 arm64, rustc 1.97.0) with a
-  12-byte `TKFD`-prefixed file at mode `0200` — writable, not readable — at the
-  `--archive` path: a valid input exits `0` and overwrites it, while a rejected input
-  exits `2` with "inspecting the archive path b.tkfd, which resolves to <path>:
-  Permission denied (os error 13)" and nothing on standard output. Until 2026-10-14
-  this bullet said those four bytes are read "when `--archive` is given", which every
-  successful pass falsifies.
+  Measured against a release build of this tree (`cargo build --release -p tokfold-cli`,
+  SHA-1 `637795cf…`, macOS Darwin 27.0.0 arm64, rustc 1.97.0) with a 12-byte
+  `TKFD`-prefixed file at mode `0200` — writable, not readable — at the `--archive`
+  path: a valid input exits `0` and overwrites it, while a rejected input exits `2` with
+  "inspecting the archive path b.tkfd, which resolves to <path>: Permission denied (os
+  error 13)" and nothing on standard output. Until 2026-10-14 this bullet said those
+  four bytes are read "when `--archive` is given", which every successful pass
+  falsifies.
 - **On one spelling those four bytes may never be read at all.** On macOS a
   `--archive` path whose resolved form falls under `/dev/fd` is routed to
   `inspect_descriptor_slot` instead, which works on the path *as typed* — the only
@@ -402,18 +408,38 @@ stale-archive deletion and no same-file guards (see
 
 - **None at run time.** The CLI opens no file of its own other than the two you name —
   the `--archive` path and the `--input` path, or, through a symlink at either, that
-  path's target. The input is only ever read; the archive is written, and on a rejected
-  input read as well, four bytes of it (*What the CLI reads*). Until 2026-10-14 this
-  bullet gave each path a single verb, "the `--archive` path it writes and the
-  `--input` path it reads", which the archive's own read falsifies. Neither library
-  crate opens a file by name at all: `File::open`, `OpenOptions` and `fs::write` appear
-  nowhere in `tokfold-core`'s or `tokfold-mcp`'s sources. `serve_stdio` in
-  `tokfold-mcp` does build two `std::fs::File` values, but from duplicates of the
-  descriptors it inherits on standard input and standard output, not from a path. A
-  file you
-  redirect standard output into is not a temporary file of tokfold's — it is where you
-  asked the output to go — but it is on disk, and on `expand` it holds your original
-  bytes verbatim.
+  path's target. The input is only ever read. The archive takes four verbs, not the two
+  this bullet used to give it: a successful pass truncates it and writes the archive; a
+  rejected pass opens it and reads **at most** four bytes, the `TKFD` magic (*What the
+  CLI reads*); if those four bytes are the magic the file is **deleted** (*What the CLI
+  writes*); and on the one spelling routed to `inspect_descriptor_slot` a regular file
+  there is opened for *writing* first — a probe that writes nothing, and that answers an
+  unwritable slot with nothing read at all. "Four bytes" is a ceiling and not a figure:
+  `read_exact` fills what it can and then reports `UnexpectedEof`, which that function
+  answers `Foreign`. Measured against the release build named under *What the CLI reads*
+  (`637795cf…`) with a 2-byte non-JSON input, each slot a regular file at the
+  `--archive` path: content of 0, 2 and 3 bytes is each left untouched at exit `0` ("it
+  is not a tokfold archive"), a 4-byte `TKFD` is removed at exit `0`, and a *directory*
+  there is opened and the read then fails outright, ending the pass at exit `2` ("Is a
+  directory (os error 21)") with the rejected document lost. Until 2026-10-14 this
+  bullet gave each path a single verb, "the `--archive` path it writes and the `--input`
+  path it reads", which the archive's own read falsifies; the commit that corrected it,
+  `b5aad2a`, wrote the read in as an exact four bytes and left the deletion and the
+  write probe out, and wrote the same figure into the *Summary* bullet and into *What
+  the CLI reads* as well; `146393b` corrected the second of those for the branch that
+  reads nothing and left its figure unqualified. All three now say *at most*. Neither
+  library crate opens a file by name at all — and not only under the three spellings
+  this bullet used to cite (`File::open`, `OpenOptions`, `fs::write`), which is a claim
+  about three spellings and not about opening a file: `grep -rn 'fs::'
+  crates/tokfold-core/src crates/tokfold-mcp/src` returns one line, `use std::fs::File`
+  in `stdio.rs`, and `File` over the same two paths returns that line plus the two
+  `File::from(…)` calls beside it and nothing else, while the control that both paths
+  reach anything at all is `pub fn`, which returns 5 files in the first path and 7 in
+  the second. `serve_stdio` in `tokfold-mcp` does build two `std::fs::File` values, but
+  from duplicates of the descriptors it inherits on standard input and standard output,
+  not from a path. A file you redirect standard output into is not a temporary file of
+  tokfold's — it is where you asked the output to go — but it is on disk, and on
+  `expand` it holds your original bytes verbatim.
 - **A `cargo test` run is a different story, and the *None at run time* bullet is
   about the shipped binary.** The workspace's own sources name a temporary directory in two
   places: `std::env::temp_dir`, in the `#[cfg(test)]` module `archive_identity_tests`

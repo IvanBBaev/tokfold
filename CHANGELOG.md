@@ -4135,6 +4135,46 @@ documentation a previous fix falsified.
   in the threat model — and this was the only false one; the same sweep returns 29
   after this change, the two new ones in the bullet added here. Measured 2026-10-14.
   Documentation only: no code, no behaviour and no format change.
+
+- **One claim written short at three sites, and a grep standing in for the claim it
+  cannot make.** *Caches and temporary files* gave the archive two verbs — written by a
+  successful pass, read by a rejected one — and put the read at an exact four bytes. The
+  archive takes four: a successful pass truncates it and writes; a rejected pass opens
+  it and reads **at most** four bytes, the `TKFD` magic; if those four bytes are the
+  magic the file is **deleted**; and on the one spelling routed to
+  `inspect_descriptor_slot` a regular file there is opened for *writing* first, a probe
+  that writes nothing and answers an unwritable slot with nothing read at all. "Four
+  bytes" is a ceiling and not a figure, and the derivation is `read_exact`'s own
+  contract: it fills what it can and then reports `UnexpectedEof`, which that function
+  answers `Foreign`. Measured against a release build of this tree (`cargo build
+  --release -p tokfold-cli`, SHA-1 `637795cf…`, macOS Darwin 27.0.0 arm64, rustc 1.97.0)
+  with a 2-byte non-JSON input and each slot a regular file at the `--archive` path: 0,
+  2 and 3 bytes of content are each left untouched at exit `0` ("it is not a tokfold
+  archive"), a 4-byte `TKFD` is removed at exit `0`, and a *directory* there is opened
+  and the read then fails outright, ending the pass at exit `2` ("Is a directory (os
+  error 21)") with the rejected document lost.
+
+  The figure was written at three sites by one commit. `b5aad2a` corrected the two-verb
+  sentence, wrote the read in as an exact four bytes, left the deletion and the write
+  probe out, and wrote the same figure into the *Summary* bullet and into *What the CLI
+  reads*; `146393b` corrected the second of those for the branch that reads nothing and
+  left its own figure unqualified — a correction carrying the very number it was
+  correcting. All three now say *at most*. The *Summary* bullet also attributed its own
+  quoted phrase, "opens by name", to the two bullets `7a005e3` rescoped alongside it,
+  and neither of them carries it: that note was written by `7a005e3` itself, and only
+  its last clause — that none of the three said the archive is read at all — held of the
+  other two.
+
+  And the claim that neither library crate opens a file by name rested on three
+  spellings (`File::open`, `OpenOptions`, `fs::write`), which is a claim about three
+  spellings and not about opening a file. It is now a sweep: `grep -rn 'fs::'
+  crates/tokfold-core/src crates/tokfold-mcp/src` returns one line, `use std::fs::File`
+  in `stdio.rs`, and `File` over the same two paths returns that line plus the two
+  `File::from(…)` calls beside it and nothing else — with the control that both paths
+  reach anything at all, `pub fn`, returning 5 files in the first and 7 in the second. A
+  control measured over only one of the two paths would have certified nothing about the
+  other. Measured 2026-10-14. Documentation only: no code, no behaviour and no format
+  change.
 ### Tests
 - **The offset in the node-budget refusal was pinned nowhere, under a comment that
   mis-stated the message.** `an_over_budget_message_reports_the_node_limit` asserted
