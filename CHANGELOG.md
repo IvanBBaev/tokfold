@@ -3553,6 +3553,50 @@ documentation a previous fix falsified.
   below 32 MiB", "descriptors above 2", "limits approached from above"); and every
   reference the deletion test accepts.
 
+- **Eight sites in `docs/threat-model.md` named the build they were measured against
+  by a SHA-1 and described it as the current tree's.** Six said "the built binary" or
+  "a release build of the working tree" and named `834c01f2…`, while two others in the
+  same document named `637795cf…` for the same `cargo build --release -p tokfold-cli`,
+  so the document contradicted itself about what one command produces. The hashes are
+  not the error: a SHA-1 identifies *bytes*, and identical bytes are the same binary,
+  so the fix is to name the commit that reproduces them rather than to re-run six
+  behaviour measurements. The recipe is `git archive <commit> | tar -x -C <dir>`
+  followed by `cargo build --release -p tokfold-cli` with that directory's own
+  `--manifest-path` and `--target-dir`, and on macOS Darwin 27.0.0 arm64 with rustc
+  1.97.0 it gives `834c01f2be12ebacab13057ed40aa570742dcddc` at 1 261 712 bytes for
+  `166873f` and `637795cf1c33ddb91c414c04c4a8409633d4765e` at 1 262 112 for `ae065a8`
+  (both measured 2026-10-14, each in a directory outside the repository and with its
+  own `target/`, so neither value depends on where it is built). Each of the eight now
+  names its commit, and *Where this document can go stale* carries the derivation, the
+  recipe and what was false.
+
+  **A rule stated for every claim above was unable to reach this one.** That section
+  anchors a claim to the function, file or `--help` entry that holds it, or to a
+  section of the document that does — nine through a section alone — and not one of
+  those anchors is a byte value, so nothing could go stale when the bytes moved. Its
+  own scope note had already been narrowed twice, for *Attacker capabilities
+  considered* and for the rows that say why something matters; this is the third
+  kind of claim it does not reach. The document header was
+  falsified by the fix in the same breath, saying the claims were read back "against
+  the working tree, not against a commit"; it now carves out the ones measured against
+  a built binary.
+
+  **The first draft of the new rule was this repository's signature defect, and was
+  deleted before it was written.** It read "any commit that touches compiled code
+  moves them again", which is false as measured: `bfc47ec`, `980ff80` and `ae065a8`
+  all build to `637795cf…` at 1 262 112 bytes, across 94 changed lines in four files
+  under `crates/*/src` — `tokfold-core/src/format.rs`, `tokfold-core/src/lib.rs`,
+  `tokfold-mcp/src/json.rs` and `tokfold-mcp/src/protocol.rs` — because every one of
+  those lines is a doc comment or sits after its file's `#[cfg(test)]`, and neither is
+  linked into the binary. The published sentence states that measured fact and its
+  mechanism instead. **A source commit does not imply a hash change**, so a commit
+  count is not evidence either way.
+
+  Five tracked files carrying one of the two hashes were deliberately left alone:
+  `crates/tokfold-mcp/README.md`, `crates/tokfold-cli/src/main.rs`, `docs/privacy.md`,
+  `.github/workflows/release.yml` and this file each date the measurement the hash sits
+  in, so each reads as history rather than as a claim about the tree in hand.
+
 ### Tests
 - **The offset in the node-budget refusal was pinned nowhere, under a comment that
   mis-stated the message.** `an_over_budget_message_reports_the_node_limit` asserted
