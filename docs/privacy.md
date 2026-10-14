@@ -3,9 +3,18 @@
 This document covers what tokfold does with the data it is given, and what it does
 not do. Every statement about what the code *does* names the code that makes it true,
 the measurement that showed it, or a section of this document that names one of those
-— the *Summary* restates what the sections below hold and is anchored by them, and a
-sentence that opens with "therefore" is drawn from the statement above it. For the
-attacks this design does and does not resist, see
+— the *Summary* restates what the sections below hold and is anchored by them, and
+where a sentence draws an inference it says "therefore" and is drawn from the
+statement above it. Four sentences do: one in this header, and one each in *What the
+CLI writes*, *What the archive contains* and *What the MCP server sends back*, each
+read back against the statement above it on 2026-10-14. A grep for the word answers
+six, not four — this clause names it, and the sentence quoted at the end of this
+paragraph no longer stands. Until 2026-10-14 the rule reached only a sentence that
+*opens* with the word, and none here does: unwrap every paragraph, split on sentence
+ends, and 0 of 249 open with it, so the clause covered nothing — while the one
+inference that did not follow sat mid-sentence outside it, "Outputs are therefore free
+of timestamps, and a run leaves no record of when it happened", whose second half
+`ac7c08c` measured false. For the attacks this design does and does not resist, see
 [`threat-model.md`](threat-model.md).
 
 A statement below marked **enforced** is checked by CI on every push to `main` and on
@@ -17,12 +26,15 @@ most recent read-back (2026-10-10) it held uncommitted changes on top of `main` 
 with every commit, so re-derive them rather than trusting the two values here. This
 document is tracked — `df6a0fc` added it, and that same commit carried a
 sentence calling it untracked, false the moment it landed. A statement here can
-therefore differ from what `main` contains, and nothing fails the build if a change
-breaks it. Review is the only guard.
-CI is not a required check either: `main` has no branch protection
-(`gh api repos/IvanBBaev/tokfold/branches/main/protection` answers "Branch not
-protected"), so a failing run reports a broken **enforced** statement but does not
-block the change.
+therefore differ from what `main` contains, and for a statement marked **true today**
+nothing fails the build if a change breaks it — review is the only guard. The one
+marked **enforced** is the exception, which is what the mark means: a change that adds
+a network-capable dependency fails `cargo deny --locked check` in the `deny` job.
+Until 2026-10-14 this said "nothing fails the build" of every statement here, which
+the sentence after it contradicted. No check *blocks* the change either: `main` has no
+branch protection (`gh api repos/IvanBBaev/tokfold/branches/main/protection` answered
+"Branch not protected" again on 2026-10-14), so a failing run reports a broken
+**enforced** statement but does not stop it landing.
 
 A SHA-1 or a byte size beside a build command below names **bytes**, not this tree. The
 commit named with it is the recipe: `git archive <commit> | tar -x -C <dir>` followed by
@@ -576,10 +588,26 @@ the measurement that showed it, or a section of this document that names one of 
 same thing. Until 2026-10-10 this one dropped the "or the measurement" half, which
 made it the stricter of two rules the document gave for itself, and under it the two
 archive-mode bullets under *What the CLI writes* read as violations: `write_file` sets
-no permissions, so no code holds `0644`, `0600` or `0666` — `git grep` finds none of
-the three in any crate's `src` or `tests` — and only the measurement beside them
-does. A change to a named place can falsify a sentence here. Only the network
-ban on dependencies is checked mechanically — `deny.toml`'s `[bans]` list, run by the
-`deny` job in `.github/workflows/ci.yml` — and it is the one statement above marked
-**enforced**; everything marked "true today" needs a reviewer to re-read this file
-when the named code changes.
+no permissions, so no crate's `src` holds `0644`, `0600` or `0666` —
+`grep -rnE '0o?(644|600|666)' crates/*/src` returns nothing, and the control that the
+glob reaches anything at all is `MAGIC`, which it finds in three files — and only the
+measurement beside them does. A change to a named place can falsify a sentence here.
+
+Two sentences of this section were false from the day `166873f` wrote them,
+2026-10-10. One said a `git grep` found none of the three "in any crate's `src` or
+`tests`". The same glob run over `crates/*/tests` returns six lines, all in
+`crates/tokfold-cli/tests/cli.rs`: the literals `0o644`, `0o600` and `0o666` inside
+`a_new_archives_mode_is_what_the_umask_leaves`, and the bare spelling this document
+uses in that test's own rustdoc. Either spelling alone misses the other, which is how
+the sweep came back empty. The other sentence said only the network ban on
+dependencies is checked mechanically, three commits after `6d6659e` added that test,
+which pins all three archive figures inside `cargo test --workspace`. What holds of
+the ban is narrower: it is the one statement above marked **enforced** and the one
+with a gate that exists for it — `deny.toml`'s `[bans]` list, run by the `deny` job in
+`.github/workflows/ci.yml` — while the umask figures are pinned by a test answering
+for a claim in [`threat-model.md`](threat-model.md), not for this file. No check
+anywhere compares a sentence here with the fact behind it, because nothing in the
+build reads this document: `git grep 'privacy\.md' -- crates .github fuzz Cargo.toml`
+returns nothing, where the same pathspec set returns four files for `tokfold`.
+Everything marked "true today" needs a reviewer to re-read this file when the named
+code changes.

@@ -4051,6 +4051,55 @@ documentation a previous fix falsified.
   matches, because here that was four crates of "Instantiate". Measured 2026-10-14,
   macOS Darwin 27.0.0 arm64, rustc 1.97.0. Documentation only: no code, no behaviour
   and no format change.
+
+- **Three sentences of `docs/privacy.md` described the document itself, and each was
+  false.** The header promised that "a sentence that opens with \"therefore\" is drawn
+  from the statement above it". No sentence in the file opens with the word — unwrap
+  every paragraph, split on sentence ends, and 0 of 249 do — so the rule covered an
+  empty class, while the one inference that did not follow sat mid-sentence outside it
+  and was removed by `ac7c08c` ("Outputs are therefore free of timestamps, and a run
+  leaves no record of when it happened"). The rule now asks where the inference sits
+  rather than where the word falls: four sentences draw one, in the header, *What the
+  CLI writes*, *What the archive contains* and *What the MCP server sends back*, each
+  read back against the statement above it, and the clause says why a grep for the word
+  answers six.
+
+  The header also said "nothing fails the build if a change breaks it. Review is the
+  only guard", which its own next sentence contradicted by describing a failing run as
+  reporting "a broken **enforced** statement". A change that adds a network-capable
+  dependency does fail the build: `cargo deny --locked check` in the `deny` job runs on
+  every push to `main` and on every pull request. The claim is now scoped to the
+  statements marked **true today**, and what survives for all of them is that no check
+  *blocks* the change — `main` has no branch protection, re-derived 2026-10-14
+  (`gh api repos/IvanBBaev/tokfold/branches/main/protection` → "Branch not protected",
+  HTTP 404).
+
+  *Keeping this document true* carried the same shape one level deeper. Both of its
+  false sentences landed in `166873f`, whose subject is "Make privacy.md state one rule
+  for its own honesty, not two" — a correction that introduced two new false claims,
+  three commits after `6d6659e` had added the test that refutes them. It said a
+  `git grep` finds `0644`, `0600` and `0666` in no crate's `src` or `tests`:
+  `crates/tokfold-cli/tests/cli.rs` holds all three twice over, as the Rust literals
+  `0o644`, `0o600` and `0o666` inside `a_new_archives_mode_is_what_the_umask_leaves`
+  and in that test's own rustdoc in the bare spelling, and either spelling alone misses
+  the other. It also said only the network ban on dependencies is checked
+  mechanically, while that same test pins all three archive mode figures inside
+  `cargo test --workspace`. What holds of the ban is narrower: it is the one statement
+  marked **enforced** and the one with a gate that exists for it, while the umask
+  figures are pinned by a test answering for a claim in `docs/threat-model.md`; and no
+  check anywhere compares a sentence in the privacy document with the fact behind it,
+  because nothing in the build reads the file — `git grep 'privacy\.md' -- crates
+  .github fuzz Cargo.toml` returns nothing, where that same pathspec set returns four
+  files for `tokfold`.
+
+  Two rules. **A scope that reaches no sentence is not a weak rule but no rule** —
+  state it by where the thing it governs sits, not by a word that happens to mark it.
+  And **a grep is a claim about its spelling**: `0644` does not match the Rust `0o644`,
+  and `git grep -- 'crates/*/src'` matches nothing at all, for any pattern, because `*`
+  does not cross a `/` — the control that caught that was `MAGIC`, which the shell glob
+  `crates/*/src` finds in three files and the git pathspec in none (`:(glob)` makes it
+  work). Measured 2026-10-14, macOS Darwin 27.0.0 arm64, rustc 1.97.0. Documentation
+  only: no code, no behaviour and no format change.
 ### Tests
 - **The offset in the node-budget refusal was pinned nowhere, under a comment that
   mis-stated the message.** `an_over_budget_message_reports_the_node_limit` asserted
