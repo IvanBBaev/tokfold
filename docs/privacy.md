@@ -99,9 +99,23 @@ stale-archive deletion and no same-file guards (see
   `834c01f2…` imports none of these symbols: `socket`, `connect`, `getaddrinfo`, `sendto`,
   `bind`, `listen`, `fork`, `execv`, `posix_spawn`. The same holds for the binary npm
   ships for that platform (`tokfold-darwin-arm64` `0.0.1`, `bin/tokfold` SHA-1
-  `8e2ed283…`). The measurement is `nm -u <binary>` filtered for those names; it
-  matched nothing in either, while the unfiltered lists are 83 undefined symbols for
-  the working-tree build and 76 for the published one, so the filter had something to
+  `8e2ed283…`). The measurement is `nm -u <binary>` filtered for those nine names as
+  whole symbols rather than as substrings:
+  `grep -E '^_?(socket|connect|getaddrinfo|sendto|bind|listen|fork)(\$.*)?$|^_(execv|posix_spawn)'`,
+  where the last two match by prefix so that `execve`, `execvp` and `posix_spawnp`
+  are caught as well, and the optional suffix admits macOS spellings like
+  `_connect$UNIX2003`. It matches nothing in either binary. A filter that matches
+  nothing proves nothing by itself, so it was run against controls: fed the twelve
+  underscored spellings of those nine names — `_execve`, `_execvp`, `_posix_spawnp`
+  and `_connect$UNIX2003` among them — it matches all twelve, and fed
+  `dyld_stub_binder`, `_realpath$DARWIN_EXTSN`, `_pthread_get_stackaddr_np`, `_read`
+  and `_write` it matches none. Spelled as a bare substring search instead, the same
+  nine names do match one symbol in both binaries, and it is not a socket call:
+  `bind` occurs inside `dyld_stub_binder`, dyld's lazy-binding helper, which every
+  dynamically linked Mach-O imports, so a reader who re-runs the obvious spelling and
+  sees that one hit has not found a regression (measured 2026-10-14, macOS Darwin
+  27.0.0 arm64). The unfiltered lists are 83 undefined symbols for the working-tree
+  build and 76 for the published one, so the filter had something to
   reject. Of those two, only the published one is stripped — not because a local build
   cannot be, but because nothing in the repository strips one by default: the workspace
   `Cargo.toml` declares no `[profile.release]` table, and `release.yml` passes
