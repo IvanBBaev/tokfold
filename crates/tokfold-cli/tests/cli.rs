@@ -4244,7 +4244,8 @@ fn two_instances_of_this_suite_do_not_wipe_each_others_fixtures() {
 /// reach — a chain whose end does not exist yet, where `create(true)` decides where
 /// the file is born — and then at the same chain again, now overwriting. Measured
 /// against `cargo build --release -p tokfold-cli` + `--workspace --all-features`
-/// (SHA-1 `ca2cfc4a…`) on 2026-10-10: both land in `real`, both links stay links, and
+/// (SHA-1 `ca2cfc4a…`, which commit `166873f` builds — measured 2026-10-14) on
+/// 2026-10-10: both land in `real`, both links stay links, and
 /// `expand` reads the original back out of `real`.
 #[test]
 fn a_successful_pass_writes_through_a_symlink_chain_and_keeps_both_links() {
@@ -4380,7 +4381,8 @@ fn a_symlink_aimed_at_a_fifo_is_refused_by_the_write_path() {
 /// `set_permissions` calls here all *write* a mode on a fixture. Driving it needs a
 /// umask, which std cannot set, so each pass runs under `sh -c 'umask N; …'` rather
 /// than taking a dependency for it. Measured 2026-10-10 against `cargo build
-/// --release --workspace --all-features` (SHA-1 `ca2cfc4a…`): `022` gives `0644`,
+/// --release --workspace --all-features` (SHA-1 `ca2cfc4a…`, which commit `166873f`
+/// builds — measured 2026-10-14): `022` gives `0644`,
 /// `077` gives `0600`, and `000` gives `0666` — world-*writable*, the member the
 /// bullet did not name — while an overwrite re-applies nothing, so a pre-existing
 /// `0666` file stays `0666` even under `077`.

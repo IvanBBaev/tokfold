@@ -24,6 +24,19 @@ CI is not a required check either: `main` has no branch protection
 protected"), so a failing run reports a broken **enforced** statement but does not
 block the change.
 
+A SHA-1 or a byte size beside a build command below names **bytes**, not this tree. The
+commit named with it is the recipe: `git archive <commit> | tar -x -C <dir>` followed by
+the command quoted beside the hash reproduces those bytes on macOS Darwin 27.0.0 arm64
+with rustc 1.97.0. Two commits appear below for one command, because the bytes moved
+between the measurements. A release build does not depend on where it is built — one
+commit built as `--workspace --all-features` in two directories outside the repository
+gave `30e93939…` both times — while a *debug* build's size does, which is why no size
+below is a debug build's. So re-derive a hash here before trusting it to describe the
+binary in hand, and read a build command as naming a build only together with a commit.
+Until 2026-10-14 the bullet below called `834c01f2…` "a release build of the **working
+tree**" and *Token counting* measured "on this tree"; at `181ec00` that tree builds
+`637795cf…`, and `834c01f2…` is what `166873f` builds.
+
 The published npm `0.0.1` CLI predates some of what *Files* describes: it has no
 stale-archive deletion and no same-file guards (see
 [`threat-model.md`](threat-model.md), the paragraph on `main` and the release).
@@ -87,22 +100,26 @@ stale-archive deletion and no same-file guards (see
   dev-dependency: `proptest`'s default features include `fork`, which pulls in
   `rusty-fork 0.3.1` (`cargo tree -p tokfold-core -e features --all-features`). None
   of that is compiled into a released binary.
-- **The binary.** A macOS arm64 release build of the **working tree** (SHA-1
-  `834c01f2…`, built 2026-10-01 by `cargo build --release -p tokfold-cli` with
-  default features, re-verified to still reproduce 2026-10-10). What moves that hash
-  is the **feature set**, and the package selection only decides which packages a
-  feature flag can reach; four builds of this tree, measured 2026-10-10, separate the
-  two: `-p tokfold-cli` and `--workspace` both give `834c01f2…` at 1 261 712 bytes
+- **The binary.** A macOS arm64 release build of commit `181ec00` (SHA-1 `637795cf…`,
+  `cargo build --release -p tokfold-cli` with default features, measured 2026-10-14).
+  What moves that hash is the **feature set**, and the package selection only decides
+  which packages a feature flag can reach; five builds of that commit, measured the
+  same day, separate the two: `-p tokfold-cli` and `--workspace` both give
+  `637795cf…` at 1 262 112 bytes
   with default features, so widening the selection alone changes nothing;
-  `-p tokfold-cli --all-features` also gives `834c01f2…`, because `--all-features`
+  `-p tokfold-cli --all-features` also gives `637795cf…`, because `--all-features`
   applies to the *selected* packages and `tokfold-cli` declares no `[features]` table
-  of its own; `-p tokfold-cli --features tokfold-core/tiktoken` gives `a65170a2…` at
-  1 263 392 without `tokfold-core` being selected at all; and `--workspace
-  --all-features` gives `ca2cfc4a…`, the same 1 263 392 bytes by a different route,
+  of its own; `-p tokfold-cli --features tokfold-core/tiktoken` gives `d8910026…` at
+  1 263 776 without `tokfold-core` being selected at all; and `--workspace
+  --all-features` gives `30e93939…`, the same 1 263 776 bytes by a different route,
   because the wider selection puts `tokfold-core` in reach of `--all-features` and so
   turns on both `tiktoken` and the unimplemented `hf`. Selecting a package never
-  enables its non-default features; `tiktoken` is not in core's `default` list.
-  `834c01f2…` imports none of these symbols: `socket`, `connect`, `getaddrinfo`, `sendto`,
+  enables its non-default features; `tiktoken` is not in core's `default` list. Those
+  five builds of `166873f` give the values this bullet carried while it called them the
+  working tree's: `834c01f2…` at 1 261 712 for the first three, then `a65170a2…` and
+  `ca2cfc4a…`, both at 1 263 392. The count was "four" over the same enumeration of
+  five until 2026-10-14.
+  `637795cf…` imports none of these symbols: `socket`, `connect`, `getaddrinfo`, `sendto`,
   `bind`, `listen`, `fork`, `execv`, `posix_spawn`. The same holds for the binary npm
   ships for that platform (`tokfold-darwin-arm64` `0.0.1`, `bin/tokfold` SHA-1
   `8e2ed283…`). The measurement is `nm -u <binary>` filtered for those nine names as
@@ -111,39 +128,51 @@ stale-archive deletion and no same-file guards (see
   where the last two match by prefix so that `execve`, `execvp` and `posix_spawnp`
   are caught as well, and the optional suffix admits macOS spellings like
   `_connect$UNIX2003`. It matches nothing in either binary. A filter that matches
-  nothing proves nothing by itself, so it was run against controls: fed the twelve
-  underscored spellings of those nine names — `_execve`, `_execvp`, `_posix_spawnp`
-  and `_connect$UNIX2003` among them — it matches all twelve, and fed
+  nothing proves nothing by itself, so it was run against controls: fed the thirteen
+  underscored spellings those nine names generate — the nine bases each prefixed with
+  `_`, plus `_execve`, `_execvp`, `_posix_spawnp` and `_connect$UNIX2003` — it matches
+  all thirteen, and fed
   `dyld_stub_binder`, `_realpath$DARWIN_EXTSN`, `_pthread_get_stackaddr_np`, `_read`
-  and `_write` it matches none. Spelled as a bare substring search instead, the same
+  and `_write` it matches none (re-run 2026-10-14: 13 fed, 13 matched; 5 fed, 0
+  matched). This sentence said "twelve" twice until that date, over the same
+  enumeration of thirteen — count the bases rather than trusting either number.
+  Spelled as a bare substring search instead, the same
   nine names do match one symbol in both binaries, and it is not a socket call:
   `bind` occurs inside `dyld_stub_binder`, dyld's lazy-binding helper, which every
   dynamically linked Mach-O imports, so a reader who re-runs the obvious spelling and
   sees that one hit has not found a regression (measured 2026-10-14, macOS Darwin
-  27.0.0 arm64). The unfiltered lists are 83 undefined symbols for the working-tree
-  build and 76 for the published one, so the filter had something to
+  27.0.0 arm64). The unfiltered lists are 83 undefined symbols for the `181ec00`
+  build — and 83 for `166873f`'s, measured the same day — and 76 for the published one,
+  so the filter had something to
   reject. Of those two, only the published one is stripped — not because a local build
   cannot be, but because nothing in the repository strips one by default: the workspace
   `Cargo.toml` declares no `[profile.release]` table, and `release.yml` passes
   `--config 'profile.release.strip="symbols"'` as a one-off so that a developer's
   build keeps its backtrace symbols. Passing that same override here does strip a
-  local build, and with the rest of `release.yml`'s flags it gives `2a17afd0…` at
-  1 002 896 bytes (measured 2026-10-10). So for the published binary this says what
+  local build, and with the rest of `release.yml`'s flags — `--target
+  aarch64-apple-darwin` among them, which moves the bytes on its own — it gives
+  `ab8315f3…` at 1 002 928 bytes for `181ec00` and `2a17afd0…` at 1 002 896 for
+  `166873f` (both measured 2026-10-14). So for the published binary this says what
   it *imports* and
-  not what it contains, while the working-tree build still carries 2 562 defined
-  symbols, 440 of them mangled Rust names containing `tokfold`, that this measurement
-  does not look at. The other four platform binaries were not measured.
+  not what it contains, while the `181ec00` build still carries 2 570 defined
+  symbols, 443 of them mangled Rust names containing `tokfold`, that this measurement
+  does not look at (`166873f`'s carries 2 562 and 440 — the two numbers this sentence
+  held until 2026-10-14). Those names are Rust **v0** symbols, spelled `__R…`, so the
+  legacy spelling `grep '_ZN.*tokfold'` answers 0 on the same binary and is not
+  evidence of absence. The other four platform binaries were not measured.
 - **Token counting.** The optional `tiktoken` feature of `tokfold-core` (off by
   default, and not enabled in the release build — `release.yml` builds `--package
   tokfold-cli` with no feature flags) embeds its encoding tables at compile time
   through `tiktoken-rs`, which `include_str!`s them, so nothing is fetched at run
   time. It does not follow that those tables reach *this* binary: nothing on the
   CLI's command line selects an exact estimator, so the linker drops them. Measured
-  2026-10-10 on this tree with one variable moved — the same `-p tokfold-cli`
+  2026-10-14 on commit `181ec00` with one variable moved — the same `-p tokfold-cli`
   selection, the feature off and then on — `cargo build --release -p tokfold-cli
-  --features tokfold-core/tiktoken` grows the binary by 1 680 bytes (1 261 712
-  → 1 263 392, SHA-1 `834c01f2…` → `a65170a2…`) — a thousandth of the 1 681 126
-  bytes of `cl100k_base.tiktoken` alone. Either way it downloads nothing.
+  --features tokfold-core/tiktoken` grows the binary by 1 664 bytes (1 262 112
+  → 1 263 776, SHA-1 `637795cf…` → `d8910026…`) — a thousandth of the 1 681 126
+  bytes of `cl100k_base.tiktoken` alone. The same pair at `166873f` grows it by 1 680
+  (1 261 712 → 1 263 392), which is what this sentence reported for "this tree".
+  Either way it downloads nothing.
 - **Installing through npm** uses the network, as any `npm install` does: npm fetches
   the launcher package and one platform package from the registry. That is npm's
   traffic, not tokfold's. See *The npm launcher*.
@@ -296,8 +325,9 @@ decides what enters the model's context and what it logs.
   to a `TKFD` header followed by `{"a":1}`. A client that logs or stores tool results
   therefore logs or stores the original too.
 - **`tokfold_decompress`** returns the original **twice**, like `tokfold_compress`:
-  once as `content[0].text` and once as `structuredContent.text`. Measured on the
-  built binary (`cargo build --release -p tokfold-cli`, SHA-1 `834c01f2…`) with an
+  once as `content[0].text` and once as `structuredContent.text`. Measured on a
+  release build of commit `166873f` (`cargo build --release -p tokfold-cli`, SHA-1
+  `834c01f2…`) with an
   archive of `{"secret":"hunter2","rows":[{"a":1},{"a":2}]}`: both fields carried
   that document in full. A client that stores only one of the two still stores the whole
   original.
@@ -308,8 +338,9 @@ decides what enters the model's context and what it logs.
   it.** `EXPERIMENTAL_NOTICE` is a constant in `crates/tokfold-mcp/src/lib.rs`; the
   CLI's `cmd_mcp` (`crates/tokfold-cli/src/main.rs`) writes it to **standard error**
   before the loop starts, so it reaches the terminal or the host's log, not the
-  JSON-RPC client. Measured on the built binary (`cargo build --release -p
-  tokfold-cli`, SHA-1 `834c01f2…`) with the input closed: standard error held exactly
+  JSON-RPC client. Measured on a release build of commit `166873f`
+  (`cargo build --release -p tokfold-cli`, SHA-1 `834c01f2…`) with the input closed:
+  standard error held exactly
   one line, byte-identical to that constant,
   saying the server is unhardened and unaudited and must not be used with production
   secrets.

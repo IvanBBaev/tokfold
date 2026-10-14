@@ -5,21 +5,30 @@ engine: `npm i -g tokfold` gives you the `tokfold` command, built from the same
 crate as `cargo build -p tokfold-cli` but not the same artefact. `release.yml`
 builds `--package tokfold-cli --release --locked --target "$TARGET"` with
 `profile.release.strip="symbols"`; a bare `cargo build -p tokfold-cli` is an
-unstripped debug build for the host. The sizes separate them: 5 254 392 bytes
-for the debug build on this machine against 981 675 bytes unpacked for
-`tokfold-darwin-arm64` 0.0.1 on the registry (both measured 2026-10-03). Those
+unstripped debug build for the host. The sizes separate them: 5 198 424 bytes
+for the debug build of commit `181ec00` in this repository against 981 675 bytes
+unpacked for `tokfold-darwin-arm64` 0.0.1 on the registry (the debug figure
+measured 2026-10-14, the registry one 2026-10-03). Those
 two are a file against a four-file package; the `bin/tokfold` inside that package
-is 968 480 bytes, and the release build of this tree — built with `release.yml`'s own
-flags, `--target aarch64-apple-darwin --locked` included — is 1 261 600 bytes without
-the `strip` config and 1 002 896 with it (measured 2026-10-10), so most of the gap is `--release`
+is 968 480 bytes, and the release build of commit `181ec00` — built with
+`release.yml`'s own flags, `--target aarch64-apple-darwin --locked` included — is
+1 261 984 bytes without the `strip` config and 1 002 928 with it (measured
+2026-10-14), so most of the gap is `--release`
 and not `strip`. Those two numbers are the step's: dropping `--target` gives
-1 261 712 and 1 002 912 from the same sources, so a size is a claim about the flags
-that produced it. Neither is the published 968 480, and neither can be: the published
+1 262 112 and 1 002 960 from the same sources, so a size is a claim about the flags
+that produced it. A release size is reproducible from the commit alone —
+`git archive 181ec00 | tar -x -C <dir>` followed by the same flags gives those bytes
+in any directory — but a **debug** size is not, because a debug binary embeds the
+absolute path it was built at. One command (`cargo build -p tokfold-cli`) on that one
+commit gave 5 198 424 bytes in this repository, 5 245 736 and 5 247 416 in two scratch
+directories, and 5 267 816 in a third whose path is 34 characters longer than the
+first of those (all measured 2026-10-14, macOS Darwin 27.0.0 arm64, rustc 1.97.0), so
+a debug size is a claim about the directory too. Until that date this paragraph read
+5 254 392 for "the debug build on this machine", which is none of those four.
+Neither is the published 968 480, and neither can be: the published
 binary was built from a different commit (`tokfold-darwin-arm64` 0.0.1 records
-`gitHead` `81c7681`), by a different toolchain, on a GitHub runner. The tree these
-two came from was `c6f800e` plus uncommitted changes when they were measured, and
-that moves with every commit — re-derive it with `git log -1 --format=%h` rather
-than trusting it here. There are no JavaScript bindings to the
+`gitHead` `81c7681`), by a different toolchain, on a GitHub runner.
+There are no JavaScript bindings to the
 engine here and none are planned in this directory — that would be a native addon,
 a different product with its own public surface to support.
 

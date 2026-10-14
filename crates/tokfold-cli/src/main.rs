@@ -160,7 +160,8 @@ fn main() -> ExitCode {
 /// general. A *terminal* opened read-only as stdout still takes clap's path, so the help
 /// or version text is lost and nothing is reported. Measured on macOS arm64 against the
 /// release binary `cargo build --release --workspace --all-features` produces (SHA-1
-/// `ca2cfc4a`, 2026-10-01; re-verified to still reproduce 2026-10-10) through
+/// `ca2cfc4a`, 2026-10-01; that hash is what commit `166873f` builds, measured
+/// 2026-10-14, while `181ec00` builds `30e93939`) through
 /// `openpty()` plus a read-only `open()` of `ttyname(slave)`:
 /// `--help` and `--version` exit `0` with no byte on the master and nothing on standard
 /// error, with `TERM` unset and with `TERM=xterm-256color` alike. `compress` and `stats`
@@ -169,17 +170,19 @@ fn main() -> ExitCode {
 /// through a read-only regular file, so the carve-out does not widen to the commands
 /// that write a payload.
 ///
-/// The build command is part of that binary's identity: the same tree gives
-/// `834c01f2` for `cargo build --release -p tokfold-cli`. The **feature set** is what
+/// The build command is part of that binary's identity, and a hash names bytes rather
+/// than a tree: `cargo build --release -p tokfold-cli` gives `834c01f2` for commit
+/// `166873f` and `637795cf` for `181ec00`. The **feature set** is what
 /// separates the two, not the package selection, which only decides which packages a
-/// feature flag can reach — measured 2026-10-10, `--release --workspace` with default
-/// features is byte-identical to `834c01f2`, and so is `-p tokfold-cli
+/// feature flag can reach — measured 2026-10-14 at `181ec00`, `--release --workspace`
+/// with default features is byte-identical to `637795cf`, and so is `-p tokfold-cli
 /// --all-features`, since `--all-features` applies to the selected packages and this
 /// crate declares no `[features]` table. Widening to `--workspace` puts `tokfold-core`
 /// in reach of `--all-features`, which turns on both its `tiktoken` and its
 /// unimplemented `hf`; `tiktoken` alone, as `-p tokfold-cli --features
-/// tokfold-core/tiktoken`, gives `a65170a2` at the same 1 263 392 bytes as `ca2cfc4a`
-/// and different bytes. A source fingerprint
+/// tokfold-core/tiktoken`, gives `d8910026` at the same 1 263 776 bytes as `30e93939`
+/// and different bytes. Until 2026-10-14 this paragraph said "the same tree gives
+/// `834c01f2`" — true of `166873f`, not of the tree the sentence sits in. A source fingerprint
 /// is *not* part of it. This sentence used to name one, `9ee10cd2` over
 /// `find crates fuzz -name '*.rs' | sort | xargs cat`; that derivation covers the test
 /// files, which no binary links, so an edit to `tests/cli.rs` retired the fingerprint

@@ -188,10 +188,11 @@ the published `tokfold-darwin-arm64` package (SHA-1
 `8e2ed283eb205aca9cf34051a7b3ede6f4f70508`) and through a release build of this
 repository, on macOS arm64. A build command is part of a local binary's identity here,
 and the 2026-10-03 run did not record one; the whole comparison was re-run on 2026-10-10
-against `cargo build --release -p tokfold-cli` (SHA-1 `834c01f2…`) and every number in
+against `cargo build --release -p tokfold-cli` (SHA-1 `834c01f2…`, which commit
+`166873f` builds — measured 2026-10-14) and every number in
 this paragraph reproduced — replies 3 to 6 byte-identical at 527, 1 502, 921 and 386
 bytes, reply 1 growing 761 → 1 321 and reply 2 2 411 → 2 521, and overwriting only those
-two strings in the release replies reproducing the working tree's lines exactly. The
+two strings in the release replies reproducing that build's lines exactly. The
 other four platform packages were not run, and for them this is reasoning rather than
 measurement. No reply text here is platform-conditional:
 `tokfold-core` carries no `cfg(unix)`, `cfg(windows)` or `cfg(target_os)` in its source

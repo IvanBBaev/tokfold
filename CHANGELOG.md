@@ -3797,6 +3797,71 @@ documentation a previous fix falsified.
   nothing outside this file, which quotes them as history. Behaviour, wire format and
   the binary are unchanged; `docs/threat-model.md`, the doc comments of two
   `tokfold-core` modules and this file are touched, plus the two tests below.
+
+- **A build hash is a claim about bytes, and five files still read it as the current
+  tree's — including the one that states the rule.** The carve-out `b482e47` added to
+  `docs/threat-model.md` says to "read a build command as naming a build only together
+  with a commit", and it anchored that file's enumeration. It left the rest on a written
+  reason: each site dates the measurement beside its hash, so each reads as history.
+  The list that reason covers is wrong by a swap — of the six tracked files that held
+  one of the two hashes at `b482e47`, the five it names as left alone include
+  `.github/workflows/release.yml`, which holds neither then nor now, and leave out
+  `crates/tokfold-cli/tests/cli.rs`, which holds `ca2cfc4a…`. And the reason itself is
+  false wherever the sentence it excuses is in the present tense. `docs/privacy.md`
+  called `834c01f2…` "a release build of the **working tree**" and measured the
+  `tiktoken` delta "on this tree"; `crates/tokfold-cli/src/main.rs` said "the same tree
+  gives `834c01f2`"; `npm/README.md` sized "the release build of this tree";
+  `crates/tokfold-mcp/README.md` reproduced "the working tree's lines"; and the
+  threat model's own measurement paragraph was written against "this tree" too. The
+  fixture for every value below is `git archive <commit> | tar -x -C <dir>` and then the
+  quoted command, each in its own directory with its own `--target-dir`, on macOS Darwin
+  27.0.0 arm64 with rustc 1.97.0. From `166873f` to `181ec00` it gives `834c01f2…` at
+  1 261 712 → `637795cf…` at 1 262 112 for `-p tokfold-cli`, and the same pair for
+  `--workspace` and for `-p tokfold-cli --all-features`, which are byte-identical to it
+  because this crate declares no `[features]` table; `a65170a2…` → `d8910026…` for `-p
+  tokfold-cli --features tokfold-core/tiktoken` and `ca2cfc4a…` → `30e93939…` for
+  `--workspace --all-features`, both at 1 263 392 → 1 263 776; `b4aea8b4…` at 1 261 600
+  → `ec5274cd…` at 1 261 984 for `--target aarch64-apple-darwin`; and `2a17afd0…` at
+  1 002 896 → `ab8315f3…` at 1 002 928 for `release.yml`'s full flag set. So `166873f`
+  reproduces the whole stale family exactly: no number had to be disowned, each could be
+  anchored to the commit whose bytes it describes.
+
+  Reading those sentences as evidence rather than as prose found three more defects in
+  them. The binary bullet in `docs/privacy.md` said "four builds of this tree" over an
+  enumeration of five. The control run for its `nm -u` no-network filter said "the
+  twelve underscored spellings … it matches all twelve" over a set of thirteen — the
+  nine bases each prefixed with `_`, plus `_execve`, `_execvp`, `_posix_spawnp` and
+  `_connect$UNIX2003` — re-measured as 13 fed and 13 matched, against 5 fed and 0
+  matched. And its symbol counts, 2 562 defined with 440 carrying `tokfold`, are
+  `166873f`'s; `181ec00` carries 2 570 and 443. Those names are Rust **v0** symbols,
+  spelled `__R…`, so the legacy spelling `grep '_ZN.*tokfold'` answers 0 on the very
+  binary where `grep tokfold` answers 443, and is not evidence of absence.
+
+  The carve-out's own reason does not reach its conclusion. It read "each in its own
+  directory outside the repository and with its own `target/`, so neither value depends
+  on where it is built" — but those two values are of two *different* commits, and one
+  measurement each of two commits cannot separate the commit from the directory. The
+  support is a second measurement of *one* commit: `--workspace --all-features` gives
+  `30e93939…` at 1 263 776 in two different directories. And the conclusion holds for
+  the release profile only. A debug binary embeds the absolute path it was built at, so
+  `cargo build -p tokfold-cli` at `181ec00` gives four sizes — 5 198 424 bytes in the
+  repository, 5 245 736 and 5 247 416 in two scratch directories, and 5 267 816 in a
+  third whose path is 34 characters longer than the first of those. The growth is not a
+  per-character rate to quote (1 680 bytes for that 1-character step, 22 080 for the
+  34-character one), so the four values and the rule are published instead.
+  `npm/README.md`'s "5 254 392 bytes for the debug build on this machine" is none of the
+  four, and the directory it was measured in is recorded nowhere, so it is not
+  re-derivable at all.
+
+  The rule: **a present-tense build claim is a claim about the tree in hand, and a
+  reason for leaving a site alone is a claim like any other, including its list of the
+  sites it covers.** Every build hash in a
+  tracked file outside this one now names a commit inside its own paragraph, swept
+  paragraph by paragraph over `git ls-files` for twelve build hashes against eight
+  commit spellings: 0 unanchored. Behaviour,
+  wire format and the binary are unchanged — the edits are prose and doc comments only,
+  and `cargo build --release -p tokfold-cli` on this tree still gives `637795cf…` at
+  1 262 112.
 ### Tests
 - **The offset in the node-budget refusal was pinned nowhere, under a comment that
   mis-stated the message.** `an_over_budget_message_reports_the_node_limit` asserted

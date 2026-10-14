@@ -259,8 +259,8 @@ the sentence this section opens with said "opens by name", and that wording was 
 a fix: it replaced "the only file the CLI writes", which the redirected standard output
 falsifies and which the paragraph below answers. The input read falsifies the
 replacement instead, and nothing in that edit looked at it. Measured against a release
-build of this tree (`cargo build --release -p tokfold-cli`, SHA-1 `637795cf…`, macOS
-Darwin 27.0.0 arm64, rustc 1.97.0): `compress --input missing.json` exits `2` with
+build of commit `181ec00` (`cargo build --release -p tokfold-cli`, SHA-1 `637795cf…`,
+macOS Darwin 27.0.0 arm64, rustc 1.97.0): `compress --input missing.json` exits `2` with
 "reading input file missing.json: No such file or directory (os error 2)", `expand` and
 `stats` name the same step for their own missing paths, an input at mode `000` exits
 `2` with "Permission denied (os error 13)", and `--input link` with `link -> real`
@@ -325,7 +325,8 @@ input as a rejected document and clear the stale archive beside it.
 - **The archive is created with the process umask, not with a restrictive mode.**
   `write_file` uses `OpenOptions` with `write`, `create` and `truncate` and sets no
   mode. Measured on macOS against `cargo build --release --workspace --all-features`
-  (SHA-1 `ca2cfc4a…`), re-measured 2026-10-10: under umask `022` a new archive is
+  (SHA-1 `ca2cfc4a…`, which commit `166873f` builds — measured 2026-10-14),
+  re-measured 2026-10-10: under umask `022` a new archive is
   `0644`, which any local user can read; under `077` it is `0600`; and under `000` it
   is `0666`, which any local user can also **write** — the member this bullet did not
   name until that date. Overwriting an existing file re-applies nothing and keeps that
@@ -611,7 +612,16 @@ and on macOS Darwin 27.0.0 arm64 with rustc 1.97.0 it gives
 `834c01f2be12ebacab13057ed40aa570742dcddc` at 1 261 712 bytes for `166873f` and
 `637795cf1c33ddb91c414c04c4a8409633d4765e` at 1 262 112 for `ae065a8` (both measured
 2026-10-14, each in its own directory outside the repository and with its own
-`target/`, so neither value depends on where it is built). What moves a hash is the
+`target/`). That a value does not depend on where it is built takes a second
+measurement of *one* commit, not one measurement each of two: `--workspace
+--all-features` gave `30e9393951f14769ecd0b2279a064d86aac4097a` at 1 263 776 bytes in
+two different directories, and that is the support for it. It holds for the release
+profile only — a **debug** binary embeds the absolute path it was built at, so `cargo
+build -p tokfold-cli` at `181ec00` gave four sizes: 5 198 424 bytes in the repository,
+5 245 736 and 5 247 416 in two scratch directories, and 5 267 816 in a third whose path
+is 34 characters longer than the first of those (all measured 2026-10-14). Until that
+date this paragraph argued path-independence from "each in its own directory", which
+does not reach it. What moves a hash is the
 compiled code and not the commit count: `bfc47ec`, `980ff80` and `ae065a8` all build to
 `637795cf…`, across 94 changed lines in four files under `crates/*/src`, because every
 one of those lines is a doc comment or sits after its file's `#[cfg(test)]`, and
