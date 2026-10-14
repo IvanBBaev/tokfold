@@ -668,13 +668,38 @@ crate is reached only through `anstream`'s `auto` feature
 its only caller — and `anstream`'s sources name seven of its items: the six functions
 that read the table's five variables, `clicolor`, `clicolor_force`, `no_color`,
 `term_supports_color`, `term_supports_ansi_color` and `is_ci`, plus
-`windows::enable_ansi_colors`, which reads none. `truecolor` is the one public function
-they leave out. Grepping `truecolor` over `anstream`, `clap`, `clap_builder`,
-`colorchoice` and the other `anstyle*` sources matches nothing; the three matches
-inside anstyle-query itself are its doc line, its signature and the string it compares
-against. The two `RUST_*` variables are the standard library's, not a dependency's. The
-optional `tiktoken` feature was not in the measured graph, so this table does not cover
-it.
+`windows::enable_ansi_colors`, which reads none. On this host that leaves one public
+function unnamed, `truecolor`, because the crate has eight here; a Windows build has
+nine, and `anstream` leaves out two. The ninth is
+`windows::enable_virtual_terminal_processing`, which is `#[cfg(windows)]` and so is not
+compiled on this host at all, and which `anstream 1.0.0` names in no file of its own. It
+reads no variable either — it calls `GetConsoleMode` and `SetConsoleMode` on the stdout
+and stderr handles — and on Windows its body runs whether or not it is named, because
+the `enable_ansi_colors` anstream does call reaches the same crate-private function one
+step further in. The three `TERM` sites are why the variable count is the same on both
+platforms: one is `#[cfg(not(windows))]` and the other two `#[cfg(windows)]`, so a build
+compiles the one or the two, and `TERM` is read either way; no other read in the crate
+sits behind a `cfg` at all. The Windows package this project publishes therefore reads
+these same five variables and no sixth, and `truecolor` is the only reader of
+`COLORTERM` on either platform.
+
+Grepping `truecolor` over `anstream`, `clap`, `clap_builder`, `colorchoice` and the
+other `anstyle*` sources matches nothing, each of those crate directories measured whole
+rather than only its `src/`. Inside `anstyle-query` it matches four times, not three:
+its doc line, its signature and the string it compares against, all in `src/lib.rs`, and
+a fourth in `examples/query.rs`, which calls `anstyle_query::truecolor()`. That fourth
+is the one kind of match the argument is about, and it changes nothing, because cargo
+builds a package's examples only for the package being developed, never for a
+dependency. The binary says the same from the other end: in a release build of `4c5864a`
+(`cargo build --release -p tokfold-cli`, SHA-1 `637795cf…` at 1 262 112 bytes, macOS
+Darwin 27.0.0 arm64, rustc 1.97.0), `TERM`, `CLICOLOR`, `NO_COLOR` and `CLICOLOR_FORCE`
+are all present in the string data and `COLORTERM` is absent. The table's fifth name,
+`CI`, is two bytes and cannot be told from neighbouring text, so it is evidence neither
+way; and because Rust string literals carry no terminator, the four that are there sit
+inside longer runs — `TERMCLICOLORNO_COLOR` is one of the two — so the search has to be
+for a substring, and a whole-line match for any of them finds nothing. The two `RUST_*`
+variables are the standard library's, not a dependency's. The optional `tiktoken`
+feature was not in the measured graph, so this table does not cover it.
 
 ## The npm launcher
 

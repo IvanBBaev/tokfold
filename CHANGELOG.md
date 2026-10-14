@@ -4480,6 +4480,49 @@ documentation a previous fix falsified.
   column figure is a convention here, not a rule, so it was left alone rather than
   folded into a correctness commit. Documentation only, except for the sweep recorded
   under *Tests*.
+- **A count of what a caller leaves out is a claim about the platform that fixes the
+  set: the privacy table's two enumerations of `anstyle-query` were both scoped by
+  something they did not name.** `docs/privacy.md` §Environment variables said
+  "`truecolor` is the one public function they leave out" and that "the three matches
+  inside anstyle-query itself" are a doc line, a signature and a compared string.
+  `anstyle-query 1.1.5` has nine `pub fn`, and the ninth,
+  `windows::enable_virtual_terminal_processing`, is `#[cfg(windows)]`: eight are
+  compiled for `aarch64-apple-darwin` and nine for Windows, and `anstream 1.0.0` names
+  it in no file. So the number of public functions anstream leaves unnamed is one on the
+  measured host and two on the Windows package this project publishes, and the sentence
+  was true only where it was measured. `truecolor` likewise matches four times in the
+  crate, not three; the fourth is in `examples/query.rs`, which calls
+  `anstyle_query::truecolor()` -- the one kind of match the whole argument is about.
+
+  Both conclusions survive, which is why this is documentation and not a fix. The ninth
+  function reads no variable: it calls `GetConsoleMode` and `SetConsoleMode` on the
+  stdout and stderr handles, and on Windows its body runs whether anstream names it or
+  not, one step in from the `enable_ansi_colors` anstream does call. The example changes
+  nothing because cargo builds a package's examples only for the package being
+  developed, never for a dependency. And the three lexical `TERM` sites are why the
+  variable count does not move between platforms: one is `#[cfg(not(windows))]`, the
+  other two `#[cfg(windows)]`, and no other read in the crate is gated at all.
+
+  The file now also carries the evidence from the other end, which no round had taken.
+  In a release build of `4c5864a` (`cargo build --release -p tokfold-cli`, SHA-1
+  `637795cf…` at 1 262 112 bytes, macOS Darwin 27.0.0 arm64, rustc 1.97.0) the string
+  data holds `TERM`, `CLICOLOR`, `NO_COLOR` and `CLICOLOR_FORCE` and does not hold
+  `COLORTERM`. Two cautions travel with that measurement: `CI` is two bytes and cannot
+  be told from neighbouring text, so it is evidence neither way, and Rust string
+  literals carry no terminator, so the four that are present sit inside longer runs --
+  `TERMCLICOLORNO_COLOR` is one of two -- and a whole-line search for any of them finds
+  nothing. A `cargo test --workspace --all-features --release` run -- CI's release leg
+  and the local gate's alike -- leaves that path holding the wider build's bytes
+  instead, which are not these; §Network's *The binary* bullet separates the two, and a
+  hash is worth citing only from the command and commit quoted beside it.
+
+  Both sentences came in with `9ff4b63`, whose own entry here was careful: it stated the
+  graph's host and said `truecolor` was "not among them", which is true and claims no
+  uniqueness. The drift entered the document, not the log. The rule: **a derivation's
+  scope does not carry to the sentence built on it** -- restate the platform, the
+  version and the directory in the sentence that makes the claim, because that is the
+  sentence a reader quotes. Documentation only: no code, no behaviour and no format
+  change.
 
 ### Tests
 - **The offset in the node-budget refusal was pinned nowhere, under a comment that
