@@ -140,6 +140,19 @@ pub mod error_code {
 
     /// The method exists but the parameters are wrong — including a modern request
     /// that omits a required `_meta` field, and `tools/call` naming an unknown tool.
+    ///
+    /// Not every emission is that. A reply refused for its size carries this code as
+    /// well: a single reply over the frame limit, a batch member that does not fit the
+    /// room left, and a batch whose answers cannot be made to fit at all, each built by
+    /// `oversize_error` or `oversize_error_within` in [`crate::jsonrpc`]. There the
+    /// envelope was valid, the method exists and nothing inside the server went wrong;
+    /// what could not be served is the size of what the parameters asked for. The
+    /// partition of the implementation-defined range stated for this module leaves only
+    /// the base codes to borrow from, and the reasoning for borrowing this one is under
+    /// "Why `INVALID_PARAMS`" in [`crate::jsonrpc::render_bounded`]; which code a
+    /// refusal by size should carry is an open wire-contract question. The code is
+    /// pinned by `a_response_over_the_limit_becomes_an_error_addressed_to_the_same_id`
+    /// and `an_id_too_large_to_echo_is_dropped_rather_than_overrunning_the_frame`.
     pub const INVALID_PARAMS: i32 = -32602;
 
     /// An unexpected condition inside the server.

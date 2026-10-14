@@ -750,6 +750,28 @@ released says so, and names what `0.0.1` does in the same case.
   second source of truth.
 
 ### Documentation
+- **A code's definition excluded the only two uses that strain it.**
+  `crates/tokfold-mcp/src/protocol.rs` defined `INVALID_PARAMS` as "the method exists
+  but the parameters are wrong", and widened that reading twice — a modern request
+  missing `_meta`, and `tools/call` naming an unknown tool. The server also emits the
+  code where no parameter is wrong: `jsonrpc.rs` builds a refusal by size with
+  `oversize_error`, for a single reply over the frame limit and for a batch whose
+  answers cannot be made to fit at all (`Server::refuse_batch`), and with
+  `oversize_error_within`, for a batch member that does not fit the room the members
+  before it left (`render_member`). `render_bounded`'s own rustdoc says of exactly
+  those that "the envelope was valid, the method exists, and nothing inside the server
+  went wrong" — so the sentence defining the code contradicted the one justifying its
+  hardest use, the justification sat in another module, and the definition a reader
+  reaches first did not mention the case at all. It is also the open wire-contract
+  question of which code a refusal by size should borrow, which `stdio.rs`'s
+  `Line::TooLong` arm already records for the oversize *input* side. The definition now
+  states the case, points at the reasoning, and names the two tests that pin the value:
+  `a_response_over_the_limit_becomes_an_error_addressed_to_the_same_id` asserts `-32602`
+  on a reply over the limit, and
+  `an_id_too_large_to_echo_is_dropped_rather_than_overrunning_the_frame` asserts it on a
+  frame too narrow to echo the id. Behaviour and wire format are unchanged, and which
+  code to borrow stays owner-gated. **A constant's doc is a claim about every emission
+  of it.**
 - **A claim about the repository quoted a search that recording it changed.**
   `docs/threat-model.md`'s F2 entry said that the 6.67% figure "appears nowhere else in
   the repository — `git grep 6.67` finds this sentence and nothing more". It finds six
