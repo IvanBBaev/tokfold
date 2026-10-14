@@ -57,6 +57,12 @@ impl Id {
 /// and the panic bulkhead in [`crate::stdio`], which calls this rather than restating
 /// which shapes may be echoed. One rule, one place: the two paths cannot drift apart
 /// into answering the same malformed message differently.
+///
+/// Both of those paths hold a parsed value. A line that never parsed holds none, so a
+/// `PARSE_ERROR` refusal goes out unaddressed, and `recover_id` cannot close that gap
+/// either — it re-parses the line it was handed. "Every path that refuses a message
+/// before it is a `Request`" therefore means every such path that got far enough to
+/// have a value to read.
 #[must_use]
 pub fn read_id(value: &Value) -> Option<Id> {
     match value.get("id")? {

@@ -389,9 +389,23 @@ They are listed so that nobody mistakes them for undiscovered defects.
   parameters were valid (`jsonrpc.rs`, "Why `INVALID_PARAMS`"). An oversized *request*
   is refused with `-32600` instead (`serve` in `stdio.rs`). Which code a "too large"
   refusal should borrow is open.
-- **A request whose id alone is too wide for an addressed refusal** is refused
-  without an id, so that one call cannot be correlated and waits
-  (`MAX_MESSAGE_BYTES` rustdoc in `crates/tokfold-mcp/src/lib.rs`).
+- **A refusal the parser produces carries no id, so that one call waits.**
+  An id can be echoed only off a line that parsed: `read_id` in
+  `crates/tokfold-mcp/src/jsonrpc.rs` takes an already-parsed value, and `recover_id` in
+  `stdio.rs` — the one best-effort path, reached when handling a panic — re-parses the
+  line, so neither can address a refusal the parser itself raised. Both `PARSE_ERROR`
+  sites pass `None` for that reason: the parse failure in `handle_line` and the
+  non-UTF-8 line in `serve`. Measured against `cargo build --release -p tokfold-cli` on
+  macOS arm64 (SHA-1 `637795cf…`, rustc 1.97.0), with a narrow and plainly readable id
+  in the text of every fixture: a `tools/list` carrying a duplicate key, a trailing
+  comma, an unterminated string, a lone surrogate in an argument, a leading-zero number,
+  and one with an invalid UTF-8 byte each came back `-32700` with no `id` member, while
+  the same server echoed the id on the two faults that do parse — a response envelope
+  answered `-32600`, and an unknown tool answered `-32602`. The absence rather than
+  `"id":null` is deliberate: MCP admits only a string or a number as a `RequestId`, so a
+  null id is not an address, and `properties.rs` pins the absence as what id-less means.
+  A request whose id alone is too wide for an addressed refusal reaches the same outcome
+  by the other route (`MAX_MESSAGE_BYTES` rustdoc in `crates/tokfold-mcp/src/lib.rs`).
 - **`additionalProperties: false` is declared but not enforced.** The tool schemas
   declare it (`compress_tool`, `decompress_tool` and the estimate schema in
   `tools.rs`), but an unknown argument key is accepted: a `tokfold_estimate` call

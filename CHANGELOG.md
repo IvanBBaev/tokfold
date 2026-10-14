@@ -750,6 +750,28 @@ released says so, and names what `0.0.1` does in the same case.
   second source of truth.
 
 ### Documentation
+- **An uncorrelatable refusal was documented at its rarest cause.**
+  `docs/threat-model.md`'s *MCP transport and protocol* section explained a refusal that
+  carries no id — leaving one client call unanswered — only for "a request whose id
+  alone is too wide for an addressed refusal", which needs an id near the 32 MiB frame
+  limit to reach. The ordinary cause is a malformed line, and it is structural:
+  `read_id` takes an already-parsed value, and `recover_id`, the one best-effort path,
+  re-parses the line it was handed, so no refusal the parser itself raised can be
+  addressed. Both `PARSE_ERROR` sites pass `None` accordingly — the parse failure in
+  `handle_line` and the non-UTF-8 line in `serve`. Measured against `cargo build
+  --release -p tokfold-cli` on macOS arm64 (SHA-1 `637795cf…`, rustc 1.97.0), every
+  fixture carrying a narrow, plainly readable id in its text: a `tools/list` with a
+  duplicate key, a trailing comma, an unterminated string, a lone surrogate in an
+  argument, a leading-zero number, and an invalid UTF-8 byte each came back `-32700`
+  with no `id` member, while the same server echoed the id for the two faults that do
+  parse (a response envelope, `-32600`; an unknown tool, `-32602`). The bullet now
+  states that rule, keeps the wide-id case as the second route to the same outcome, and
+  records that the absence rather than `"id":null` is deliberate, since MCP admits only
+  a string or a number as a `RequestId` and `properties.rs` pins the absence as what
+  id-less means. `read_id`'s own rustdoc justified the function's existence with "the id
+  is worth recovering on every path that refuses a message *before* it is a `Request`"
+  while naming the two callers that have a value to read; it now says which paths that
+  covers, because the parser's own refusals are not among them.
 - **"The only file the CLI writes" was false, and said so in a privacy document.**
   `docs/threat-model.md`'s *Archive path handling (CLI)* opened with that sentence, and
   the same section's own bullet on the same-file guards documents
