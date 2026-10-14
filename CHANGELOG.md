@@ -3597,6 +3597,37 @@ documentation a previous fix falsified.
   `.github/workflows/release.yml` and this file each date the measurement the hash sits
   in, so each reads as history rather than as a claim about the tree in hand.
 
+- **"The only state it keeps across requests" named two of the `Server` struct's
+  three fields.** The MCP bullet of *Deployment modes and trust boundaries* in
+  `docs/threat-model.md` cited `crates/tokfold-mcp/src/server.rs` for an exhaustive
+  claim, and the struct it cites holds `handshaked`, `negotiated_version` **and**
+  `max_message_bytes`. The omitted field is the one two of the document's own MCP
+  findings turn on: every answer `handle_line` returns is rendered against it, by
+  `handle_batch` or by `render`, so it is what decides whether a reply is refused.
+  **A category in a sentence is a claim about every member**, and "the only state"
+  beside a struct reference is a claim about every field of it.
+
+  What the bullet was reaching for is true, and is now stated as measured: of the
+  three fields only two are assigned while requests are handled — `self.handshaked`
+  and `self.negotiated_version`, both in `initialize` and nowhere else — while the
+  single assignment to `max_message_bytes` is in `Server::with_max_message_bytes`, a
+  builder that takes `mut self` by value, so no request can move it. Nothing a
+  request carries outlives it; the third field is a construction-time limit rather
+  than data, which is a different thing from not existing. The bullet now also
+  records which direction the field governs: the two findings it moves are the
+  non-monotonic batch and the `-32602` for an oversized reply, while the `-32600`
+  for an oversized *request* in the same bullet does not move with it, because the
+  read side in `crates/tokfold-mcp/src/stdio.rs` holds the incoming line to the
+  `MAX_LINE_BYTES` constant — this field's default, not this field — so raising the
+  field through the builder widens the write direction alone.
+
+  The sweep for the same claim elsewhere found one site and no others: `grep` for
+  "only state", "state it keeps", "keeps across requests" and "no state" over the
+  tracked `.md` and `.rs` files matches only this bullet. The nearby uses of
+  "stateless" — in `crates/tokfold-mcp/README.md`, `src/lib.rs`, `src/protocol.rs`
+  and `tests/session.rs` — are about the *protocol revision* carrying its version and
+  capabilities per request, not about what the struct holds, and they are unaffected.
+
 ### Tests
 - **The offset in the node-budget refusal was pinned nowhere, under a comment that
   mis-stated the message.** `an_over_budget_message_reports_the_node_limit` asserted

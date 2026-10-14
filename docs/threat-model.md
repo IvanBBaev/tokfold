@@ -75,9 +75,24 @@ or a tool get back what was really there.
 - **Shape.** A long-lived process speaking line-framed JSON-RPC on standard input and
   output (`crates/tokfold-mcp/src/stdio.rs`, `serve_stdio`). It exposes three tools:
   `tokfold_compress`, `tokfold_decompress` and `tokfold_estimate`
-  (`crates/tokfold-mcp/src/tools.rs`). The only state it keeps across requests is the
-  handshake flag and the negotiated protocol revision (the `Server` struct in
-  `crates/tokfold-mcp/src/server.rs`). It has no persistence and opens no connections.
+  (`crates/tokfold-mcp/src/tools.rs`). Nothing a request carries outlives it. The
+  `Server` struct (`crates/tokfold-mcp/src/server.rs`) holds three fields, and only
+  two are written while requests are handled: the handshake flag and the negotiated
+  protocol revision, both set in `initialize` and nowhere else. The third,
+  `max_message_bytes`, is a limit fixed at construction through
+  `Server::with_max_message_bytes` — the only assignment to it — so no request moves
+  it. It is not inert either: it is the bound every answer is rendered against —
+  `handle_batch` and `render` in the same file, and the panic-rescue frame in
+  `crates/tokfold-mcp/src/stdio.rs` through `Server::max_message_bytes` — so it is
+  what decides whether a reply is refused, and two of the readings under *MCP
+  transport and protocol* turn on its value: the non-monotonic batch, and the
+  `-32602` for an oversized reply. The oversized *request* named in that same bullet
+  does not, because the read side holds the incoming line to the `MAX_LINE_BYTES`
+  constant in `stdio.rs`, which is this field's default rather than this field — so
+  an embedder that raises the field moves one direction only. The server has no
+  persistence and opens no connections. Until 2026-10-14 this bullet called the first
+  two "the only state it keeps across requests" while citing a struct with three
+  fields.
 - **Trust boundary.** Every byte on standard input is untrusted. The MCP client (the
   agent host) writes it. The tool arguments inside it are chosen by the model, which
   may be steered by content it has read.
