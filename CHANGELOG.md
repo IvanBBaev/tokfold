@@ -3862,6 +3862,50 @@ documentation a previous fix falsified.
   wire format and the binary are unchanged — the edits are prose and doc comments only,
   and `cargo build --release -p tokfold-cli` on this tree still gives `637795cf…` at
   1 262 112.
+
+- **A derivation is a claim about its own steps: the privacy table's scope sentence was
+  true with eight of nine crates unaccounted for.** `docs/privacy.md` §Environment
+  variables says that with default features the only crate in the CLI's graph that
+  reads the environment at run time is `anstyle-query 1.1.5`. The conclusion is right;
+  the published derivation did not reach it. Sweeping all 34 crates of
+  `cargo tree -p tokfold-cli` for `env::var`, `env::vars`, `env::set_var` and
+  `env::remove_var` — `src/` trees separately from build scripts, examples, benches and
+  tests skipped — matches nine crates. The file accounted for exactly one of the other
+  eight, `clap_builder`'s `COLUMNS`/`LINES` read, and never named the site that matters
+  most to a privacy document: `Arg::env`, the one place in this graph that would read a
+  variable chosen by the program rather than a fixed name.
+
+  The eight are now accounted for by class, each with the command that shows it.
+  `clap_derive 4.6.1` reads `CARGO_PKG_NAME`, and any variable an attribute names,
+  while it expands the derive; `version_check 0.9.5` is a library that build scripts
+  call (`generic-array`'s does), which is where `RUSTC` and `RUSTFLAGS` come in; and
+  `anyhow`, `libc`, `proc-macro2`, `quote` and `thiserror` read the environment only in
+  their own `build.rs` — seven crates that read it on the build machine, none of whose
+  reads is compiled into the binary. `clap_builder 4.6.0` is the eighth and the only
+  one with matches in `src/` beside shipping code: of its eight, six are lines of doc
+  examples, one is `parse_env` behind `#[cfg(feature = "wrap_help")]` and one is
+  `Arg::env` behind `#[cfg(feature = "env")]`. The features enabled for that crate are
+  `color`, `error-context`, `help`, `std`, `suggestions` and `usage`
+  (`cargo tree -p tokfold-cli -e features -i clap_builder`), so neither function is
+  compiled — a feature-gated `env::var_os` is found by grep and absent from the binary.
+
+  Two premises the old text did not have were measured as well. A second sweep for
+  `use std::env` and `use core::env` imports, which is what would let an unqualified
+  call hide from the first, adds no crate and one file — `clap_builder`'s
+  `src/builder/command.rs`, whose import is for `env::args_os`, the command line. And
+  `COLORTERM`'s absence from the table now rests on a complete argument rather than a
+  grep: `anstyle-query` is reached only through `anstream`'s `auto` feature, neither
+  `clap` nor `clap_builder` names it in sources or manifest, and `anstream`'s sources
+  name seven of its items — the six functions that read the table's five variables,
+  plus `windows::enable_ansi_colors`, which reads none — with `truecolor`, the only
+  reader of `COLORTERM`, not among them. The graph carries its configuration too: it is
+  the one cargo resolves for `aarch64-apple-darwin`, and the only target-conditional
+  edges along that chain are the `cfg(windows)` dependencies on `anstyle-wincon` and
+  `windows-sys`.
+
+  The rule: **a conclusion is not a derivation — a scope sentence must account for every
+  hit the check behind it returns, and a feature gate is part of the measurement.**
+  Documentation only: no code, no behaviour and no format change.
 ### Tests
 - **The offset in the node-budget refusal was pinned nowhere, under a comment that
   mis-stated the message.** `an_over_budget_message_reports_the_node_limit` asserted

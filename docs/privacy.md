@@ -384,16 +384,58 @@ adds `derive` to clap's default features, and `wrap_help` is not one of them
 (`cargo tree -p tokfold-cli -e features -i clap`). None of these variables changes
 what is compressed, and none is sent anywhere.
 
-The table is an enumeration, so here is how it was derived and what it leaves out.
-With default features the only crate in the CLI's graph that reads the environment at
-run time is `anstyle-query 1.1.5`, and it names six variables: `CLICOLOR`,
-`CLICOLOR_FORCE`, `NO_COLOR`, `TERM`, `CI` and `COLORTERM`. The table carries five of
-them. `COLORTERM` is left out because it is read only by
-`anstyle_query::truecolor()`, and nothing in this graph calls that function — grepping
-`truecolor` across the `anstream`, `clap`, `clap_builder` and `anstyle*` sources
-matches only anstyle-query's own definition. The two `RUST_*` variables are the
-standard library's, not a dependency's. The optional `tiktoken` feature was not in the
-measured graph, so this table does not cover it.
+The table is an enumeration, so here is how it was derived and what it leaves out. The
+graph is the CLI's own, 34 crates (`cargo tree -p tokfold-cli`) — 33 of them with
+`--edges normal`, the 34th being `version_check 0.9.5`, which enters only as the build
+dependency of `generic-array`. It is the graph cargo resolves for this host
+(`aarch64-apple-darwin`): the only target-conditional entries anywhere along the chain
+from `tokfold-cli` to `anstyle-query` are `anstream`'s and `anstyle-query`'s own
+`cfg(windows)` dependencies on `anstyle-wincon` and `windows-sys`, so a Windows graph
+holds two crates this one does not, while none of the feature sets below is
+target-conditional. Sweeping all 34 for `env::var`, `env::vars`, `env::set_var` and
+`env::remove_var`, with each crate's `src/` tree counted separately from its build
+script and with examples, benches and tests skipped, matches nine crates rather than
+one, so here are the eight that do not reach the table. A second pass for
+`use std::env` and `use core::env` imports — which is what would let an unqualified
+call hide from the first — adds no crate and one file, `clap_builder`'s
+`src/builder/command.rs`, whose import is for `env::args_os`, the command line.
+
+Seven of the eight read the environment while the build runs, on the build machine, and
+none of those reads is compiled into the binary: `clap_derive 4.6.1` is a proc macro
+and reads `CARGO_PKG_NAME`, and any variable an attribute names, while it expands the
+derive (`src/derives/parser.rs`, `src/item.rs`); `version_check 0.9.5` is a library
+that build scripts call — `generic-array`'s does — which is how `RUSTC` and `RUSTFLAGS`
+come to be read at all; and `anyhow 1.0.103`, `libc 0.2.186`, `proc-macro2 1.0.106`,
+`quote 1.0.46` and `thiserror 2.0.18` read it only in their own `build.rs`. The eighth
+crate, `clap_builder 4.6.0`, is the only one whose matches sit in `src/` beside code
+that ships, and none of its eight matches is live: six are lines of doc examples, one
+is `parse_env` in `src/output/help_template.rs` behind `#[cfg(feature = "wrap_help")]`,
+and the last is `Arg::env` in `src/builder/arg.rs` behind `#[cfg(feature = "env")]` —
+the one site in this graph that would read a variable named by the program rather than
+a fixed one. The features enabled for that crate are `color`, `error-context`, `help`,
+`std`, `suggestions` and `usage`
+(`cargo tree -p tokfold-cli -e features -i clap_builder`), so neither function is
+compiled, and nothing in `crates/tokfold-cli/src` calls `Arg::env` — with the feature
+off, such a call would not compile.
+
+That leaves `anstyle-query 1.1.5` as the only crate in the graph that reads the
+environment at run time, and it names six variables at eight sites: `CLICOLOR`,
+`CLICOLOR_FORCE`, `NO_COLOR`, `TERM` (three sites), `COLORTERM` and `CI`. The table
+carries five of them. `COLORTERM` is left out because `anstyle_query::truecolor()` is
+the only function that reads it and nothing in this graph calls that function. The
+crate is reached only through `anstream`'s `auto` feature
+(`cargo tree -p tokfold-cli -e features -i anstyle-query`), and neither `clap` nor
+`clap_builder` names `anstyle-query` in its sources or its manifest, so `anstream` is
+its only caller — and `anstream`'s sources name seven of its items: the six functions
+that read the table's five variables, `clicolor`, `clicolor_force`, `no_color`,
+`term_supports_color`, `term_supports_ansi_color` and `is_ci`, plus
+`windows::enable_ansi_colors`, which reads none. `truecolor` is the one public function
+they leave out. Grepping `truecolor` over `anstream`, `clap`, `clap_builder`,
+`colorchoice` and the other `anstyle*` sources matches nothing; the three matches
+inside anstyle-query itself are its doc line, its signature and the string it compares
+against. The two `RUST_*` variables are the standard library's, not a dependency's. The
+optional `tiktoken` feature was not in the measured graph, so this table does not cover
+it.
 
 ## The npm launcher
 
