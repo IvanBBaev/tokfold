@@ -159,7 +159,7 @@ code holds it today.
 | Panics in the first place | Workspace lints: `unsafe_code = "forbid"`; clippy `unwrap_used`, `expect_used` and `panic` are `deny`, and `indexing_slicing` is `warn` (workspace `Cargo.toml`, `[workspace.lints]`). Each crate root also carries `#![forbid(unsafe_code)]`. |
 | Regex denial of service | The `never_compress` table matches case-folded literal substrings, with no regex (`crates/tokfold-core/src/never_compress.rs`, module docs). No regex engine is in the default graph. Two arrive with the optional `tiktoken` feature of `tokfold-core` (off by default and not enabled in the release build), both through `tiktoken-rs`: `fancy-regex` and `regex` (`cargo tree --workspace --all-features -i regex`). |
 | Invalid UTF-8 or malformed JSON on the MCP stream | Both are answered with `PARSE_ERROR` and the session continues (`serve` in `stdio.rs`; the `malformed_input_is_answered_and_the_session_continues` and `invalid_utf8_is_answered_and_the_session_continues` tests). |
-| A client that stops reading | See *Known limitations*: the serve loop never reads while it writes. |
+| A client that stops reading | **Open.** Nothing in the code holds this one: the serve loop never reads while it writes, and that is recorded as a documented precondition rather than fixed (see *Known limitations*). Until 2026-10-14 this row carried the cross-reference alone, with no **Open**, so the legend above read it as a mitigation in code. |
 
 The CLI reads its whole input into memory before the engine's size ceiling applies
 (`read_source` in `main.rs` uses `fs::read` or `read_to_end`). The 16 MiB ceiling
@@ -387,9 +387,17 @@ input as a rejected document and clear the stale archive beside it.
 
 ## Known limitations and open issues
 
-These are known, measured and **deliberately not fixed**: each changes behaviour on a
-binary already published, or is a wire-contract question for the project owner.
-They are listed so that nobody mistakes them for undiscovered defects.
+These are known, measured and **not fixed**. Most are one of two things: a change of
+behaviour on a binary already published, or a wire-contract question for the project
+owner. Two are neither: they are limitations of the runtime the npm launcher sits on,
+no owner decision is pending on either, and both are in *Process and platform*. A
+signal Node cannot name arrives as the same `exit(0, null)` Node reports for a clean
+exit, so the launcher has nothing to tell the two apart by; and the Node 18 hang
+reproduces with a plain Node script starting `/bin/sleep` and no tokfold at all.
+Whether either could be worked around was not measured. Until 2026-10-14 this
+paragraph offered the first two as an exhaustive pair and called every entry
+deliberate, which made those two read as held pending an owner decision. They are
+listed so that nobody mistakes any of them for an undiscovered defect.
 
 ### MCP transport and protocol
 
@@ -526,7 +534,11 @@ They are listed so that nobody mistakes them for undiscovered defects.
   known to hold on Windows, which was not measured.
   - A signal Node cannot name reaches the launcher as `exit(0, null)`, so the
     launcher exits `0` for a killed binary. `SIGEMT` on macOS; on Linux (aarch64,
-    glibc 2.39, Node v22.23.2) every signal from 32 to 64.
+    glibc 2.39, Node v22.23.2) every signal from 32 to 64. That pair is also what
+    Node reports for a clean exit, so nothing distinguishes the two at the launcher:
+    measured on macOS Darwin 27.0.0 arm64 with Node v22.23.2, `child_process.spawn`
+    reports `[0, null]` for `/usr/bin/true`, `[0, null]` for a shell killed by
+    `kill -EMT`, and `[null, "SIGTERM"]` for one killed by `kill -TERM`.
   - A signal Node *ignores* process-wide cannot be re-raised, so the launcher exits
     `128 + N` instead of dying. Node ignores `SIGPIPE` and `SIGXFSZ`; `SIGXFSZ` is
     reachable (a write past `ulimit -f`), `SIGPIPE` is not, because a Rust binary

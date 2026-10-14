@@ -3693,6 +3693,59 @@ documentation a previous fix falsified.
   (`reached_identity` in `main.rs`) — so "opens by name" was not the right description
   of the guard side either. Behaviour, wire format and the binary unchanged; the
   documents are the only thing this touches.
+- **Two legends in the threat model stated a dichotomy their own entries fell outside
+  of.** `docs/threat-model.md` opens *Threats and mitigations* with "Each entry names
+  the code that holds the line. "Open" means that nothing in the code holds it
+  today." Read against all 15 rows of the three tables below it, one row satisfied
+  neither half: *A client that stops reading* said only "See *Known limitations*: the
+  serve loop never reads while it writes." It names no code, and it does not say
+  **Open**, while the limitation it points at is itself recorded as not fixed — so
+  nothing in the code holds that line, which is exactly
+  what the legend reserves **Open** for. The row now says **Open** and keeps the
+  cross-reference. (*The archive leaks through file permissions* already said **Open**
+  and named no code; the legend allows that, and it is untouched. *Semantic integrity
+  of the rendering* is prose, so it has no rows.)
+
+  The second legend opens *Known limitations and open issues*: "These are known,
+  measured and **deliberately not fixed**: each changes behaviour on a binary already
+  published, or is a wire-contract question for the project owner." Read against all
+  18 bullets under it, 16 are one or the other. The two that are neither are the npm
+  launcher's: *The npm launcher cannot always reproduce a signal death* and *The npm
+  launcher can hang after the binary has exited, on Node 18 under macOS*. Neither is a
+  held decision about tokfold's own behaviour — the hang's own bullet says it
+  "reproduces with a plain Node script starting `/bin/sleep` and no tokfold at all",
+  and the unnamable-signal item is a property of what Node reports to a parent. Under
+  the old wording both read as waiting on an owner decision that does not exist. The
+  paragraph now names a third kind, says which two bullets are of it, and says plainly
+  that whether either could be worked around was not measured — a bucket is not a
+  claim that the work is impossible, only that no decision in this repository is
+  pending on it.
+
+  The unnamable-signal item asserted that such a signal "reaches the launcher as
+  `exit(0, null)`" without saying what else does, which is the half that makes it
+  unfixable at the launcher. Measured on macOS Darwin 27.0.0 arm64 with Node v22.23.2
+  (at `~/.nvm/versions/node/v22.23.2/bin/node`), through `child_process.spawn` with
+  `stdio: "ignore"`: `/usr/bin/true` reports `[0, null]`, a shell killed by
+  `kill -EMT` reports `[0, null]` as well, and one killed by `kill -TERM` reports
+  `[null, "SIGTERM"]`. The bullet now carries that derivation and its fixtures, so the
+  next reader can re-run it rather than believe it. (`/bin/true` does not exist on
+  macOS; the fixture is `/usr/bin/true`.)
+
+  The rule both halves of this are instances of: **a legend's dichotomy is a claim
+  about every entry under it**, and a column header is one too — *Mitigation in code*
+  over a cell that names no code is the same defect as the legend. Each legend was
+  swept for mirrors before editing — `deliberately not fixed`, `undiscovered defect`,
+  `holds the line` and `Mitigation in code` over every tracked `.md`, `.rs`, `.js` and
+  `.toml` at `HEAD`. In `docs/threat-model.md`: the first two once each, both inside
+  the second legend's own paragraph; `holds the line` once, in the first legend; and
+  `Mitigation in code` three times, once per table header. The only hit anywhere else
+  is `Cargo.toml`'s comment "What actually holds the line: no workflow contains
+  `cargo publish`", which is about the publication hold and not about a legend — the
+  first draft of this entry claimed every hit was in the threat model, and that was
+  wrong before it was measured. So neither correction leaves a copy behind. A repeat of
+  that search will now also hit this entry, which quotes the old wording as history.
+  Behaviour, wire format and the binary unchanged; only this document and this file are
+  touched.
 ### Tests
 - **The offset in the node-budget refusal was pinned nowhere, under a comment that
   mis-stated the message.** `an_over_budget_message_reports_the_node_limit` asserted
