@@ -4201,6 +4201,35 @@ documentation a previous fix falsified.
   crates/*/src` returns nothing, and `MAGIC` over the same glob returns three files.
   Measured 2026-10-14. Documentation only: no code, no behaviour and no format change.
 
+- **A privacy bullet that describes one of a tool's two outcomes.** *What the MCP
+  server sends back* in `docs/privacy.md` hangs the **complete original** on one field:
+  `tokfold_compress` "also returns `structuredContent.archive` … and that holds the
+  complete original", hedged with "When there is an archive". The tool has a second
+  outcome, and it is the one a reader is likeliest to misread. When core declines to
+  compress, `passthrough_outcome` in `crates/tokfold-mcp/src/tools.rs` answers
+  `"compressed": false` with `reason` and `reasonCode` and **no `archive` at all**,
+  while the `rendering` it does return is the input byte for byte and the `content`
+  text is the same string -- so a reply that carries no archive still carries the whole
+  document, twice. Someone reading `"compressed": false` and finding no `archive` would
+  have concluded from that bullet that nothing of theirs left the process.
+
+  Measured on a release build of `7827f72` (`cargo build --release -p tokfold-cli`,
+  SHA-1 `637795cf…`, 1 262 112 bytes). On `SECRET-MARKER-7c1d not json at all`:
+  `structuredContent` held exactly `compressed`, `reason`, `reasonCode` and
+  `rendering`, the marker appeared once in `structuredContent` and once in
+  `content[0].text`, and `rendering` equalled the input. On `{"a":1}` the same build
+  answered `archive`, `compressed`, `rendering` and `stats` -- a 50-byte archive
+  beginning `TKFD` with the original at offset 43, which is the measurement that bullet
+  already published, now carried with the build it was taken on and with its two byte
+  figures.
+
+  The refusal's own fields are a control rather than a second route: `reason` is
+  `CompressError`'s `Display`, whose reachable formats name a byte offset, a size, a
+  depth and a limit, and the message interpolated into the `invalid_json` one is one of
+  21 fixed literals in `crates/tokfold-core/src/tape.rs`, none built with `format!`. So
+  the double echo is the whole of the exposure on that path. Documentation only: no
+  code, no behaviour and no format change.
+
 ### Tests
 - **The offset in the node-budget refusal was pinned nowhere, under a comment that
   mis-stated the message.** `an_over_budget_message_reports_the_node_limit` asserted

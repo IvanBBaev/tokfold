@@ -462,9 +462,27 @@ decides what enters the model's context and what it logs.
 - **`tokfold_compress`** returns the rendering twice, as `content` text and as
   `structuredContent.rendering`. When there is an archive, it also returns
   `structuredContent.archive`, the archive in base64, and that holds the **complete
-  original**. Measured on `{"a":1}`: the reply carried a base64 archive that decodes
-  to a `TKFD` header followed by `{"a":1}`. A client that logs or stores tool results
+  original**. Measured on `{"a":1}` against a release build of commit `7827f72`
+  (`cargo build --release -p tokfold-cli`, SHA-1 `637795cf…`, 1 262 112 bytes): the
+  reply carried a 50-byte archive, base64-encoded, that decodes to a `TKFD` header
+  followed by `{"a":1}` at offset 43. A client that logs or stores tool results
   therefore logs or stores the original too.
+- **A reply with no archive is not a reply with nothing of yours in it.** That is the
+  tool's other outcome, and it is the one a reader is likeliest to misread. When core
+  declines to compress, `passthrough_outcome` in `crates/tokfold-mcp/src/tools.rs`
+  answers `"compressed": false` with `reason` and `reasonCode` and **no `archive` at
+  all** -- and the `rendering` it does return is your input byte for byte, as is the
+  `content` text, so the complete original still leaves twice. Measured on a release
+  build of commit `7827f72` (SHA-1 `637795cf…`) with the input
+  `SECRET-MARKER-7c1d not json at all`: `structuredContent` held exactly `compressed`,
+  `reason`, `reasonCode` and `rendering`, the marker appeared once in
+  `structuredContent` and once in `content[0].text`, and `rendering` equalled the input.
+  The refusal's own fields quote none of it -- `reason` is `CompressError`'s `Display`,
+  which names an offset, a size, a depth or a limit and nothing else ("invalid JSON at
+  byte 0: expected a JSON value" on that input), and the message it interpolates is one
+  of 21 fixed literals in `crates/tokfold-core/src/tape.rs`, none of them built with
+  `format!`. So on that path the double echo is the whole of the exposure, not part of
+  it.
 - **`tokfold_decompress`** returns the original **twice**, like `tokfold_compress`:
   once as `content[0].text` and once as `structuredContent.text`. Measured on a
   release build of commit `166873f` (`cargo build --release -p tokfold-cli`, SHA-1
