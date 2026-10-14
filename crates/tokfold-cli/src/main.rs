@@ -298,7 +298,6 @@ fn cmd_compress(args: &CompressArgs) -> Result<ExitCode> {
                 write_file(path, &artifact.archive)?;
             }
             write_stdout(artifact.rendering.as_bytes())?;
-            Ok(ExitCode::SUCCESS)
         }
         Err(err) => {
             // Clear, then emit, then announce. The clearing comes before the
@@ -326,9 +325,12 @@ fn cmd_compress(args: &CompressArgs) -> Result<ExitCode> {
             if let (Some(path), Some(cleared)) = (args.archive.as_deref(), cleared) {
                 announce_no_archive(path, cleared);
             }
-            Ok(ExitCode::SUCCESS)
         }
     }
+    // Both arms reach here: a rejected input that was passed through uncompressed
+    // exits `0` exactly as a compressed one does, and the only way out of this
+    // function with a different code is a `?` above.
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Refuse a `compress` that would aim its recovery archive at its own input.

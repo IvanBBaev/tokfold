@@ -261,7 +261,18 @@ jobs:
         # rustfmt and clippy are toolchain-version-sensitive: their rule sets
         # drift between releases (rules get added, renamed, or deprecated).
         # Running them on the MSRV toolchain turns that drift into spurious
-        # failures unrelated to the MSRV contract, so both gates are stable-only.
+        # failures unrelated to the MSRV contract, so both gates are
+        # stable-only. Stable does not escape that drift, it only dates it:
+        # `stable` is unpinned here, so every release re-dates both rule sets,
+        # and the clippy one is a required check. Measured at both ends, on two
+        # sites present in the earlier commit and unchanged since -- clippy
+        # passed under rustc 1.98.1 (run 36246733799, 0f759f6, 2026-09-26) and
+        # failed under 1.99.0 (run 38554022691, 482e5aa, 2026-10-14) on
+        # pedantic's `assert_is_empty` and nursery's `branches_sharing_code`,
+        # both `allow` upstream and reaching this build only through the root
+        # manifest's group opt-in. So a green clippy on a developer's box is no
+        # evidence about this gate; it runs whatever toolchain that box has.
+        # Whether to pin a version here instead is the owner's call.
         run: |
           set -euo pipefail
           rustup toolchain install stable --profile minimal -c rustfmt
@@ -292,6 +303,9 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Clippy
+        # Its rule set is whatever the runner's unpinned stable carries on the
+        # day, so a Rust release can fail this required check with no change to
+        # the source.
         # `--all-targets` so tests and benches are linted too: the workspace sets
         # clippy pedantic+nursery to warn, and `-D warnings` makes every one of
         # those a hard error wherever it appears. `--workspace` is explicit for

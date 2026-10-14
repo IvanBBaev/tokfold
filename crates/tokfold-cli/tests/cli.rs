@@ -3809,7 +3809,11 @@ fn the_same_file_guard_ignores_two_spellings_of_one_device() {
         stderr.contains("left /dev/null untouched: it is not a regular file"),
         "{stderr}"
     );
-    assert!(out.stdout.is_empty());
+    assert!(
+        out.stdout.is_empty(),
+        "an empty input passed through must leave stdout empty, not {:?}",
+        String::from_utf8_lossy(&out.stdout)
+    );
 }
 
 /// A standard input opened write-only on the archive reads nothing through that

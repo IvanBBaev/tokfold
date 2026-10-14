@@ -520,6 +520,30 @@ released says so, and names what `0.0.1` does in the same case.
   write. The open and the read are driven by a test; the `stat` between them is
   reachable only by a race against the resolution that precedes it, so nothing claims to
   cover it.
+- **The required `clippy` gate has been red on CI since the runner's stable reached
+  1.99.0, on sites no commit had touched.** Never released. Both lints are `allow`
+  upstream and reach this build only through the root manifest's `pedantic`/`nursery`
+  opt-in, where `-D warnings` makes each a hard error, and the gate installs *unpinned*
+  `stable`: run 36246733799 (`0f759f6`, 2026-09-26) passed under rustc 1.98.1, run
+  38554022691 (`482e5aa`, 2026-10-14) failed under 1.99.0. Pedantic's `assert_is_empty`
+  reported `assert!(out.stdout.is_empty())` in
+  `the_same_file_guard_ignores_two_spellings_of_one_device`, which shipped in `0f759f6`
+  itself and was silent in that commit's own green run; nursery's
+  `branches_sharing_code` reported `cmd_compress`, both of whose match arms already
+  ended in `Ok(ExitCode::SUCCESS)` in that commit. The local gate cannot see either,
+  because its clippy is whatever toolchain the box carries -- 1.97.0 here -- so a green
+  local gate was no evidence about a required check that was already failing. The
+  `assert!` now carries a message that prints the unexpected bytes, which is also what
+  silences the lint: measured, not assumed, `assert_is_empty` does not fire on an
+  `assert!` that has a custom message. `cmd_compress` hoists the single
+  `Ok(ExitCode::SUCCESS)` out of both arms, with a comment stating that the rejected and
+  the compressed path exit alike and that the only other way out of the function is a
+  `?`. Verified `rc=0` under `cargo +1.99.0 clippy --workspace --all-targets
+  --all-features -- -D warnings`, with `tokfold-core` and `tokfold-mcp` clean. The
+  reason the fmt job gives for pinning both gates to stable -- that rule-set drift
+  between releases would otherwise cause failures unrelated to the MSRV contract -- now
+  records that stable does not escape that drift but only dates it, and that whether to
+  pin a version is the owner's call.
 
 ### Changed
 
