@@ -450,13 +450,33 @@ It locates the native binary for your platform and runs it.
   `node:child_process` and `lib/resolve.js`; `lib/resolve.js` requires only
   `node:path` and the launcher's own `package.json`. Neither file opens a connection.
 - **No environment reads.** Neither file reads `process.env`. The binary is spawned
-  with Node's default environment handling, so it inherits the launcher's environment
-  unchanged, as it would if run directly.
+  with Node's default environment handling, and every variable whose name and value
+  are valid UTF-8 reaches it unchanged: with such an environment a child spawned
+  through the launcher and the same child run directly see byte-identical entries
+  (measured on macOS, 57 of 57). A variable whose bytes are *not* valid UTF-8 does
+  not survive the trip, because `spawn` without an `env` option does not hand on the
+  caller's `environ` -- it serialises `process.env`, a JavaScript object of decoded
+  strings, back into `KEY=value` pairs. Measured: a value of `0xFF 0xFE 0x80` arrives
+  as nine bytes, `0xEF 0xBF 0xBD` three times, one U+FFFD per undecodable byte; and a
+  name that is not valid UTF-8 is absent from `Object.keys(process.env)` altogether,
+  so the pair is never built and the variable does not reach the binary at all. None
+  of the variables tokfold itself reads (*Environment variables*) has a name or a
+  meaningful value outside ASCII, so this changes no tokfold behaviour -- it is
+  recorded because "unchanged" otherwise reads as a promise about every environment.
 - **No files written.** `node:fs` is used only to write the launcher's own error
   messages to standard error (`fs.writeSync(2, …)`).
-- **Arguments and streams pass straight through.** The binary receives
-  `process.argv.slice(2)` and the caller's standard input, output and error
-  (`stdio: "inherit"`). The launcher never sees the data.
+- **Arguments and streams pass straight through, with one decoding caveat on the
+  arguments.** The binary receives `process.argv.slice(2)` and the caller's standard
+  input, output and error (`stdio: "inherit"`). The streams are inherited
+  descriptors -- nothing is copied, decoded or buffered by the launcher, which is why
+  it never sees the data. The arguments take the same UTF-8 round trip as the
+  environment above, so an argument byte that does not decode is replaced: measured,
+  an `--input` path ending `caf` `0xE9` `.json` reaches the binary with that `0xE9`
+  rewritten as `0xEF 0xBF 0xBD`. Run directly the bytes survive, because the binary
+  takes its paths as `PathBuf` from clap's `args_os`. On this platform no file is
+  lost that way: APFS refuses to create a name holding an undecodable byte at all
+  (`EILSEQ`, errno 92, measured), so there is nothing for the rewritten path to miss.
+  On a filesystem that accepts arbitrary bytes in a name this has not been measured.
 - **One process report on Linux.** To tell glibc from musl, `isMusl()` in
   `npm/tokfold/lib/resolve.js` calls `process.report.getReport()`. It does this only
   on Linux. Node builds that report in memory, and it includes the process's

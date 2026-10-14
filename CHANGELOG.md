@@ -3906,6 +3906,50 @@ documentation a previous fix falsified.
   The rule: **a conclusion is not a derivation — a scope sentence must account for every
   hit the check behind it returns, and a feature gate is part of the measurement.**
   Documentation only: no code, no behaviour and no format change.
+- **A runtime's translation layer is a claim in both directions: the npm launcher's
+  "environment unchanged" and "arguments pass straight through" were promises about
+  bytes the launcher re-encodes.** `docs/privacy.md`'s *The npm launcher* said the
+  binary "inherits the launcher's environment unchanged, as it would if run directly"
+  and that arguments "pass straight through". Both hold only for bytes that are valid
+  UTF-8. `spawn` with no `env` option does not hand on the caller's `environ`: it
+  serialises `process.env` — a JavaScript object of decoded strings — back into
+  `KEY=value` pairs, and `process.argv` is decoded the same way. Measured on Node
+  v26.7.0, against a copy of `npm/tokfold` beside a
+  `node_modules/tokfold-darwin-arm64/bin/tokfold` that dumps `os.environb` and
+  `sys.argv`: with an all-UTF-8 environment the child sees byte-identical entries
+  either way, 57 of 57 — the launcher adds nothing and drops nothing — but a value of
+  `0xFF 0xFE 0x80` arrives as nine bytes, `0xEF 0xBF 0xBD` three times, and a *name*
+  that is not valid UTF-8 never appears in `Object.keys(process.env)` at all, so no
+  pair is built for it and the variable does not reach the binary. The same round trip
+  rewrites arguments: an `--input` path ending `caf` `0xE9` `.json` arrives with that
+  byte as `0xEF 0xBF 0xBD`, while the binary run directly receives it intact, taking
+  its paths as `PathBuf` from clap's `args_os`.
+
+  Two things bound the finding rather than widen it. No file is lost to the argument
+  rewrite on this platform: APFS refuses to create a name holding an undecodable byte
+  (`EILSEQ`, errno 92, measured both from `printf` and from `open`), so there is
+  nothing for the rewritten path to miss — on a filesystem that accepts arbitrary
+  bytes in a name it has not been measured. And nothing tokfold reads is affected:
+  the variables in *Environment variables* have ASCII names and no meaningful
+  non-ASCII value. What was wrong was the scope of two sentences, not the behaviour
+  they describe. It is the published launcher as much as the working tree — the same
+  `spawn(binary, process.argv.slice(2), { stdio: "inherit" })` stands in `87fb332`,
+  whose `npm/tokfold/bin/tokfold` hashes to the registry launcher's `5e02a469…` — so
+  both bullets now state what they hold for and show the measurement.
+
+  The section's other bullets were re-measured and are true as written, including the
+  one that looked likeliest to fail: **No files written.** is a category claim, and
+  `fs.writeSync(2, …)` does land in a file whenever the caller redirects standard
+  error — but this document's own vocabulary, set under *What the CLI writes*, already
+  counts a redirected stream as the caller's file and not as one tokfold opens, and
+  reads that way here too.
+
+  The rule: **a runtime's translation layer is a claim in both directions.** The
+  launcher's signal handling taught this once already, on what Node reports coming out
+  of the child; this is the same layer carrying the caller's environment and argument
+  vector in. A document that promises about either is promising about bytes, and the
+  launcher only ever handed on strings.
+  Documentation only: no code, no behaviour and no format change.
 ### Tests
 - **The offset in the node-budget refusal was pinned nowhere, under a comment that
   mis-stated the message.** `an_over_budget_message_reports_the_node_limit` asserted
