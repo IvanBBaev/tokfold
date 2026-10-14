@@ -4259,6 +4259,35 @@ documentation a previous fix falsified.
   timeout, re-measured on this tree. Documentation only: no code, no behaviour and no
   format change.
 
+- **A process report named by its smallest field.** `docs/privacy.md`, under *The npm
+  launcher*, said that the report `isMusl()` asks Node for on Linux "includes the
+  process's environment variables" and that the launcher "reads one field from it …
+  and discards the rest". The second half is exact. The first names one of the eleven
+  top-level keys the report holds, in a section whose job is to enumerate what the
+  launcher builds in memory.
+
+  Enumerated on Node v26.7.0, macOS Darwin 27.0.0 arm64 — the call is Linux-only, so
+  this is the shape and not the launcher's own run: 45 843 bytes of JSON over `header`,
+  `javascriptStack`, `javascriptHeap`, `nativeStack`, `resourceUsage`,
+  `uvthreadResourceUsage`, `libuv`, `workers`, `environmentVariables`, `userLimits`
+  and `sharedObjects`, with `header` carrying the whole `commandLine`, the `cwd`, the
+  `processId` and `threadId`, the `host` name, the OS and CPU inventory, a wall-clock
+  `dumpEventTime` and `dumpEventTimeStamp`, and 17 `networkInterfaces` entries with
+  their MAC and IP addresses. `sharedObjects` lists 414 loaded library paths, and
+  `environmentVariables` matches `Object.keys(process.env).length` exactly. The byte
+  count moves run to run with the command line, the stacks and the environment it
+  copies, so the bullet publishes it as a scale and not a constant. The Linux field
+  set is not measured here; the control that the platform difference is real rather
+  than assumed is that `'glibcVersionRuntime' in r.header` is false on macOS, which is
+  the reason the call sits behind a Linux check at all.
+
+  The reassurance is unchanged either way — one field read, the rest discarded,
+  nothing written and nothing sent anywhere — which is why the correction costs
+  nothing. The timestamp is the second consequence: *Telemetry*'s "No clock is read"
+  bullet now names `header.dumpEventTime` and `header.dumpEventTimeStamp` as a clock
+  value the launcher causes to be read and never reads itself, beside the
+  `Atomics.wait` case. Documentation only: no code, no behaviour and no format change.
+
 ### Tests
 - **The offset in the node-budget refusal was pinned nowhere, under a comment that
   mis-stated the message.** `an_over_budget_message_reports_the_node_limit` asserted

@@ -256,7 +256,11 @@ stale-archive deletion and no same-file guards (see
   stopped, which is the caller's choice and not tokfold's. So the launcher reads no
   clock *value* -- `Atomics.wait` hands back a verdict, not a time -- but it does ask
   the engine to measure elapsed time, and a grep for those five tokens is a claim about
-  those five tokens and not about the category in this bullet's heading.
+  those five tokens and not about the category in this bullet's heading. One case sits
+  outside both: on Linux the process report `isMusl()` asks Node for, enumerated under
+  *The npm launcher*, arrives with a wall-clock `header.dumpEventTime` and
+  `header.dumpEventTimeStamp` filled in — a clock value the launcher causes to be read
+  and never reads itself.
 - **Outputs carry no timestamp; the filesystem records the run anyway.** Neither the
   rendering on standard output nor the archive holds a date. A twelve-row fixture
   compressed with `--archive` gives 323 bytes on stdout and an 831-byte archive, and
@@ -660,10 +664,27 @@ It locates the native binary for your platform and runs it.
   On a filesystem that accepts arbitrary bytes in a name this has not been measured.
 - **One process report on Linux.** To tell glibc from musl, `isMusl()` in
   `npm/tokfold/lib/resolve.js` calls `process.report.getReport()`. It does this only
-  on Linux. Node builds that report in memory, and it includes the process's
-  environment variables. The launcher reads one field from it,
-  `header.glibcVersionRuntime`, and discards the rest. Nothing is written or sent
-  anywhere.
+  on Linux. Node builds that report in memory, and the environment variables are one
+  of the eleven top-level keys it holds, so naming them alone understates it.
+  Enumerated on Node v26.7.0 on this macOS box — where the call is not on the
+  launcher's path, and is made here only to see the shape — the report is 45 843 bytes
+  of JSON over `header`, `javascriptStack`, `javascriptHeap`, `nativeStack`,
+  `resourceUsage`, `uvthreadResourceUsage`, `libuv`, `workers`,
+  `environmentVariables`, `userLimits` and `sharedObjects`. Its `header` carries the
+  process's whole `commandLine` with every argument, its `cwd`, its `processId` and
+  `threadId`, the machine's `host` name, the OS and CPU inventory (10 entries here), a
+  wall-clock `dumpEventTime` and `dumpEventTimeStamp`, and 17 `networkInterfaces`
+  entries with their MAC and IP addresses — the first of them
+  `{"name":"lo0","internal":true,"mac":"00:00:00:00:00:00","address":"127.0.0.1",…}`.
+  `sharedObjects` lists 414 loaded library paths, and `environmentVariables` has one
+  entry per `process.env` key: 51 here, and the control is that the two counts are
+  equal. The byte figure moves run to run with the command line, the stacks and the
+  environment it copies, so it is a scale and not a constant. The launcher reads one
+  field out of all of that, `header.glibcVersionRuntime`, and discards the rest:
+  nothing is written and nothing is sent anywhere. The Linux field set is not measured
+  here, and the control that the difference between the platforms is real rather than
+  assumed is that `'glibcVersionRuntime' in r.header` is **false** on this box, which
+  is why the call sits behind a Linux check at all.
 
 ## Keeping this document true
 
