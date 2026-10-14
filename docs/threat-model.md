@@ -103,6 +103,7 @@ or a tool get back what was really there.
 | **The rendering's meaning** | The model acts on the rendering. A rendering that reads differently from the original misleads the agent, even if the archive is intact. |
 | **Availability of the host** | tokfold runs inside, or next to, an agent. A crash, a hang or a runaway allocation takes the agent's tool path down with it. |
 | **Files at the `--archive` path** | `compress` overwrites that path, and can delete it (see *Archive path handling*). |
+| **The file standard output is redirected to** | `expand` writes the original bytes there verbatim; `compress` writes the rendering; `mcp` writes its replies. The CLI does not name that file and does not set its mode (see *Archive path handling*). |
 
 ## Attacker capabilities considered
 
@@ -201,7 +202,7 @@ What the code does, and does not do, about it:
 
 ### Archive path handling (CLI)
 
-The only file the CLI writes is the `--archive` path, through `write_file` in
+The only file the CLI opens by name is the `--archive` path, through `write_file` in
 `main.rs`. It deletes only a stale archive at that same path, through
 `clear_stale_archive`. Both resolve a symlink at that path and act on its target, so
 "that same path" names the file the path resolves to and not always the file you
@@ -221,6 +222,25 @@ and no write ever happened
 (`a_symlink_aimed_at_a_fifo_is_refused_by_the_write_path`). The guards around both are
 documented in `crates/tokfold-cli/README.md` and in the rustdoc of the functions named
 here.
+
+It is not the only file the CLI *writes*. Every command writes to standard output, and
+a redirect puts that on disk: the CLI then writes a file it never names, through a
+descriptor it inherits, and it neither creates the file, nor chooses its mode, nor can
+refuse the write. `expand` puts the original bytes there verbatim, so that file is as
+sensitive as the archive — measured on macOS arm64 against `cargo build --release`, a
+1,551-byte input round-tripped through `compress --archive a.tkfd` and `expand >
+restored.json` left `restored.json` equal to the input byte for byte, at `0644` under
+umask `022`. Its mode is the shell's: under `022`, `077` and `000` it came out `0644`,
+`0600` and `0666`, the same three figures as the archive, so *The archive leaks through
+file permissions* reads the same way for this file — except that nothing in tokfold
+could set it. `ensure_output_is_not_the_input` refuses a run whose standard output is
+the file it reads, first thing in all four commands (`cmd_compress`, `cmd_expand`,
+`cmd_stats`, `cmd_mcp`) and Unix-only like the other descriptor guards; its rustdoc
+states what the refusal saves. With `>>` the input survives (measured: exit `2`, the
+1,551 bytes intact); with `>` the shell emptied the file before tokfold started
+(measured: exit `2`, 0 bytes), so there the refusal saves the rest of the run and not
+the bytes — including a `compress --archive` that would otherwise read the emptied
+input as a rejected document and clear the stale archive beside it.
 
 - A rejected pass deletes a previous archive at the path only if that path is a
   regular file that opens with the `TKFD` magic. This keeps a stale archive from
@@ -458,19 +478,19 @@ They are listed so that nobody mistakes them for undiscovered defects.
 
 ## Where this document can go stale
 
-Every claim above about what the code *does* names the function, file or `--help`
-entry that holds it, or a section of this document that does. Eight are anchored only
-through a section rather than directly: the *Availability* row for a client that stops
-reading, the *Confidentiality* row for file permissions, the *Assets* row for files at
-the `--archive` path, F6, E2 shape interning, forged archives, the Unix-only same-file
-guards, and the archive's mode following the umask. `grep -nE '[Ss]ee \*'
-docs/threat-model.md` finds those eight plus the *Availability* row for oversized
-input, which carries direct anchors as well; match `see \*` rather than a section
-name, because one of the eight wraps mid-reference. A change to one of those places
-can falsify a sentence here. When one changes, re-read the matching entry rather than
-assuming it still holds.
+Every claim above about what the code *does* names the function, file or `--help` entry
+that holds it, or a section of this document that does. Nine are anchored only through a
+section rather than directly: the *Availability* row for a client that stops reading,
+the *Confidentiality* row for file permissions, the *Assets* rows for files at the
+`--archive` path and for the file standard output is redirected to, F6, E2 shape
+interning, forged archives, the Unix-only same-file guards, and the archive's mode
+following the umask. `grep -nE '[Ss]ee \*' docs/threat-model.md` finds those nine plus
+the *Availability* row for oversized input, which carries direct anchors as well; match
+`see \*` rather than a section name, because one of the nine wraps mid-reference. A
+change to one of those places can falsify a sentence here. When one changes, re-read the
+matching entry rather than assuming it still holds.
 
-The rule does not reach *Attacker capabilities considered* or three of the five
+The rule does not reach *Attacker capabilities considered* or three of the six
 *Assets* rows, and cannot. A1 to A5, the out-of-scope note, and the rows for the
 original bytes, the rendering's meaning and the availability of the host say why
 something matters, or what an attacker is assumed to control — not what the code
@@ -478,16 +498,16 @@ does — so no change to the code falsifies them, and nothing triggers a re-read
 them. Until 2026-10-10 this section claimed the rule for *every* claim above, which
 made those sentences look guarded when review is all that holds them.
 
-The other two *Assets* rows do say what the code does, and carry an anchor: **The
+The other three *Assets* rows do say what the code does, and carry an anchor: **The
 archive** cites the `--archive` entry of `tokfold compress --help`, which holds the
-verbatim-and-unencrypted wording itself, and **Files at the `--archive` path** cites
-*Archive path handling*. Nor is *What tokfold is, in one paragraph* free of code
-claims: the passthrough of anything the engine cannot parse, and an archive that is a
-header followed by the original bytes verbatim from which the original is
-reconstructed exactly, are both behaviour. It restates them rather than anchoring
-them — the passthrough is held by `cmd_compress` in `crates/tokfold-cli/src/main.rs`
-and, on the MCP path, by the `compressed: false` reply built in
-`crates/tokfold-mcp/src/tools.rs`; the archive half by *Integrity of reconstruction* —
-so re-read the summary when either changes. Until 2026-10-14 this section counted that
-paragraph and the whole *Assets* table as beyond the rule's reach, and named two of the
-eight indirect anchors as though they were all of them.
+verbatim-and-unencrypted wording itself, and **Files at the `--archive` path** and **The
+file standard output is redirected to** both cite *Archive path handling*. Nor is *What
+tokfold is, in one paragraph* free of code claims: the passthrough of anything the
+engine cannot parse, and an archive that is a header followed by the original bytes
+verbatim from which the original is reconstructed exactly, are both behaviour. It
+restates them rather than anchoring them — the passthrough is held by `cmd_compress` in
+`crates/tokfold-cli/src/main.rs` and, on the MCP path, by the `compressed: false` reply
+built in `crates/tokfold-mcp/src/tools.rs`; the archive half by *Integrity of
+reconstruction* — so re-read the summary when either changes. Until 2026-10-14 this
+section counted that paragraph and the whole *Assets* table as beyond the rule's reach,
+and named two of the then eight indirect anchors as though they were all of them.

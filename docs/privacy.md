@@ -33,8 +33,11 @@ stale-archive deletion and no same-file guards (see
 - tokfold makes no network connections.
 - It sends no telemetry or usage data anywhere.
 - It keeps no cache, no history and no log file.
-- The only file it writes is the one you name with `--archive` — or, when that
+- The only file it opens by name is the one you name with `--archive` — or, when that
   name is a symlink, the file it resolves to.
+- A redirect is the other way your data reaches disk: `tokfold expand > restored.json`
+  writes your original bytes into `restored.json` verbatim. tokfold never names that
+  file and never sets its mode; your shell does both.
 - That archive contains your input **verbatim**, unencrypted.
 - The MCP server returns that same archive to its client by default.
 
@@ -182,9 +185,12 @@ stale-archive deletion and no same-file guards (see
 - **Standard error:** diagnostics, all through one function (`warn` in `main.rs`).
   These can include the paths you passed and sizes. The `mcp` subcommand also prints
   its experimental notice there on start-up.
-- **The `--archive` path, and nothing else on disk.** `write_file` in `main.rs` is the
-  only function that writes a file. Read "the `--archive` path" as *the file that
-  path resolves to*: both the write and the deletion of a stale archive follow a
+- **The `--archive` path, and nothing else tokfold opens itself.** `write_file` in
+  `main.rs` is the only function that opens a file to write it. A redirect still puts
+  standard output on disk — the *Standard output* bullet says what goes there, and on
+  `expand` it is your original bytes verbatim — but that file is the caller's: tokfold
+  does not name it, create it or set its mode. Read "the `--archive` path" as *the file
+  that path resolves to*: both the write and the deletion of a stale archive follow a
   symlink at that path to its target.
   - It opens the path with `write`, `create` and `truncate`, and sets no permissions,
     so a new archive gets your process umask's default mode. Measured on macOS: under
@@ -193,7 +199,10 @@ stale-archive deletion and no same-file guards (see
   - An existing file keeps its mode when it is overwritten: a file at `0666` stayed
     `0666` under umask `077`.
   - If the archive must be private, set a restrictive umask (`umask 077`) or create
-    the file with the mode you want before the first run.
+    the file with the mode you want before the first run. The same applies to a file
+    you redirect standard output into, which gets the same mode from the same umask:
+    measured under `022`, `077` and `000`, both files came out `0644`, `0600` and
+    `0666`.
 - **One deletion.** When `compress` rejects its input and passes it through, it
   deletes a previous archive at the `--archive` path, so that a stale archive cannot
   be mistaken for this run's. It does this only if the path is a regular file that
@@ -245,9 +254,11 @@ stale-archive deletion and no same-file guards (see
 
 ### Caches and temporary files
 
-- **None at run time.** The CLI writes no file other than the `--archive` path (or,
-  through a symlink there, that path's target), and neither library crate writes
-  files.
+- **None at run time.** The CLI opens no file of its own other than the `--archive`
+  path (or, through a symlink there, that path's target), and neither library crate
+  writes files. A file you redirect standard output into is not a temporary file of
+  tokfold's — it is where you asked the output to go — but it is on disk, and on
+  `expand` it holds your original bytes verbatim.
 - **A `cargo test` run is a different story, and the *None at run time* bullet is
   about the shipped binary.** The workspace's own sources name a temporary directory in two
   places: `std::env::temp_dir`, in the `#[cfg(test)]` module `archive_identity_tests`

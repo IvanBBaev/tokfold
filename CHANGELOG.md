@@ -750,6 +750,30 @@ released says so, and names what `0.0.1` does in the same case.
   second source of truth.
 
 ### Documentation
+- **"The only file the CLI writes" was false, and said so in a privacy document.**
+  `docs/threat-model.md`'s *Archive path handling (CLI)* opened with that sentence, and
+  the same section's own bullet on the same-file guards documents
+  `ensure_output_is_not_the_input`, whose message names a second file the CLI writes:
+  "{} is the file standard output is redirected to". `docs/privacy.md` stated the same
+  claim three times, once as "and nothing else on disk", while its own *Standard output*
+  bullet lists "the restored original (`expand`)" among what goes there. Measured on
+  macOS arm64 (Darwin 27.0.0) against `cargo build --release`: a 1,551-byte input
+  round-tripped through `compress --archive a.tkfd` and `expand > restored.json` left
+  `restored.json` byte-for-byte equal to the input, at mode `0644` under umask `022`,
+  and at `0600` and `0666` under `077` and `000` — the same three figures as the
+  archive, except that nothing in tokfold chooses them: the CLI does not name that file,
+  does not create it, and cannot refuse the write. The guard is real and runs first in
+  all four commands (`cmd_compress`, `cmd_expand`, `cmd_stats`, `cmd_mcp` — the whole
+  command enum), Unix-only like the other descriptor guards: `-i app.json >> app.json`
+  exits `2` with the 1,551 bytes intact, and `-i app.json > app.json` exits `2` with the
+  file already 0 bytes, because the shell truncated it before tokfold started — there
+  the refusal saves the rest of the run and not the bytes. The lead sentence now says
+  "opens by name", a paragraph carries the measurements and says that file is as
+  sensitive as the archive, and a sixth *Assets* row names it. That row is itself a
+  code-doing claim anchored only through a section, so the staleness counts moved in the
+  same edit — eight indirect references to nine, five *Assets* rows to six, two
+  code-doing rows to three — rather than being left falsified by the fix beside them.
+
 - **A staleness rule whose own enumeration covered a quarter of its members.**
   `docs/threat-model.md`'s *Where this document can go stale* said the rule "does not
   reach three sections, and cannot", naming *What tokfold is, in one paragraph*,
