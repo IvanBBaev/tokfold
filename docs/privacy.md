@@ -237,9 +237,26 @@ stale-archive deletion and no same-file guards (see
   dependency, so that file runs only during the build, and a doc example does not run
   at all — and `libc`'s `sceKernelGetSystemTime` declarations, which are PSP-only.
   `libc` declares 51 clock functions across its platforms, and no crate in the graph
-  calls one. The npm launcher is not a crate, so the sentence above leaves it out: its
-  one match for `Date`, `hrtime`, `performance`, `setTimeout` or `setInterval` is a
-  comment in `npm/tokfold/bin/tokfold` explaining why it does *not* use `setTimeout`.
+  calls one. The npm launcher is not a crate, so the sentence above leaves it out, and
+  over everything the launcher package contains the five JavaScript tokens `Date`,
+  `hrtime`, `performance`, `setTimeout` and `setInterval` return exactly one match: a
+  comment in `npm/tokfold/bin/tokfold` explaining why `pause` does *not* use
+  `setTimeout`. **That comment names what it uses instead, and none of the five tokens
+  can match it.** `pause` sleeps with
+  `Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)`, and a finite
+  timeout is a duration the engine has to measure: the call returns only when the wait
+  is over, and it returns the string `"timed-out"` to say which way it ended. Measured
+  on Node v26.7.0, macOS Darwin 27.0.0 arm64, one run each under
+  `node -e 'console.log(Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,N))'`:
+  `"timed-out"` after 0.305 s, 0.551 s and 1.058 s for N of 250, 500 and 1000, against a
+  0.075 s baseline for `node -e 'process.exit(0)'`, and the launcher's own budget --
+  `EAGAIN_ATTEMPTS` (1000) pauses of `EAGAIN_PAUSE_MS` (1) -- cost 1.337 s. That budget
+  is reachable without a debugger: `writeStderr` is the launcher's only stderr writer,
+  and `fs.writeSync` raises EAGAIN whenever fd 2 is a non-blocking pipe whose reader has
+  stopped, which is the caller's choice and not tokfold's. So the launcher reads no
+  clock *value* -- `Atomics.wait` hands back a verdict, not a time -- but it does ask
+  the engine to measure elapsed time, and a grep for those five tokens is a claim about
+  those five tokens and not about the category in this bullet's heading.
 - **Outputs carry no timestamp; the filesystem records the run anyway.** Neither the
   rendering on standard output nor the archive holds a date. A twelve-row fixture
   compressed with `--archive` gives 323 bytes on stdout and an 831-byte archive, and

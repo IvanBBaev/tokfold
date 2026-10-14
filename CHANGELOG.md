@@ -4230,6 +4230,35 @@ documentation a previous fix falsified.
   the double echo is the whole of the exposure on that path. Documentation only: no
   code, no behaviour and no format change.
 
+- **A five-token grep offered as the answer to a category.** `docs/privacy.md`
+  section *Telemetry*, bullet "No clock is read", swept the npm launcher for `Date`,
+  `hrtime`, `performance`, `setTimeout` and `setInterval`, found one match, and
+  reported it as a comment explaining why the launcher does *not* use `setTimeout`.
+  That is true of those five tokens. The same comment says what `pause` uses instead,
+  and no grep in that bullet looks for it: `Atomics.wait(new
+  Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)`, whose finite timeout is a duration
+  the engine has to measure.
+
+  Measured on Node v26.7.0, macOS Darwin 27.0.0 arm64, one run each under
+  `node -e 'console.log(Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,N))'`:
+  the call returns the string `"timed-out"` after 0.305 s, 0.551 s and 1.058 s for N of
+  250, 500 and 1000, against a 0.075 s baseline for `node -e 'process.exit(0)'`; the
+  launcher's own budget, `EAGAIN_ATTEMPTS` (1000) pauses of `EAGAIN_PAUSE_MS` (1), cost
+  1.337 s. The budget is production-reachable: `writeStderr` is the launcher's only
+  stderr writer and `fs.writeSync` raises EAGAIN whenever fd 2 is a non-blocking pipe
+  whose reader has stopped.
+
+  The bullet now reports both halves of the comment it cites and says what the grep
+  does and does not answer -- the launcher reads no clock *value*, since `Atomics.wait`
+  hands back a verdict rather than a time, but it does ask the engine to measure
+  elapsed time. Checked for siblings: `docs/privacy.md` is the only file carrying this
+  claim. `README.md` and `crates/tokfold-core/README.md` say "no file, network, or
+  clock access anywhere in the core", which is scoped to the core crate and is not
+  about the launcher. The Rust half of the same bullet needed no change -- no
+  first-party source outside `crates/tokfold-cli/tests/cli.rs` sleeps or waits on a
+  timeout, re-measured on this tree. Documentation only: no code, no behaviour and no
+  format change.
+
 ### Tests
 - **The offset in the node-budget refusal was pinned nowhere, under a comment that
   mis-stated the message.** `an_over_budget_message_reports_the_node_limit` asserted
