@@ -94,14 +94,29 @@ Those are the codes the process *chooses*. A process killed by a signal returns 
 of them, and tokfold cannot make it otherwise: under an `RLIMIT_FSIZE` low enough to
 cut a file write short — the archive, or a standard output redirected to a file — the
 binary dies on `SIGXFSZ` with an empty standard error, and a shell reports `153`,
-the npm launcher `128 + N` for the same reason. That is the default disposition of
-`SIGXFSZ`, and a process inherits whatever disposition its parent left: under a
-parent that ignores the signal (`trap '' XFSZ` in a shell, or Python's
-`os.system`, which runs its command with the interpreter's own ignored `SIGXFSZ`) the
-same write fails with `File too large` instead, and tokfold reports it and exits `2`,
-leaving the partly written file behind. A caller that treats any code outside
-`0`/`2`/`3` as "tokfold misbehaved" will misread the signal death; treat it as what it
-is, the operating system stopping the process before it could report anything.
+that signal being 25 on macOS. That is the signal's default disposition, and `exec`
+preserves an *ignored* one: under a parent that ignores it (`trap '' XFSZ` in a
+shell, or Python's `os.system`, which runs its command with the interpreter's own
+ignored `SIGXFSZ`) the same write fails with `File too large` instead, and tokfold
+reports it and exits `2`, leaving the partly written file behind. A caller that
+treats any code outside `0`/`2`/`3` as "tokfold misbehaved" will misread the signal
+death; treat it as what it is, the operating system stopping the process before it
+could report anything.
+
+Inheriting an ignore is not what happens through the npm launcher, and the `128 + N`
+it exits is not that `153` arriving by another route. Node ignores `SIGXFSZ` for
+itself, and the binary it spawns dies of it anyway, because a spawned child's
+dispositions are reset to their defaults before `exec` rather than inherited. The
+launcher reproduces a signal death by re-raising the signal on itself, which a signal
+the runtime ignores cannot do, so it falls back to `128 + N`: the same number the
+shell reports, reached by the opposite mechanism. Measured on macOS under zsh, whose
+`ulimit -f 1` is 512 bytes, with Node v22.23.2, using `dd` as the writing child — a
+plain child of the shell dies and the shell reports `153`; under `trap '' XFSZ` it
+survives a 512-byte short write and exits `1`, and Python's `os.system` returns
+`256`, which is that same exit `1` and not a signal; Node's own `fs.writeFileSync`
+past the limit raises `EFBIG` and Node lives; and `spawnSync` of the writing child
+reports
+`status: null, signal: "SIGXFSZ"`.
 
 `mcp` exits `0` when the client hangs up — on clean end-of-input and on a broken
 pipe alike — and `2` when its stdio fails any other way, which on Unix includes a

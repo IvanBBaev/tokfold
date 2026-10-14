@@ -751,6 +751,37 @@ released says so, and names what `0.0.1` does in the same case.
 
 ### Documentation
 
+- **The CLI README credited the npm launcher's `128 + N` to the mechanism that cannot
+  produce it.** Its exit-code section said the binary "dies on `SIGXFSZ` … and a shell
+  reports `153`, the npm launcher `128 + N` for the same reason", and named that reason
+  in the next sentence: "the default disposition of `SIGXFSZ`, and a process inherits
+  whatever disposition its parent left". Both halves are wrong about the launcher, and
+  the repo's three other accounts of it — `npm/tokfold/README.md`, the *The npm launcher
+  cannot always reproduce a signal death* list in `docs/threat-model.md`, and the
+  launcher's own header — each already said so. Node ignores `SIGXFSZ` process-wide, so
+  it is an *ignoring* parent: under the stated inheritance rule its child would get
+  `File too large` and exit `2`, never a signal. The child dies all the same, because a
+  spawned child's dispositions are reset to their defaults before `exec` rather than
+  inherited — the launcher's header states exactly that ("Node starts the child with
+  every signal at its default"). And the launcher's `128 + N` is not a shell's `153`
+  reached by another route: the launcher reproduces a signal death by re-raising the
+  signal on itself, which a signal the runtime ignores cannot do, so `128 + N` is the
+  fallback for precisely that case, as the comment on `process.exit(128 + number)`
+  says. The two numbers coincide at `153` by construction, from opposite mechanisms.
+  The paragraph now scopes the inheritance rule to `exec` and to the two examples it
+  actually holds for, and a second paragraph gives the launcher its own derivation.
+  Measured on macOS (Darwin 27.0.0, arm64) under zsh, whose `ulimit -f 1` is 512 bytes,
+  with Node v22.23.2, using `dd` as the writing child: a plain child of the shell is
+  reported `153` (`SIGXFSZ` is 25 there); under `trap '' XFSZ` it survives a 512-byte
+  short write and exits `1`; Python's `os.system` returns `256`, which is that exit `1`
+  and not a signal; Node's own `fs.writeFileSync` past the limit raises `EFBIG` and
+  Node lives; and `spawnSync` of the writing child reports `status: null, signal:
+  "SIGXFSZ"`. The shape is one this changelog keeps recording: a runtime's translation
+  layer is a claim — measure what reaches the handler, not what the kernel sent — and a
+  general rule stated beside the one case it gets wrong. No test or CI job reads this
+  file, so nothing but review guarded it; the three documents that had it right are
+  the ones a reader of the launcher would reach first.
+
 - **The CLI README promised a Unix-only guard on every platform, for `mcp`.**
   `cmd_mcp` calls `ensure_output_is_not_the_input` before the experimental notice and
   before the transport starts, so `tokfold mcp < requests >> requests` is refused with
