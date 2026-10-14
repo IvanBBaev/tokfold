@@ -649,9 +649,10 @@ fn a_node_dense_line_is_refused_although_it_fits_the_frame() {
     // cannot show that the refusal below costs the caller an id it did send. The
     // envelope is 6 values — the outer object, `"2.0"`, `"ping"`, the id, the `_meta`
     // object and the array — so the budget trips one zero past `MAX_NODES - 6`.
+    const ENVELOPE: &str = r#"{"jsonrpc":"2.0","method":"ping","id":1,"_meta":{"x":["#;
     let count = json::MAX_NODES - 6 + 1;
     let mut dense = String::with_capacity(count * 2 + 64);
-    dense.push_str(r#"{"jsonrpc":"2.0","method":"ping","id":1,"_meta":{"x":["#);
+    dense.push_str(ENVELOPE);
     for index in 0..count {
         if index > 0 {
             dense.push(',');
@@ -687,6 +688,20 @@ fn a_node_dense_line_is_refused_although_it_fits_the_frame() {
     // is that this caller cannot tie the refusal to the call it is blocked on.
     assert_eq!(replies[0].get("id"), None);
     assert_eq!(id_of(&replies[0]), None);
+
+    // The offset in the line an operator logs. The budget is spent entering the array's
+    // last element, which begins after the envelope and two bytes for each of the
+    // `MAX_NODES - 6` elements before it. Derived from the same two quantities the line
+    // itself is built from, so it cannot drift away from the budget.
+    let expected = format!(
+        "invalid JSON at byte {}: too many values in one message",
+        ENVELOPE.len() + 2 * (json::MAX_NODES - 6)
+    );
+    assert_eq!(
+        error.get("message").and_then(json::Value::as_str),
+        Some(expected.as_str()),
+        "the refusal names the value that spent the last of the budget"
+    );
 
     assert_eq!(
         id_of(&replies[1]),

@@ -1114,9 +1114,18 @@ mod tests {
     fn an_over_budget_message_reports_the_node_limit() {
         let error = parse_bounded(&dense_array(8), 8).unwrap_err();
         assert_eq!(error.msg, "too many values in one message");
-        // The message a caller logs names the limit rather than the syntax, so an
-        // operator can tell a refused-because-huge line from a malformed one.
-        assert!(error.to_string().contains("too many values"));
+        // The whole line an operator logs, offset included. The message names the limit
+        // *after* the syntax framing every `ParseError` carries, so the opening words are
+        // not what separates a refused-because-huge line from a malformed one — the
+        // suffix is, and the offset names the value that spent the last of the budget.
+        // `dense_array(8)` is `[0,0,0,0,0,0,0,0]`: the array is the first value and
+        // element `index` begins at `1 + 2 * index`, so a budget of 8 is spent entering
+        // element 7, at byte 15, before any whitespace is skipped.
+        assert_eq!(error.offset, 15);
+        assert_eq!(
+            error.to_string(),
+            "invalid JSON at byte 15: too many values in one message"
+        );
     }
 
     #[test]

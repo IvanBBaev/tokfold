@@ -3480,6 +3480,30 @@ documentation a previous fix falsified.
   reference the deletion test accepts.
 
 ### Tests
+- **The offset in the node-budget refusal was pinned nowhere, under a comment that
+  mis-stated the message.** `an_over_budget_message_reports_the_node_limit` asserted
+  `error.msg` and then only that the rendered line *contains* `too many values`, under
+  the comment "The message a caller logs names the limit rather than the syntax, so an
+  operator can tell a refused-because-huge line from a malformed one". Every
+  `ParseError` renders through `invalid JSON at byte {offset}: {msg}`, so the line an
+  operator actually logs is `invalid JSON at byte 15: too many values in one message`:
+  it leads with the syntax framing and names the limit second, and no test anywhere held
+  the number in it. The server-side test
+  `a_node_dense_line_is_refused_although_it_fits_the_frame` read the error code and the
+  absent id but never the `message`, so an 8,388,654-byte fixture drove the path without
+  pinning a word of what it says. Both now pin the whole rendered string, and both
+  derive the offset instead of quoting it: `dense_array(8)` spends a budget of 8
+  entering element 7, at `1 + 2 * 7`; the dense line spends `MAX_NODES` entering the
+  array's last element, at `ENVELOPE.len() + 2 * (MAX_NODES - 6)` = 8,388,650 — built
+  from the same two quantities as the fixture, so neither can drift from the budget. The
+  offset is where the parser stopped and not a length, which is what makes it worth
+  pinning: a line whose budget is spent two bytes before eight bytes of trailing
+  garbage is refused with `too many values` and never reads the garbage, which is the
+  half of the `Line::TooLong` comment's "the parser's node budget also abandons a
+  message part-way, and that surfaces as `PARSE_ERROR`" that had been reasoned about
+  rather than measured. The comment now says the suffix is what separates the two
+  refusals. Behaviour and wire format unchanged.
+  **A number in a message is a claim, and `contains` is not a pin.**
 
 - **Four byte figures in a batch comment were measurements in prose, and one of them
   described a limit the test does not run.** The comment on
