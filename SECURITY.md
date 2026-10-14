@@ -121,16 +121,22 @@ claim that the report is about reversibility:
   speeds triage enormously; a failing property-test case is ideal.
 
 **Scope note on `tokfold-mcp`.** That crate is EXPERIMENTAL and explicitly not
-hardened or audited — see its README, and the notice the CLI prints when
-`tokfold mcp` starts (`cmd_mcp` in `crates/tokfold-cli/src/main.rs` writes the
-crate's `EXPERIMENTAL_NOTICE` to standard error). The crate itself prints nothing, so
-a host that embeds it as a library and drives its own transport shows that warning to
-nobody: the label travels with the CLI, not with the code. It shipped in `0.0.1` in
-that state, labelled, rather than being held back until hardening landed; hardening is
-a milestone this project still owes, not a gate the release passed. Reports against it
-are welcome and will be recorded, and the **impact classes** still apply to it, but
-"unhardened" is the crate's declared state rather than a vulnerability: a report that
-only restates the missing hardening will be closed as known.
+hardened or audited — see its README, and the notice the CLI prints when `tokfold mcp`
+starts (`cmd_mcp` in `crates/tokfold-cli/src/main.rs` writes the crate's
+`EXPERIMENTAL_NOTICE` to standard error). The crate never writes that notice itself,
+on any path: `EXPERIMENTAL_NOTICE` occurs exactly twice in `crates/tokfold-mcp/src/` —
+its definition in `lib.rs` and the module doc that describes it — and nothing in that
+directory writes to standard error at all. So the warning is missed by every
+embedding, not only by a host that drives its own transport: `stdio::serve_stdio` is a
+stdio loop the crate exports ready-made, and an embedder calling it gets no notice
+either. The label travels with the CLI, not with the code. That loop does write to
+standard output — every JSON-RPC reply — so it is the warning the crate prints nothing
+of, not output. It shipped in `0.0.1` in that state, labelled, rather than being held
+back until hardening landed; hardening is a milestone this project still owes, not a
+gate the release passed. Reports against it are welcome and will be recorded, and the
+**impact classes** still apply to it, but "unhardened" is the crate's declared state
+rather than a vulnerability: a report that only restates the missing hardening will be
+closed as known.
 
 ## Coordinated Disclosure
 

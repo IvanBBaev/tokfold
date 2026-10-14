@@ -751,6 +751,21 @@ released says so, and names what `0.0.1` does in the same case.
 
 ### Documentation
 
+- **A security-policy scope note that named the one embedding that does not need
+  naming.** The `tokfold-mcp` scope note in `SECURITY.md` said "the crate itself prints
+  nothing, so a host that embeds it as a library and drives its own transport shows that
+  warning to nobody". Both halves were wrong. `EXPERIMENTAL_NOTICE` occurs exactly twice
+  in `crates/tokfold-mcp/src/` — the definition in `lib.rs` and the module doc that
+  describes it — and nothing in that directory writes to standard error at all, so no
+  path through the crate emits the notice. `stdio::serve_stdio` is a stdio loop the crate
+  exports ready-made, and an embedder calling it gets no notice either, which makes the
+  gap every embedding rather than only a host that writes its own loop; the crate's own
+  module doc had it right ("an embedder calling `Server` directly is expected to surface
+  it too") while the policy file narrowed it. And "prints nothing" is false of the
+  stream: that same loop writes every JSON-RPC reply to standard output. The note now
+  says which of the two it means. The entry in this same section that introduced the
+  sentence described it the same narrowed way and has been brought in line with the file.
+
 - **`docs/privacy.md` counted the test targets' spawns and environment reads with a
   grep that cannot see a test target.** Its *First-party code* bullet said
   `crates/tokfold-cli/tests/cli.rs` "starts three programs" and named the binary under
@@ -1105,9 +1120,9 @@ released says so, and names what `0.0.1` does in the same case.
   scope note said to "see its README and the notice it prints on startup". The crate
   only holds the constant: `cmd_mcp` in `crates/tokfold-cli/src/main.rs` writes
   `tokfold_mcp::EXPERIMENTAL_NOTICE` to standard error when `tokfold mcp` starts. The
-  consequence that matters for a security policy is now stated — a host that embeds
-  the crate as a library and drives its own transport shows that warning to nobody,
-  so the label travels with the CLI and not with the code.
+  consequence that matters for a security policy is now stated — no path through the
+  crate emits the notice, so every embedding shows that warning to nobody, and the
+  label travels with the CLI and not with the code.
 - **A support table that answered "No" for the version every report is assessed
   against.** The rows were `0.0.1` ("Yes — the only supported version") and
   "| anything else | — | No |", under a paragraph saying "a report is assessed against
