@@ -3746,6 +3746,57 @@ documentation a previous fix falsified.
   that search will now also hit this entry, which quotes the old wording as history.
   Behaviour, wire format and the binary unchanged; only this document and this file are
   touched.
+
+- **Five documents described `never_compress` by what it is for rather than by what it
+  matches.** The safeguard bullet in `docs/threat-model.md`, the `never_compress` module
+  intro, E1's *Protected strings survive verbatim* bullet, the comment over the
+  `http-status` rows and `emit_string`'s *Known limitation* paragraph each made the table
+  wider than it is, in one of two ways: they named *lines* as the unit that survives a
+  hit, and they attributed every HTTP literal to RFC 9110. At `HEAD` the module intro
+  opened "Versioned, data-driven list of lines that must survive compression verbatim"
+  and the threat model's bullet read "It names lines an agent most needs to read back
+  accurately (compiler errors, `4xx`/`5xx` statuses, ...)".
+
+  Both halves were measured through `target/release/tokfold`, SHA-1
+  `30e9393951f14769ecd0b2279a064d86aac4097a`, 1,263,776 bytes, reproduced byte-for-byte
+  from commit `27a0b06` with `cargo build --release --workspace --all-features` on macOS
+  Darwin 27.0.0 arm64, rustc 1.97.0. The fixture is thirty nested objects, which reach
+  E1 and not E2 (`⟦tkfd:v1:min⟧`), each carrying three values written with a `\/` escape
+  so that canonicalization is visible in the output. `HTTP\/1.1 500 Internal Server
+  Error on a\/b0` came back with its escapes intact; `HTTP\/1.1 500 Oops on a\/b0` and
+  `status 500 on a\/b0` were canonicalized to `/`. So a `5xx` status line whose reason
+  phrase is not the table's spelling is not protected, and a bare code never was. A
+  second fixture put a protected and an unprotected lexeme on one physical source line
+  and rendered `{"f0":{"hit":"500 Internal Server Error x\/0","miss":"plain x/0"},...` —
+  the carve-out is per lexeme, so a neighbour on the same line still loses its escapes.
+
+  The RFC attribution is wrong for two of the fifteen `http-status` literals, and those
+  two now say so on their own row: `422 Unprocessable` is the common prefix of RFC 9110's
+  "422 Unprocessable Content" and RFC 4918's older "Unprocessable Entity", so it matches
+  either spelling, and `429 Too Many Requests` comes from RFC 6585. The other thirteen
+  are their status's RFC 9110 reason phrase verbatim. The blanket attribution dates to
+  the initial commit `9e1e1f5`, and the first draft of this correction inherited it from
+  there before the two exceptions were looked up.
+
+  `emit_string`'s paragraph is the sharpest of the five. It calls
+  `never_compress::is_protected` "a line-oriented literal-substring test" and then, in
+  the next clause, says that what it receives is a whole JSON lexeme — and it links to
+  that function, whose own doc has read "a literal-substring search with no line
+  semantics: ... the unit that survives a hit is a lexeme, not a line; the module
+  contract says so and this signature must not say otherwise" since commit `0f759f6`.
+  The caller kept the wording commit `7e431cc` gave it, so the crate has carried two
+  rustdocs contradicting each other, the one making the false claim pointing straight at
+  the one that forbids it.
+
+  The rule: **a document that promises what the code protects must name the unit the
+  code applies it to, and an enumeration of literals is a claim about the provenance of
+  every member.** Each wording was swept for mirrors before editing — `line-oriented`,
+  `lines that must survive`, `names those lines`, `status lines`, `4xx`,
+  `never_compress`, `reason phrase`, `RFC 9110`, `RFC 6585` and `Unprocessable` over
+  every tracked `.md`, `.rs`, `.js`, `.toml` and `.yml` — and the first four now match
+  nothing outside this file, which quotes them as history. Behaviour, wire format and
+  the binary are unchanged; `docs/threat-model.md`, the doc comments of two
+  `tokfold-core` modules and this file are touched, plus the two tests below.
 ### Tests
 - **The offset in the node-budget refusal was pinned nowhere, under a comment that
   mis-stated the message.** `an_over_budget_message_reports_the_node_limit` asserted
@@ -4463,6 +4514,26 @@ same way afterwards — followed by the tests that pin this entry's fixes.
   gained a field would have left every one of those sites quoting a ratio no fixture
   produces. Both byte counts are asserted rather than the quotient alone, so a failure
   names which half moved.
+
+- **Neither half of the `never_compress` contract the docs state was pinned.**
+  `protected_lexeme_is_copied_verbatim_by_e1` renders one protected document and one
+  plain one, so it cannot see what happens to a *neighbour*:
+  `a_protected_lexeme_keeps_its_escapes_while_its_neighbour_loses_theirs` puts a
+  protected lexeme and an unprotected one on a single physical source line and asserts
+  the whole rendering, so the per-lexeme carve-out the threat model now promises fails
+  loudly if it ever becomes per-line. And no test asserted a *negative* HTTP case:
+  `http_rules_are_reason_phrases_and_never_bare_codes` pins that `status 500 on /a/b`
+  and `HTTP/1.1 500 Oops` are unprotected while `HTTP/1.1 500 Internal Server Error`
+  hits `http-status`, that no `http-status` literal is a bare code (three digits, a
+  space, then a non-empty phrase), and the thirteen-plus-two provenance split against
+  `rules()`, so a sixteenth status rule cannot be added without being classified.
+  `rules_exposes_the_populated_table` had pinned the count at fifteen and nothing else
+  about those rows.
+
+  Both tests were hand-mutated before being believed: rewriting the `422 Unprocessable`
+  rule as the bare code `422` fails the provenance assert, and replacing E1's
+  `is_protected(lexeme).is_some()` with `false` fails the per-lexeme one. Workspace tests
+  596 → 598 debug and 594 → 596 release, the delta between them unchanged.
 
 ## [0.0.1] - 2026-08-29
 

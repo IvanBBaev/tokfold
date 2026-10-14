@@ -189,12 +189,22 @@ on the difference, and a perfect archive does not undo that action.
 What the code does, and does not do, about it:
 
 - **`never_compress` is a fidelity safeguard. It is not a security control and not an
-  injection filter.** It names lines an agent most needs to read back accurately
-  (compiler errors, `4xx`/`5xx` statuses, `EACCES`, `denied`, certificate failures)
-  so that an encoder can leave them verbatim (`never_compress.rs`, module docs). Only
-  the minify encoder (E1) consults it. The tabular encoder (E2) never reads it. A
-  phrase spelled with `\u` escapes misses the match. Nothing about it inspects,
-  blocks or neutralises hostile content, and it must not be relied on to.
+  injection filter.** It names case-folded literal substrings of the output an agent
+  most needs to read back accurately — among them compiler errors, `EACCES`, `denied`,
+  certificate failures, panic and stack-trace markers, and `warning:`. Two things about
+  that are narrower than they sound. The unit protected on a hit is the JSON string
+  lexeme that contains the substring, not the line: E1 copies that one lexeme
+  byte-for-byte and minifies everything around it, so a sibling lexeme on the same
+  source line still has its escapes canonicalized (`never_compress.rs`, "What v0.0.1
+  actually implements"; pinned by
+  `a_protected_lexeme_keeps_its_escapes_while_its_neighbour_loses_theirs`). And the HTTP
+  literals are reason phrases rather than codes, so `500 Internal Server Error` is
+  matched while a bare `500` is not, and neither is `HTTP/1.1 500 Oops` (the
+  `http-status` rows of the table, pinned by
+  `http_rules_are_reason_phrases_and_never_bare_codes`). Only the minify encoder (E1)
+  consults the table. The tabular encoder (E2) never reads it. A phrase spelled with
+  `\u` escapes misses the match. Nothing about it inspects, blocks or neutralises
+  hostile content, and it must not be relied on to.
 - **Known fidelity gaps an A2 attacker could aim at** (all recorded, all
   owner-gated, none fixed):
   - E2 hoists an array's dominant key set into the table header once. A protected

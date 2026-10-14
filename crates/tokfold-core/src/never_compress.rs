@@ -1,10 +1,16 @@
-//! Versioned, data-driven list of lines that must survive compression verbatim.
+//! Versioned, data-driven list of literals that mark content which must survive
+//! compression verbatim.
 //!
 //! Some lines carry more value than their token cost: a compiler error, an HTTP
-//! `4xx`/`5xx` status, an `EACCES`, a panic trace, a `denied`/`unauthorized`
+//! `4xx`/`5xx` status line, an `EACCES`, a panic trace, a `denied`/`unauthorized`
 //! message, a certificate failure. Folding, deduplicating or reordering these
-//! degrades exactly the output an agent most needs to read back accurately. This
-//! module names those lines so the encoders can leave them untouched.
+//! degrades exactly the output an agent most needs to read back accurately. What this
+//! module names is not those lines, though, but literal substrings that occur in them
+//! — the HTTP literals, for one, are reason phrases rather than codes, so a status
+//! line reading `HTTP/1.1 500 Oops` has no hit and neither has a bare `500`.
+//! The unit an encoder leaves alone on a hit is the string lexeme that contains it,
+//! not the line; see [What v0.0.1 actually implements](#what-v001-actually-implements)
+//! for which encoder does that and how.
 //!
 //! # Why literal-only, no regex
 //!
@@ -165,7 +171,10 @@ static RULES: &[NeverCompressRule] = &[
         literal: "error TS",
         case_sensitive: false,
     }, // TypeScript: error TS2322
-    // --- HTTP 4xx/5xx status lines (canonical reason phrases, RFC 9110) ---
+    // --- HTTP 4xx/5xx reason phrases, never a bare code ---
+    // Provenance is pinned by http_rules_are_reason_phrases_and_never_bare_codes:
+    // thirteen of these fifteen are their status's RFC 9110 reason phrase verbatim,
+    // and the two that are not carry a note on their own row.
     NeverCompressRule {
         class: "http-status",
         literal: "400 Bad Request",
@@ -210,12 +219,12 @@ static RULES: &[NeverCompressRule] = &[
         class: "http-status",
         literal: "422 Unprocessable",
         case_sensitive: false,
-    },
+    }, // the common prefix of RFC 9110's "Unprocessable Content" and RFC 4918's "Entity"
     NeverCompressRule {
         class: "http-status",
         literal: "429 Too Many Requests",
         case_sensitive: false,
-    },
+    }, // 429's reason phrase comes from RFC 6585
     NeverCompressRule {
         class: "http-status",
         literal: "500 Internal Server Error",
@@ -713,5 +722,95 @@ mod tests {
             plain_out.ends_with("{\"m\":\"ok a/b\"}"),
             "unprotected value was not canonicalized: {plain_out}"
         );
+    }
+
+    /// The carve-out is per *lexeme*, not per line.
+    ///
+    /// `protected_lexeme_is_copied_verbatim_by_e1` renders two separate documents, so
+    /// it cannot see what happens to a neighbour: the claim that a sibling lexeme on
+    /// the same source line is still canonicalized needs both in one input.
+    #[test]
+    fn a_protected_lexeme_keeps_its_escapes_while_its_neighbour_loses_theirs() {
+        // Both values sit on one physical source line.
+        let input = "{ \"hit\": \"502 Bad Gateway x\\/0\", \"miss\": \"plain x\\/0\" }";
+
+        // Preconditions: the hit is on the lexeme, quotes included; the sibling misses.
+        assert!(is_protected("\"502 Bad Gateway x\\/0\"").is_some());
+        assert!(is_protected("\"plain x\\/0\"").is_none());
+
+        let out = minified(input);
+        assert!(
+            out.ends_with("{\"hit\":\"502 Bad Gateway x\\/0\",\"miss\":\"plain x/0\"}"),
+            "the carve-out did not stay per-lexeme: {out}"
+        );
+    }
+
+    /// The HTTP rules match a reason phrase and never a status code, and the
+    /// provenance of every one of them is pinned here.
+    ///
+    /// `rules_exposes_the_populated_table` pins the count at fifteen; this pins the
+    /// split, so a new status rule cannot be added without classifying it.
+    #[test]
+    fn http_rules_are_reason_phrases_and_never_bare_codes() {
+        // Reason phrases as RFC 9110 section 15 spells them.
+        const RFC_9110: &[&str] = &[
+            "400 Bad Request",
+            "401 Unauthorized",
+            "403 Forbidden",
+            "404 Not Found",
+            "405 Method Not Allowed",
+            "408 Request Timeout",
+            "409 Conflict",
+            "410 Gone",
+            "500 Internal Server Error",
+            "501 Not Implemented",
+            "502 Bad Gateway",
+            "503 Service Unavailable",
+            "504 Gateway Timeout",
+        ];
+        // Deliberate departures from that wording, each noted on its row in the table.
+        const EXCEPTIONS: &[&str] = &["422 Unprocessable", "429 Too Many Requests"];
+
+        let http: Vec<&'static str> = rules()
+            .iter()
+            .filter(|rule| rule.class == "http-status")
+            .map(|rule| rule.literal)
+            .collect();
+        assert_eq!(
+            http.len(),
+            RFC_9110.len() + EXCEPTIONS.len(),
+            "an http-status rule was added without classifying its provenance"
+        );
+        for literal in &http {
+            assert!(
+                RFC_9110.contains(literal) || EXCEPTIONS.contains(literal),
+                "{literal:?} is neither an RFC 9110 reason phrase nor a named exception"
+            );
+        }
+
+        // No rule is a bare code: three digits, a space, then a non-empty phrase.
+        for literal in &http {
+            let (code, phrase) = literal
+                .split_once(' ')
+                .unwrap_or_else(|| panic!("{literal:?} carries no reason phrase"));
+            assert_eq!(
+                code.len(),
+                3,
+                "{literal:?} does not open with a status code"
+            );
+            assert!(
+                code.bytes().all(|byte| byte.is_ascii_digit()),
+                "{literal:?}"
+            );
+            assert!(!phrase.is_empty(), "{literal:?} has an empty reason phrase");
+        }
+
+        // What that means for matching.
+        assert_eq!(
+            is_protected("HTTP/1.1 500 Internal Server Error").map(|rule| rule.class),
+            Some("http-status")
+        );
+        assert!(is_protected("status 500 on /a/b").is_none());
+        assert!(is_protected("HTTP/1.1 500 Oops").is_none());
     }
 }

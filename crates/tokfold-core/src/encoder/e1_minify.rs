@@ -49,13 +49,14 @@
 //!   lexeme*, not a line: [`never_compress::is_protected`] is applied to the whole
 //!   lexeme, quotes and escapes included, and on a hit that lexeme is copied
 //!   byte-for-byte, at its position in document order — E1 never folds, dedups or
-//!   reorders, so nothing else can move it. The table covers compiler errors, HTTP
-//!   4xx/5xx status lines, the `EACCES`/`EPERM`/`EROFS` errno symbols, panic and
-//!   stack-trace markers, `denied`/`unauthorized`/`forbidden` lines,
-//!   certificate-verification failures and `warning:`. The only byte-changing step E1
-//!   applies to a string is escape canonicalization, so skipping it is what keeps such
-//!   content exact. See [`emit_string`] for a known limitation: the match runs on the
-//!   *escaped* spelling.
+//!   reorders, so nothing else can move it. The table covers compiler errors, the
+//!   reason phrases of the HTTP `4xx`/`5xx` statuses (the phrase and not the code, so
+//!   `HTTP/1.1 500 Oops` has no hit and neither has a bare `500`), the
+//!   `EACCES`/`EPERM`/`EROFS` errno symbols, panic and stack-trace markers,
+//!   `denied`/`unauthorized`/`forbidden`, certificate-verification failures and
+//!   `warning:`. The only byte-changing step E1 applies to a string is escape
+//!   canonicalization, so skipping it is what keeps such content exact. See
+//!   [`emit_string`] for a known limitation: the match runs on the *escaped* spelling.
 //! * **A string holding a lone surrogate passes through raw.** A `\uXXXX` escape that
 //!   is an unpaired surrogate has no scalar value and cannot be emitted literally.
 //!   The exemption is per *string*, not per escape: because semantic equality compares
@@ -173,9 +174,9 @@ fn span_str(input: &str, span: Span) -> Option<&str> {
 ///
 /// # Known limitation: the *escaped* spelling is what gets matched
 ///
-/// [`never_compress::is_protected`] is a line-oriented literal-substring test, and what
-/// it receives here is the **raw JSON lexeme** — quotes, backslashes and all — not the
-/// unescaped text. A protected phrase written with `\u` escapes therefore evades the
+/// [`never_compress::is_protected`] is a literal-substring test with no line semantics,
+/// and what it receives here is the **raw JSON lexeme** — quotes, backslashes and all —
+/// not the unescaped text. A protected phrase written with `\u` escapes therefore evades
 /// carve-out: `"error:"` matches, while `"\u0065rror:"` does not, though both decode to
 /// the same string. The escaped spelling is canonicalized like any other string instead
 /// of being copied byte-for-byte.
