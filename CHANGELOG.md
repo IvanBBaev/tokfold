@@ -753,6 +753,32 @@ released says so, and names what `0.0.1` does in the same case.
   second source of truth.
 
 ### Documentation
+- **An `include` list was offered as proof of what git tracks.**
+  `docs/threat-model.md`'s F2 entry supported "no benchmark corpus is committed" with
+  `tokfold-core`'s `include` list, which "names local benchmark corpora among what it
+  excludes by omission". Two things are wrong with that. The naming is in the comment
+  above the list, not in the list, which holds six path globs and no prose; and an
+  `include` list governs the `.crate` tarball `cargo package` builds, not the repository
+  — a corpus can be tracked by git and left out of the tarball, so the clause cannot
+  reach its own conclusion. The conclusion holds under a check of the right kind:
+  filtering `git ls-files` on the path for `corpus|corpora|bench` finds nothing at all,
+  and widening it to `fixture|sample` finds only `npm/tests/fixtures.js`, the npm
+  suite's fixture module. That check is also the one this entry's own history argues for
+  — an earlier note here pinned the absence of the 6.67% figure by quoting what a
+  repository-wide search returns, and writing the note down added occurrences to the
+  search it quoted, whereas `git ls-files` lists paths and not contents, so recording
+  the check cannot change its answer. What the tree does hold is fuzzing inputs and not
+  benchmarks, `fuzz/seeds/<target>` committed and `fuzz/corpus/` ignored by
+  `fuzz/.gitignore`, and the entry now says so, because a reader checking the word
+  "corpus" finds them. F2's other supports were re-measured and hold: `6.67` appears in
+  no `.rs` file, there is no `benches` directory, no crate declares a bench target — the
+  five `bench = false` lines in `fuzz/Cargo.toml` sit under `[[bin]]` sections and turn
+  the implicit harness off, they do not declare one — and `select` in
+  `crates/tokfold-core/src/encoder/mod.rs` does hand `clears_margin` an `est_before` of
+  `estimator.estimate(input)`, against an `estimate` of the framed candidate. The 6.67%
+  itself is untouched, because re-measuring or hedging it is owner-gated. Behaviour and
+  wire format unchanged.
+  **An `include` list is a claim about the tarball, not about the repository.**
 - **A five-byte varint ceiling was stated as a property of every archive.** Four tracked
   files gave 47 bytes as the widest header that can exist, each in its own words:
   `crates/tokfold-core/src/lib.rs` ("no archive can carry a sixth varint byte"), the
