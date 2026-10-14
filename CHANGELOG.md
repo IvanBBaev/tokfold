@@ -750,6 +750,31 @@ released says so, and names what `0.0.1` does in the same case.
   second source of truth.
 
 ### Documentation
+- **A staleness rule whose own enumeration covered a quarter of its members.**
+  `docs/threat-model.md`'s *Where this document can go stale* said the rule "does not
+  reach three sections, and cannot", naming *What tokfold is, in one paragraph*,
+  *Attacker capabilities considered* and "four of the five *Assets* rows". Two of those
+  five rows state what the code does, and each carries exactly the anchor the rule
+  asks for: **The archive** cites the `--archive` entry of `tokfold compress --help`,
+  whose text holds the verbatim-and-unencrypted wording itself, and **Files at the
+  `--archive` path** cites *Archive path handling*, which is the rule's own second
+  form. So the rule does reach that table, "cannot" is false of it, and the set it
+  does not reach is three rows rather than four. *What tokfold is, in one paragraph*
+  states behaviour too — anything the engine cannot parse is passed through, and an
+  archive is a header followed by the original bytes verbatim from which the original
+  is reconstructed exactly — so the reason given for excluding it, that it does not say
+  what the code does, is false of it as well. The passthrough half holds on both paths
+  (measured against `target/release/tokfold`, macOS Darwin 27.0.0 arm64: the CLI exits
+  `0` with the bytes unchanged, and `tokfold_compress` answers `compressed: false`,
+  `reasonCode: "invalid_json"` with the text returned verbatim), and it is now anchored
+  to `cmd_compress` and to the reply built in `crates/tokfold-mcp/src/tools.rs` rather
+  than left to review. The same miscount hid six indirect anchors: the rule named two
+  claims as anchored through a section rather than directly when eight are, and
+  `grep -nE '[Ss]ee \*' docs/threat-model.md` returns all eight plus the *Availability*
+  row for oversized input, which carries direct anchors as well. One of the eight wraps
+  mid-reference, so a filter spelled with the section name misses it where one spelled
+  `see \*` does not. The section now publishes that derivation instead of the counts
+  alone.
 
 - **A security-policy scope note that named the one embedding that does not need
   naming.** The `tokfold-mcp` scope note in `SECURITY.md` said "the crate itself prints

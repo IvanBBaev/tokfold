@@ -458,16 +458,36 @@ They are listed so that nobody mistakes them for undiscovered defects.
 
 ## Where this document can go stale
 
-Every claim above about what the code *does* names the function or file that holds
-it, or a section of this document that does: the *Availability* row for a client that
-stops reading and the *Confidentiality* row for file permissions are anchored through
-*Known limitations* and *Archive path handling* rather than directly. A change to one
-of those places can falsify a sentence here. When one changes, re-read the matching
-entry rather than assuming it still holds.
+Every claim above about what the code *does* names the function, file or `--help`
+entry that holds it, or a section of this document that does. Eight are anchored only
+through a section rather than directly: the *Availability* row for a client that stops
+reading, the *Confidentiality* row for file permissions, the *Assets* row for files at
+the `--archive` path, F6, E2 shape interning, forged archives, the Unix-only same-file
+guards, and the archive's mode following the umask. `grep -nE '[Ss]ee \*'
+docs/threat-model.md` finds those eight plus the *Availability* row for oversized
+input, which carries direct anchors as well; match `see \*` rather than a section
+name, because one of the eight wraps mid-reference. A change to one of those places
+can falsify a sentence here. When one changes, re-read the matching entry rather than
+assuming it still holds.
 
-The rule does not reach three sections, and cannot. *What tokfold is, in one
-paragraph*, *Attacker capabilities considered* and four of the five *Assets* rows say
-why something matters, or what an attacker is assumed to control — not what the code
+The rule does not reach *Attacker capabilities considered* or three of the five
+*Assets* rows, and cannot. A1 to A5, the out-of-scope note, and the rows for the
+original bytes, the rendering's meaning and the availability of the host say why
+something matters, or what an attacker is assumed to control — not what the code
 does — so no change to the code falsifies them, and nothing triggers a re-read of
 them. Until 2026-10-10 this section claimed the rule for *every* claim above, which
 made those sentences look guarded when review is all that holds them.
+
+The other two *Assets* rows do say what the code does, and carry an anchor: **The
+archive** cites the `--archive` entry of `tokfold compress --help`, which holds the
+verbatim-and-unencrypted wording itself, and **Files at the `--archive` path** cites
+*Archive path handling*. Nor is *What tokfold is, in one paragraph* free of code
+claims: the passthrough of anything the engine cannot parse, and an archive that is a
+header followed by the original bytes verbatim from which the original is
+reconstructed exactly, are both behaviour. It restates them rather than anchoring
+them — the passthrough is held by `cmd_compress` in `crates/tokfold-cli/src/main.rs`
+and, on the MCP path, by the `compressed: false` reply built in
+`crates/tokfold-mcp/src/tools.rs`; the archive half by *Integrity of reconstruction* —
+so re-read the summary when either changes. Until 2026-10-14 this section counted that
+paragraph and the whole *Assets* table as beyond the rule's reach, and named two of the
+eight indirect anchors as though they were all of them.
