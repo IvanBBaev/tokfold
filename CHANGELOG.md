@@ -750,6 +750,22 @@ released says so, and names what `0.0.1` does in the same case.
   second source of truth.
 
 ### Documentation
+- **A claim about the repository quoted a search that recording it changed.**
+  `docs/threat-model.md`'s F2 entry said that the 6.67% figure "appears nowhere else in
+  the repository — `git grep 6.67` finds this sentence and nothing more". It finds six
+  lines: the two in that entry, two in the `[Unreleased]` entry written to record the
+  claim, and two `Cargo.lock` checksums — because the quoted command is a regex, and `.`
+  matches the `f` in `…f67670…`, so the spelling it chose was never the literal search
+  it reads as. The wider claim it replaced was narrowed deliberately, to what had been
+  measured; the act of recording that narrowing added the occurrences that refute it, so
+  the claim rotted inside its own commit. The substance was re-verified and is
+  unchanged: no test carries the figure, no crate declares a bench target, there is no
+  `benches` directory, and no benchmark corpus is committed —
+  `crates/tokfold-core/Cargo.toml`'s `include` list names local benchmark corpora among
+  what it excludes by omission, and `fuzz/corpus/` is ignored. F2 now states that
+  instead, and the 6.67% itself is untouched, because re-measuring or hedging it is
+  owner-gated. **Never write a repository-wide search's output into prose: the commit
+  that records the sentence is part of what the search covers.**
 - **An uncorrelatable refusal was documented at its rarest cause.**
   `docs/threat-model.md`'s *MCP transport and protocol* section explained a refusal that
   carries no id — leaving one client call unanswered — only for "a request whose id
@@ -1076,15 +1092,15 @@ released says so, and names what `0.0.1` does in the same case.
   it is handed — `estimate(&candidate)`, where `render` wraps every body in `framed`
   so the candidate is the `⟦tkfd:v1:<tag>⟧` rendering, against `est_before`, which is
   `estimate(input)` on the raw input. That is the asymmetry F2 names, read off the
-  call rather than restated. F2's 6.67% is untouched, because re-measuring or hedging
-  it is owner-gated; what is recorded beside it is that `git grep 6.67` finds that
-  sentence and nothing else in the repository, so no test, bench or module doc holds
-  its derivation. A first draft of that note called it "the one figure in this
-  document with no derivation recorded anywhere", which is a claim about every other
-  number in the document and was not measured; it was narrowed to the grep that was.
-  **A scope statement offered as a maintenance procedure is the worst place for a
-  universal claim: every sentence it wrongly covers is a sentence it tells the next
-  reader not to check.**
+  call rather than restated. F2's 6.67% is untouched, because re-measuring or hedging it
+  is owner-gated; what was recorded beside it is that no test, bench or module doc holds
+  its derivation. A first draft of that note called it "the one figure in this document
+  with no derivation recorded anywhere", which is a claim about every other number in
+  the document and was not measured; it was narrowed to a repository-wide search for the
+  figure, a spelling corrected in turn by *A claim about the repository quoted a search
+  that recording it changed.* **A scope statement offered as a maintenance procedure is
+  the worst place for a universal claim: every sentence it wrongly covers is a sentence
+  it tells the next reader not to check.**
 
 
 - **A count of the committed READMEs went stale the moment one was added.** The

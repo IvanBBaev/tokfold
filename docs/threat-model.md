@@ -458,11 +458,16 @@ They are listed so that nobody mistakes them for undiscovered defects.
   baseline. In `select` in `crates/tokfold-core/src/encoder/mod.rs` the gate is
   `clears_margin`, and the two numbers handed to it are `estimate(&candidate)` — the
   rendering with its `⟦tkfd:v1:…⟧` framing — and `est_before`, which is
-  `estimate(input)` on the raw input. Measured: 6.67% of compressions are strictly
-  worse in real `cl100k` tokens, about two thirds of that from framing. The
-  percentage appears nowhere else in the repository — `git grep 6.67` finds this
-  sentence and nothing more — so no test, bench or module doc records how it was
-  reached, and re-reading the gate above will not re-derive it.
+  `estimate(input)` on the raw input. Measured: 6.67% of compressions are strictly worse
+  in real `cl100k` tokens, about two thirds of that from framing. Nothing in the
+  repository records how that was reached: no test carries the figure, no crate declares
+  a bench target and there is no `benches` directory, and no benchmark corpus is
+  committed — `tokfold-core`'s `include` list names local benchmark corpora among what
+  it excludes by omission. So re-reading the gate will not re-derive the number, and
+  re-measuring or hedging it is owner-gated. An earlier note here tried to pin that
+  absence by quoting what a repository-wide search for the figure returns; writing the
+  note down added occurrences to the search it quoted, which is why the check is stated
+  as what it is about instead.
 - **F6.** E2 can hoist a `never_compress`-protected key (see *Semantic integrity*).
 - **E2 shape interning by hash** (see *Semantic integrity*).
 - **Forged archives** decode successfully (see *Integrity of reconstruction*).
