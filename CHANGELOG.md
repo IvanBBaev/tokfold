@@ -4100,6 +4100,41 @@ documentation a previous fix falsified.
   `crates/*/src` finds in three files and the git pathspec in none (`:(glob)` makes it
   work). Measured 2026-10-14, macOS Darwin 27.0.0 arm64, rustc 1.97.0. Documentation
   only: no code, no behaviour and no format change.
+
+- **`docs/privacy.md` said the archive inspection "opens the path read-only"; on the
+  one spelling where it reads through the typed path it opens for *writing* first, and
+  may answer without reading anything.** The read-only open the sentence describes is
+  `fs::File::open(&target)` in `inspect_archive_slot`, on the path's *resolved* target.
+  A path whose resolved form falls under `/dev/fd` never reaches it: it is routed to
+  `inspect_descriptor_slot`, which works on the path as typed and asks the write
+  question first — `OpenOptions::new().write(true).open(path)` — and answers a slot it
+  cannot open for writing from that alone. Measured against the release build
+  `637795cf…` (macOS Darwin 27.0.0 arm64, rustc 1.97.0), with a 6 107-byte archive
+  behind the descriptor and a 2-byte non-JSON input: `--archive /dev/fd/3 3< b.tkfd`
+  exits `0`, leaves the archive byte-identical and reports "left /dev/fd/3 untouched:
+  it cannot be opened for writing" — its four bytes were never read, and the decision
+  to keep it came from writability. The mirror case cannot read either: with
+  `3>> c.tkfd` the descriptor is write-only, the read-only open is refused, and the
+  pass exits `2` with "inspecting the archive path /dev/fd/3: Permission denied (os
+  error 13)". The bullet now names the function that opens, says it opens the resolved
+  target, and carries a second bullet for the descriptor branch with both
+  measurements and the positional read (`read_head_at_start`) that branch needs
+  because a duplicated descriptor shares the caller's offset.
+
+  Both halves came from one commit, `b5aad2a` — whose subject is "Ask each path the
+  CLI opens both questions, reading and writing", and whose *What the CLI writes*
+  bullet records this very write open ("the writability check in
+  `inspect_descriptor_slot` … opens write-only, without `create` and without
+  `truncate`"). So the commit that set out to ask both questions of every path
+  answered the read question for this one in a form its own other half contradicts:
+  **asking both questions is not enough if the two answers are written in different
+  sections and never read against each other**. The rustdoc of both functions had the
+  branch right all along; `git grep 'read-only'` over `docs`, `crates/tokfold-cli/src`,
+  `crates/tokfold-cli/README.md`, `SECURITY.md` and `README.md` returned 27 lines at
+  `f220e42` — 7 in the crate README, 17 in `main.rs`, 2 in the privacy document and 1
+  in the threat model — and this was the only false one; the same sweep returns 29
+  after this change, the two new ones in the bullet added here. Measured 2026-10-14.
+  Documentation only: no code, no behaviour and no format change.
 ### Tests
 - **The offset in the node-budget refusal was pinned nowhere, under a comment that
   mis-stated the message.** `an_over_budget_message_reports_the_node_limit` asserted

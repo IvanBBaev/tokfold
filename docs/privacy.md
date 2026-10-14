@@ -261,8 +261,10 @@ stale-archive deletion and no same-file guards (see
   to decide whether that path is the same file as the input or the output
   (`ensure_archive_is_not_the_input` and `ensure_output_is_not_the_input` in `main.rs`).
   It reads *bytes* out of that file on one path only: when the input is rejected,
-  `clear_stale_archive` opens the path read-only and reads its first four bytes (the
-  `TKFD` magic) to decide whether a previous archive there must be cleared. A
+  `clear_stale_archive` has `inspect_archive_slot` decide whether a previous archive
+  there must be cleared, and on the plain path that function opens the *resolved*
+  target read-only and reads its first four bytes (the `TKFD` magic) sequentially,
+  from a fresh handle. A
   successful pass reads nothing there — it truncates the file and writes over it.
   Measured against a release build of this tree (`cargo build --release -p
   tokfold-cli`, SHA-1 `637795cf…`, macOS Darwin 27.0.0 arm64, rustc 1.97.0) with a
@@ -272,6 +274,28 @@ stale-archive deletion and no same-file guards (see
   Permission denied (os error 13)" and nothing on standard output. Until 2026-10-14
   this bullet said those four bytes are read "when `--archive` is given", which every
   successful pass falsifies.
+- **On one spelling those four bytes may never be read at all.** On macOS a
+  `--archive` path whose resolved form falls under `/dev/fd` is routed to
+  `inspect_descriptor_slot` instead, which works on the path *as typed* — the only
+  spelling that reaches the file, as the rustdoc of `inspect_archive_slot` derives —
+  and asks the write question first: a slot it
+  cannot open for writing is answered from that alone, with nothing read. Measured
+  against the release build named above, with a 6 107-byte archive from a successful
+  pass behind the descriptor and a 2-byte non-JSON input: `compress --input bad.txt
+  --archive /dev/fd/3 3< b.tkfd` exits `0`, leaves `b.tkfd` byte-identical and says
+  "left /dev/fd/3 untouched: it cannot be opened for writing" — the archive survives
+  because the write could not reach it, not because its bytes said anything. The
+  mirror case reads nothing either, because it cannot: with `3>> c.tkfd` the
+  descriptor is write-only, the read-only open is refused, and the pass exits `2` with
+  "inspecting the archive path /dev/fd/3: Permission denied (os error 13)", the
+  rejected document lost. (The append form is what was measured; `3>` would have had
+  the shell truncate the file before tokfold started.) Where the read does happen on
+  this branch it is positional, at offset `0` (`read_head_at_start`), because opening
+  a `/dev/fd` spelling on macOS duplicates the descriptor and a duplicate shares the
+  caller's file offset. Until 2026-10-14 the bullet above said this inspection "opens
+  the path read-only", naming neither the write open that precedes it nor the branch
+  that answers without reading — while *What the CLI writes* recorded that same write
+  open. Both halves were written by one commit, `b5aad2a`.
 
 ### What the CLI writes
 
