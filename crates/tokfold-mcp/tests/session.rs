@@ -638,21 +638,28 @@ fn an_unsupported_revision_is_refused_with_the_versions_that_exist() {
 #[test]
 fn a_node_dense_line_is_refused_although_it_fits_the_frame() {
     // The byte cap and the node budget are two different bounds, and this line proves
-    // it: about 8.4 MB, a quarter of `MAX_MESSAGE_BYTES`, and still refused — because
+    // it: 8,388,654 bytes, a quarter of `MAX_MESSAGE_BYTES`, and still refused — because
     // `[0,0,0,…]` spends two input bytes per value and would have expanded into
     // 134 MiB of tree. Uncapped, the same shape at the frame limit reaches half a
     // gigabyte at rest and about 1.5 GiB across the last `Vec` doubling, and an
     // allocation failure aborts the process rather than unwinding into the bulkhead.
-    let count = json::MAX_NODES; // the array itself is the value that tips it over
-    let mut dense = String::with_capacity(count * 2 + 2);
-    dense.push('[');
+    //
+    // The line is the shape the `MAX_NODES` doc names, a well-formed `ping` whose
+    // `_meta` holds the array, and not a bare one: a bare array carries no id, so it
+    // cannot show that the refusal below costs the caller an id it did send. The
+    // envelope is 6 values — the outer object, `"2.0"`, `"ping"`, the id, the `_meta`
+    // object and the array — so the budget trips one zero past `MAX_NODES - 6`.
+    let count = json::MAX_NODES - 6 + 1;
+    let mut dense = String::with_capacity(count * 2 + 64);
+    dense.push_str(r#"{"jsonrpc":"2.0","method":"ping","id":1,"_meta":{"x":["#);
     for index in 0..count {
         if index > 0 {
             dense.push(',');
         }
         dense.push('0');
     }
-    dense.push(']');
+    dense.push_str("]}}");
+    assert_eq!(dense.len(), 8_388_654);
     assert!(
         dense.len() < tokfold_mcp::MAX_MESSAGE_BYTES,
         "fits the frame"
@@ -673,10 +680,11 @@ fn a_node_dense_line_is_refused_although_it_fits_the_frame() {
         Some(-32700),
         "a line the parser refuses is a parse error, whatever made it refuse"
     );
-    // The id member is absent, exactly as for any other unparseable line: the parse
-    // failed, so there is no tree to read one out of, and guessing would address an
-    // answer to a call the client may not have made. One rule for every parse failure,
-    // not a second one invented for this bound.
+    // The id member is absent although the line spelled `"id":1`, exactly as for any
+    // other unparseable line: the parse failed, so there is no tree to read one out of,
+    // and guessing would address an answer to a call the client may not have made. One
+    // rule for every parse failure, not a second one invented for this bound — the cost
+    // is that this caller cannot tie the refusal to the call it is blocked on.
     assert_eq!(replies[0].get("id"), None);
     assert_eq!(id_of(&replies[0]), None);
 

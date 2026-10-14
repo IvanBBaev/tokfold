@@ -2626,10 +2626,16 @@ documentation a previous fix falsified.
   it cannot be opened for writing`, not treated as empty, and the refusal names the
   magic (see `Fixed`). They are left as written, and so is the `Tests` entry's "a
   read-only one is now an empty slot".
-- **The MCP `MAX_NODES` rustdoc said "not even the densest *legal* line reaches
-  it".** False in `0.0.1`: a `ping` whose `_meta` holds 4 194 298 zeroes in an array
-  (about 8 MiB, well under the 32 MiB line limit) exceeds it and is answered `-32700`
-  with no id. The rustdoc now says a legal line can reach it and what the reply is.
+- **The MCP `MAX_NODES` rustdoc said "not even the densest *legal* line reaches it".**
+  False in `0.0.1`: a `ping` whose `_meta` holds an array of zeroes exceeds it, is
+  answered `-32700`, and loses the id it spelled. The budget is `MAX_MESSAGE_BYTES / 8`
+  = 4 194 304 and the parser refuses only a count that *exceeds* it, so with a 6-value
+  envelope the last accepted count is 4 194 298 and the first refused one is 4 194 299 —
+  a line of 8 388 654 bytes, a quarter of the 32 MiB frame. The rustdoc now derives both
+  numbers from the envelope's width instead of quoting them, `0.0.1` counts identically
+  (`git show 87fb332:crates/tokfold-mcp/src/json.rs`), and the width is pinned by
+  `the_node_budget_arithmetic_matches_its_documentation` against a small budget rather
+  than an 8 MiB line.
 - **The JSON-RPC `Id` rustdoc said an id is "echoed back verbatim".** It is echoed
   by value: an integer id is parsed and re-rendered, so `-0` comes back as `0`. The
   rustdoc now says so.
@@ -3177,6 +3183,29 @@ documentation a previous fix falsified.
 
 ### Tests
 
+- **The test named after the node budget's documentation carried the premise that
+  documentation's own correction had deleted.** The `MAX_NODES` rustdoc once read "not
+  even the densest *legal* line reaches it"; that was replaced with "no envelope the
+  protocol *defines* reaches it", and
+  `the_node_budget_arithmetic_matches_its_documentation` went on deriving the batch
+  bound under a comment calling a batch of minimal members "the densest" line and an
+  assertion message calling 3 247 204 values the "densest legal line" — the `_meta`
+  array of bare digits the same rustdoc describes is denser and does reach the budget.
+  Both now say *defined envelope*, and the numbers the correction introduced are pinned
+  rather than quoted: `ping_with_dense_meta` builds the documented shape and
+  `parse_bounded` fixes its envelope at 6 values against a budget of 8 (a budget of 7
+  refuses it), so the 4 194 298 / 4 194 299 boundary follows from the already-pinned
+  `MAX_NODES`, and the 8 388 654-byte line is measured without being parsed.
+  Hand-setting the width to 5 or to 7 fails the test in opposite directions.
+- **`a_node_dense_line_is_refused_although_it_fits_the_frame` fed a bare array, which
+  has no id to lose.** The rustdoc's claim is that the refusal is `-32700` with no id
+  *although the line is valid JSON-RPC*, so the caller cannot tie it to the call it is
+  blocked on — and a top-level `[0,0,…]` never carried an id, leaving that half of the
+  claim held by nothing. The fixture is now the documented `ping` whose `_meta` holds
+  the array, spelling `"id":1`; `handle_line` answers every parse failure with `None`
+  for the id, so the assertion that the reply has no id now records a lost correlation.
+  The bare-array shape stays covered by `the_node_budget_boundary_is_pinned_exactly` at
+  unit scale.
 - **Three claims about the archive path had the half that a doc or a comment gives as
   its own reason unpinned.** `docs/threat-model.md` says the write and the clearing
   both resolve a symlink, so "through a chain `l1 -> l2 -> real` it is `real` that is

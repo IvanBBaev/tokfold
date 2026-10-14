@@ -70,11 +70,14 @@ pub const MAX_DEPTH: usize = 128;
 ///   about 3,247,000 values. That is 23% below the budget. A well-formed message *can*
 ///   still reach it, but only through a value the protocol leaves open: `_meta`, or a
 ///   tool argument key the tools ignore, may hold an array of bare digits at 2 bytes
-///   per value. Under a `ping` envelope of 7 values that trips the limit at 4,194,298
-///   zeroes, a line of about 8 MiB; such a request is refused with `-32700` and no id,
-///   although it is valid JSON-RPC, and its caller cannot correlate the refusal. The
-///   limit trades that for a tree whose size is bounded; nothing the server reads is in
-///   such an array.
+///   per value. `{"jsonrpc":"2.0","method":"ping","id":1,"_meta":{"x":[0,…]}}` is such
+///   a line, and its envelope is 6 values: the outer object, `"2.0"`, `"ping"`, the id,
+///   the `_meta` object and the array. The counter refuses a count that *exceeds* the
+///   budget, so 4,194,298 zeroes land on it exactly and still parse, and the first
+///   refusal is one zero further, at 4,194,299 — a line of 8,388,654 bytes, a quarter
+///   of the frame. Such a request is refused with `-32700` and no id, although it is
+///   valid JSON-RPC, and its caller cannot correlate the refusal. The limit trades that
+///   for a tree whose size is bounded; nothing the server reads is in such an array.
 ///
 /// At the budget the tree is capped at 128 MiB of `Value` (192 MiB across the last
 /// doubling: the budget is 2^22, so the reallocation that reaches it happens at element
@@ -1075,6 +1078,15 @@ mod tests {
         text
     }
 
+    /// A `ping` whose `_meta` holds [`dense_array`]: the one well-formed JSON-RPC shape
+    /// the [`MAX_NODES`] doc names as able to reach the budget.
+    fn ping_with_dense_meta(count: usize) -> String {
+        format!(
+            r#"{{"jsonrpc":"2.0","method":"ping","id":1,"_meta":{{"x":{}}}}}"#,
+            dense_array(count)
+        )
+    }
+
     #[test]
     fn the_node_budget_boundary_is_pinned_exactly() {
         // Exactly at the budget is accepted and one past it is not. The array itself is
@@ -1140,15 +1152,36 @@ mod tests {
         assert_eq!(MAX_NODES, crate::MAX_MESSAGE_BYTES / 8);
         assert_eq!(MAX_NODES, 4_194_304);
 
-        // The claim that no protocol envelope reaches the budget rests on the densest one
-        // being a batch of minimal members. Derive that count rather than quoting it.
+        // The claim that no envelope the protocol *defines* reaches the budget rests on
+        // the densest such envelope being a batch of minimal members. That is not the
+        // densest legal line -- the `_meta` shape below is denser and does reach it --
+        // so the bound this derives is the one the doc claims and no more.
         let member = r#"{"jsonrpc":"2.0","method":"a"}"#;
         assert_eq!(member.len(), 30);
         let members = crate::MAX_MESSAGE_BYTES / (member.len() + 1);
         let values = members * 3 + 1;
         assert!(
             values < MAX_NODES,
-            "densest legal line is {values} values, budget is {MAX_NODES}"
+            "densest defined envelope is {values} values, budget is {MAX_NODES}"
+        );
+
+        // The doc's escape hatch is `_meta`, and every number it quotes for that shape
+        // follows from the envelope's width. Pin the width against a small budget rather
+        // than parsing the 8 MiB line: the envelope is 6 values -- the outer object,
+        // `"2.0"`, `"ping"`, the id, the `_meta` object and the array -- so a `_meta` of
+        // n zeroes needs a budget of n + 6.
+        let envelope = 6;
+        assert!(parse_bounded(&ping_with_dense_meta(2), envelope + 2).is_ok());
+        assert!(parse_bounded(&ping_with_dense_meta(2), envelope + 1).is_err());
+        // The counter refuses only a count that *exceeds* the budget, so the budget
+        // itself is the last accepted zero count and the first refusal is one past it.
+        assert_eq!(MAX_NODES - envelope, 4_194_298);
+        let line = ping_with_dense_meta(MAX_NODES - envelope + 1);
+        assert_eq!(MAX_NODES - envelope + 1, 4_194_299);
+        assert_eq!(line.len(), 8_388_654);
+        assert!(
+            line.len() < crate::MAX_MESSAGE_BYTES,
+            "the frame is not what refuses this line"
         );
     }
 }
