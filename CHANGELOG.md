@@ -4421,6 +4421,31 @@ documentation a previous fix falsified.
   quoting those counts stay true, and A6 is written as a capability and not as tokfold
   behaviour, so the staleness section's "not what the code does" holds. Documentation
   and one test only: no code, no behaviour and no format change.
+- **A list marker doubled, and a date inserted ahead of an older one.** The umask bullet
+  under *Archive path handling (CLI)* in `docs/threat-model.md` opened with `- - `, so
+  GitHub renders it one level deeper than its four siblings, inside a parent item that
+  has no content of its own. Measured against GitHub's own renderer (`POST /markdown`,
+  `mode: gfm`) over the fifteen lines around it: two `<ul>` and three `<li>`, the inner
+  one opening `<li><ul dir="auto"><li><strong>The archive is created`, where the
+  corrected text gives one `<ul>` and two sibling `<li>`. No text is lost -- the
+  continuation lines join the nested item's paragraph as lazy continuations -- so only
+  the level is wrong, and it is wrong in the one section a reader comes to for what the
+  archive exposes. It arrived with `8b94126`, the commit that added A6 to the capability
+  list, and nothing here would have caught it: no workflow lints markdown, and
+  `doc-drift` is a cargo test that opens none. The same bullet also read "measured
+  2026-10-14), re-measured 2026-10-10", a re-measurement four days before the
+  measurement. Each date was right about its own claim and the sentence was wrong:
+  `c72281c` inserted "which commit `166873f` builds -- measured 2026-10-14" into the SHA
+  parenthetical, where it dates the hash-to-commit mapping, while the mode figures were
+  re-measured 2026-10-10 against that binary and again 2026-10-15 with the input
+  narrowed to `0600`. Every date now names the measurement it belongs to, and the
+  world-writable member's "did not name until that date" names 2026-10-10 rather than a
+  "that date" with two candidates. **An inserted parenthetical dates whatever follows
+  it**, so a date added mid-sentence can reassign the date of a claim it was never
+  about. One more trap for the record: `git log -S` on a string that spans a line wrap
+  dates the re-wrap and not the claim -- the `000` case looked like today's work under a
+  one-line `-S` pattern and is `6d6659e`'s of 2026-10-10, which is what makes "until
+  2026-10-10" the true form. Documentation only.
 
 ### Tests
 - **The offset in the node-budget refusal was pinned nowhere, under a comment that

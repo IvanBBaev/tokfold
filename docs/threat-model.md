@@ -333,20 +333,21 @@ input as a rejected document and clear the stale archive beside it.
   output against the input — do not apply on Windows**. What remains there is the
   `--input`/`--archive` pair, which `is_same_file` compares by `fs::canonicalize`
   (read from the source; not measured on Windows).
-- - **The archive is created with the process umask, not with a restrictive mode.**
+- **The archive is created with the process umask, not with a restrictive mode.**
   `write_file` uses `OpenOptions` with `write`, `create` and `truncate` and sets no
   mode. Measured on macOS against `cargo build --release --workspace --all-features`
-  (SHA-1 `ca2cfc4a…`, which commit `166873f` builds — measured 2026-10-14), re-measured
-  2026-10-10: under umask `022` a new archive is `0644`, which any local user can read;
-  under `077` it is `0600`; and under `000` it is `0666`, which any local user can also
-  **write** — the member this bullet did not name until that date. Overwriting an
-  existing file re-applies nothing and keeps that file's own mode: a pre-existing `0666`
-  file stayed `0666` under umask `077`. The mode is the umask's and not the input's:
-  with the input narrowed to `0600` the same three passes still gave `0644`, `0600` and
-  `0666`, so under `022` tokfold writes a world-readable copy of a document only its
-  owner could read, which is what A6 reaches. The archive holds the input verbatim, so
-  on a shared machine the archive's permissions are the user's responsibility. All four
-  figures and that independence are pinned in `crates/tokfold-cli/tests/cli.rs` by
+  (SHA-1 `ca2cfc4a…`, the bytes commit `166873f` builds — that hash-to-commit mapping is
+  its own measurement, taken 2026-10-14): under umask `022` a new archive is `0644`,
+  which any local user can read; under `077` it is `0600`; and under `000` it is `0666`,
+  which any local user can also **write** — the member this bullet did not name before
+  the 2026-10-10 re-measurement. Overwriting an existing file re-applies nothing and
+  keeps that file's own mode: a pre-existing `0666` file stayed `0666` under umask
+  `077`. The mode is the umask's and not the input's: re-measured 2026-10-15 with the
+  input narrowed to `0600`, the same three passes still gave `0644`, `0600` and `0666`,
+  so under `022` tokfold writes a world-readable copy of a document only its owner could
+  read, which is what A6 reaches. The archive holds the input verbatim, so on a shared
+  machine the archive's permissions are the user's responsibility. All four figures and
+  that independence are pinned in `crates/tokfold-cli/tests/cli.rs` by
   `a_new_archives_mode_is_what_the_umask_leaves`, which drives each pass under `sh -c
   'umask N; …'` because std cannot set a umask and which until 2026-10-15 left the input
   at whatever the suite's own umask gave -- under the usual `022` that is `0644`, the
