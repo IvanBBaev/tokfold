@@ -91,8 +91,11 @@ released says so, and names what `0.0.1` does in the same case.
   standard input, and a match exits `2` before tokfold reads or writes anything —
   a rejected input over a file without the magic included, which `0.0.1` appended to
   that file with exit `0`. A `>` redirect has truncated the file before tokfold starts, so the refusal cannot
-  restore what `>` removed; it saves a `>>` or `1<>` target and stops the run. A pipe,
-  a terminal and `/dev/null` are not regular files and are never refused.
+  restore what `>` removed; it saves a `>>` or `1<>` target and stops the run. Only
+  regular files are compared, because only a regular file can be destroyed this way,
+  so a pipe, a terminal and `/dev/null` are never refused *by this comparison*; the
+  archive write refuses all three for not being a regular file, and a rejected pass
+  leaves them untouched.
 - **Every command refuses a standard output redirected into its own input (Unix).**
   `0.0.1` compared nothing here: `tokfold compress -i log.json >> log.json` appended
   the rendering to the document it had just read, `tokfold expand < a.tkfd >> a.tkfd`
@@ -750,6 +753,25 @@ released says so, and names what `0.0.1` does in the same case.
   second source of truth.
 
 ### Documentation
+- **A guard's "never refused" named three things tokfold refuses.** The entry on
+  `--archive` aimed at its own standard output closed with `A pipe, a terminal and
+  /dev/null are not regular files and are never refused` — a sentence about the
+  standard-output comparison, which only ever asks about regular files, written as a
+  claim about the program. All three are refused on the successful path, for exactly
+  the property the sentence gives as its reason for never refusing them: measured at
+  exit `2` with `refusing to write the archive to <path>: it is not a regular file`
+  for `/dev/null`, for a FIFO, and for a pseudo-terminal slave (`/dev/ttys003`, opened
+  with Python's `pty.openpty`). `0.0.1` exited `0` on the first two of those, having
+  discarded the archive into `/dev/null` and written it to the terminal; the FIFO member
+  was not measured on `0.0.1`, because a FIFO with no reader blocks at open — which is
+  the hang the entry on a successful `--archive` refusing a FIFO, a socket or a device
+  gives as the reason that refusal exists. Only a *rejected* input leaves all three
+  untouched and passes through, which is the `--input /dev/null --archive /dev/null`
+  case the neighbouring entry describes, and is why that one says "not compared" rather
+  than "not refused". The sentence is now scoped to the comparison; the CLI README's
+  parallel passage already was ("Only regular files are compared, because only a regular
+  file can be destroyed"). Behaviour and wire format unchanged. **A reason given for not
+  refusing something is a claim about every other guard on the path.**
 - **A code's definition excluded the only two uses that strain it.**
   `crates/tokfold-mcp/src/protocol.rs` defined `INVALID_PARAMS` as "the method exists
   but the parameters are wrong", and widened that reading twice — a modern request
