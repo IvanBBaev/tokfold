@@ -4288,6 +4288,32 @@ documentation a previous fix falsified.
   value the launcher causes to be read and never reads itself, beside the
   `Atomics.wait` case. Documentation only: no code, no behaviour and no format change.
 
+- **Stripping explains the defined symbols, not the undefined ones.** `docs/privacy.md`,
+  under *Network*, put "83 undefined symbols" for a local build beside "76 for the
+  published one" and then said that of the two only the published one is stripped. The
+  stripping sentence is true and it answers the *defined* side — 2 570 names against 1 —
+  but it accounts for none of the gap on the undefined side, and the two numbers were
+  not like for like.
+
+  Measured 2026-10-14 on macOS Darwin 27.0.0 arm64, one variable at a time:
+  `/usr/bin/strip -x` over already-linked bytes removes 202 712 bytes and no undefined
+  symbol whatever — 83 before, 83 after — while a build with `--config
+  'profile.release.strip="symbols"'`, the override `release.yml` passes, removes 259 056
+  bytes and exactly one undefined name, `__tlv_bootstrap`. So the link drops it and the
+  stripping does not, and no first-party source asks for it (`thread_local` matches 0
+  files under `crates`).
+
+  Compared like with like, 82 against 76, the gap is six names and all six are
+  filesystem calls: `lseek`, `lstat`, `pread`, `realpath$DARWIN_EXTSN`, `stat` and
+  `unlink`. The published binary is an older program rather than a narrower measurement
+  — in `crates/tokfold-cli/src` the APIs behind those calls have 3, 6, 2, 2 and 1 call
+  sites on this tree (`fs::canonicalize`, `fs::metadata`, `symlink_metadata`,
+  `fs::remove_file`, `FileExt::read_exact_at`) and 0 each at `81c7681`, the `gitHead`
+  the registry records for that platform package. The capability conclusion is
+  unchanged: the nine-name network filter matches nothing in any of the four binaries —
+  unstripped, stripped at the link, stripped after it, or published. Documentation only:
+  no code, no behaviour and no format change.
+
 ### Tests
 - **The offset in the node-budget refusal was pinned nowhere, under a comment that
   mis-stated the message.** `an_over_budget_message_reports_the_node_limit` asserted

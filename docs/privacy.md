@@ -171,9 +171,32 @@ stale-archive deletion and no same-file guards (see
   local build, and with the rest of `release.yml`'s flags — `--target
   aarch64-apple-darwin` among them, which moves the bytes on its own — it gives
   `ab8315f3…` at 1 002 928 bytes for `181ec00` and `2a17afd0…` at 1 002 896 for
-  `166873f` (both measured 2026-10-14). So for the published binary this says what
-  it *imports* and
-  not what it contains, while the `181ec00` build still carries 2 570 defined
+  `166873f` (both measured 2026-10-14).
+  Stripping is not what makes the published list shorter, and the two numbers above are
+  not like for like. Stripped the way `release.yml` strips, this tree's binary
+  (`ab8315f3…`) reports 82 undefined names rather than 83, and the one the strip costs
+  is `__tlv_bootstrap`, which no first-party source asks for (`thread_local` matches 0
+  files under `crates`). It is the *link* that drops it, not the stripping: running
+  `/usr/bin/strip -x` over the already-linked unstripped bytes removes 202 712 bytes and
+  no undefined symbol at all — 83 before, 83 after, `9cdb13e0…` — while building with
+  `profile.release.strip="symbols"` removes 259 056 bytes and exactly that one name. So
+  "only the published one is stripped" accounts for the defined side of the list and for
+  none of the undefined side.
+  Compared like with like — 82 against the published binary's 76 — the gap is six names,
+  and all six are filesystem calls: `lseek`, `lstat`, `pread`, `realpath$DARWIN_EXTSN`,
+  `stat` and `unlink`. The published binary is an older program, not a narrower
+  measurement. The APIs behind those calls are this document's own subject matter under
+  *Files* — the same-file guards, the archive clearing and the positional magic read —
+  and the 0.0.1 CLI contained none of them: in `crates/tokfold-cli/src`,
+  `fs::canonicalize` has 3 call sites on this tree and 0 at `81c7681`, the `gitHead` the
+  registry records for that package, `fs::metadata` 6 and 0, `symlink_metadata` 2 and 0,
+  `fs::remove_file` 2 and 0, and `FileExt::read_exact_at` 1 and 0 (`git grep -c -F`,
+  measured 2026-10-14). Which undefined symbol each API emits is the standard library's
+  business and is not pinned here. What does not move is the conclusion: the nine-name
+  filter matches nothing in any of the four binaries — unstripped, stripped at the link,
+  stripped after it, and published.
+  So for the published binary this says what it *imports* and not what it
+  contains, while the `181ec00` build still carries 2 570 defined
   symbols, 443 of them mangled Rust names containing `tokfold`, that this measurement
   does not look at (`166873f`'s carries 2 562 and 440 — the two numbers this sentence
   held until 2026-10-14). Those names are Rust **v0** symbols, spelled `__R…`, so the
