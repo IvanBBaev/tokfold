@@ -48,9 +48,11 @@ stale-archive deletion and no same-file guards (see
 - It keeps no cache, no history and no log file.
 - The only file it opens *to write* is the one you name with `--archive` — or, when
   that name is a symlink, the file it resolves to. It opens one other file by name and
-  only reads it: the one you name with `--input`, where a symlink is followed too.
-  Until 2026-10-14 this bullet, and two more below it, said "opens by name", which the
-  input read falsifies — see *What the CLI reads*.
+  only reads it: the one you name with `--input`, where a symlink is followed too. The
+  archive is read as well as written — four bytes of it, on the one path that clears a
+  stale archive. Until 2026-10-14 this bullet, and two more below it, said "opens by
+  name", which the input read falsifies, and none of the three said the archive is read
+  at all — see *What the CLI reads*.
 - A redirect is the other way your data reaches disk: `tokfold expand > restored.json`
   writes your original bytes into `restored.json` verbatim. tokfold never names that
   file and never sets its mode; your shell does both.
@@ -196,11 +198,21 @@ stale-archive deletion and no same-file guards (see
 
 - The input, from `--input <path>` or standard input (`read_source` in
   `crates/tokfold-cli/src/main.rs`). It reads the whole input into memory.
-- When `--archive` is given, the CLI also inspects the named path's metadata, and
-  reads its first four bytes (the `TKFD` magic). It does this to decide whether a
-  previous archive there must be cleared, and whether the path is the same file as
-  the input or output (`clear_stale_archive`, `ensure_archive_is_not_the_input` and
-  `ensure_output_is_not_the_input` in `main.rs`).
+- When `--archive` is given, the CLI inspects the named path's metadata on every pass,
+  to decide whether that path is the same file as the input or the output
+  (`ensure_archive_is_not_the_input` and `ensure_output_is_not_the_input` in `main.rs`).
+  It reads *bytes* out of that file on one path only: when the input is rejected,
+  `clear_stale_archive` opens the path read-only and reads its first four bytes (the
+  `TKFD` magic) to decide whether a previous archive there must be cleared. A
+  successful pass reads nothing there — it truncates the file and writes over it.
+  Measured against a release build of this tree (`cargo build --release -p
+  tokfold-cli`, SHA-1 `637795cf…`, macOS Darwin 27.0.0 arm64, rustc 1.97.0) with a
+  12-byte `TKFD`-prefixed file at mode `0200` — writable, not readable — at the
+  `--archive` path: a valid input exits `0` and overwrites it, while a rejected input
+  exits `2` with "inspecting the archive path b.tkfd, which resolves to <path>:
+  Permission denied (os error 13)" and nothing on standard output. Until 2026-10-14
+  this bullet said those four bytes are read "when `--archive` is given", which every
+  successful pass falsifies.
 
 ### What the CLI writes
 
@@ -218,7 +230,19 @@ stale-archive deletion and no same-file guards (see
   These can include the paths you passed and sizes. The `mcp` subcommand also prints
   its experimental notice there on start-up.
 - **The `--archive` path, and nothing else tokfold opens to write.** `write_file` in
-  `main.rs` is the only function that opens a file to write it. A redirect still puts
+  `main.rs` is the only function that *writes* a file. Two others open one to write and
+  write nothing: `archive_identity`, which asks the archive path the way the write
+  reaches it, and the writability check in `inspect_descriptor_slot`. Both open
+  write-only, without `create` and without `truncate`, so neither can bring a file into
+  being, change its mode or shorten it, and neither is reached for anything but a
+  regular file — `archive_identity` only for a `/dev/fd` spelling of one. That open is
+  observable: against the release build named in *What the CLI reads*, `compress
+  --input good.json --archive /dev/fd/3 3< good.json` is not called a collision,
+  because a read-only descriptor refuses the open, and it fails on the write instead
+  ("writing archive to /dev/fd/3: Permission denied (os error 13)"); the same command
+  with `3<> good.json` is refused as one file, before anything is written. Until
+  2026-10-14 this bullet called `write_file` the only function that *opens* a file to
+  write it, which both probes falsify. A redirect still puts
   standard output on disk — the *Standard output* bullet says what goes there, and on
   `expand` it is your original bytes verbatim — but that file is the caller's: tokfold
   does not name it, create it or set its mode. Read "the `--archive` path" as *the file
@@ -294,8 +318,16 @@ stale-archive deletion and no same-file guards (see
 ### Caches and temporary files
 
 - **None at run time.** The CLI opens no file of its own other than the two you name —
-  the `--archive` path it writes and the `--input` path it reads, or, through a symlink
-  at either, that path's target — and neither library crate writes files. A file you
+  the `--archive` path and the `--input` path, or, through a symlink at either, that
+  path's target. The input is only ever read; the archive is written, and on a rejected
+  input read as well, four bytes of it (*What the CLI reads*). Until 2026-10-14 this
+  bullet gave each path a single verb, "the `--archive` path it writes and the
+  `--input` path it reads", which the archive's own read falsifies. Neither library
+  crate opens a file by name at all: `File::open`, `OpenOptions` and `fs::write` appear
+  nowhere in `tokfold-core`'s or `tokfold-mcp`'s sources. `serve_stdio` in
+  `tokfold-mcp` does build two `std::fs::File` values, but from duplicates of the
+  descriptors it inherits on standard input and standard output, not from a path. A
+  file you
   redirect standard output into is not a temporary file of tokfold's — it is where you
   asked the output to go — but it is on disk, and on `expand` it holds your original
   bytes verbatim.

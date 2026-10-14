@@ -3950,6 +3950,53 @@ documentation a previous fix falsified.
   vector in. A document that promises about either is promising about bytes, and the
   launcher only ever handed on strings.
   Documentation only: no code, no behaviour and no format change.
+
+- **The correction that scoped "opens by name" to "opens to write" gave the archive
+  path one verb, and three sentences in `docs/privacy.md` were false in three different
+  ways because of it.** *Caches and temporary files* named "the `--archive` path it
+  writes and the `--input` path it reads", which reads as a role for each path; the
+  archive path is also opened read-only, and four bytes of whatever file already sits
+  there are read (`inspect_archive_slot`, and `inspect_descriptor_slot` for a `/dev/fd`
+  spelling). The same document's *What the CLI reads* said so, so the two sections
+  disagreed — and that bullet was wrong about *when*: it put the four-byte read at
+  "when `--archive` is given", while the read exists only to serve the stale-archive
+  deletion, which `compress` performs only on the path where it rejects its input. A
+  successful pass never reads the file it is about to replace. And *What the CLI
+  writes* said `write_file` "is the only function that opens a file to write it", which
+  is false by two: `archive_identity` and the writability check in
+  `inspect_descriptor_slot` both open the archive path write-only and write nothing.
+
+  Measured against a release build of this tree (`cargo build --release -p
+  tokfold-cli`, SHA-1 `637795cf…`, macOS Darwin 27.0.0 arm64, rustc 1.97.0). With a
+  12-byte `TKFD`-prefixed file at mode `0200` — writable, not readable — at the
+  `--archive` path, a valid input exits `0` and overwrites it, which is only possible
+  if nothing opened it for reading; the same file under a rejected input exits `2` with
+  "inspecting the archive path b.tkfd, which resolves to <path>: Permission denied (os
+  error 13)", nothing on standard output and the 12 bytes still there. The write-only
+  probe is observable the same way: `compress --input good.json --archive /dev/fd/3 3<
+  good.json` aims the archive at its own input and is *not* refused as a collision,
+  because `archive_identity` opens the way the write does and a read-only descriptor
+  refuses that open — it fails on the write instead, "writing archive to /dev/fd/3:
+  Permission denied (os error 13)" — while `3<> good.json` is refused by the rule
+  before anything is written.
+
+  The three sentences now scope the verb per path rather than per file, and the
+  *Summary* bullet says the archive is read too, since none of the three said so. The
+  *Caches* bullet's second half was re-measured and strengthened while it was open:
+  "neither library crate writes files" is now "neither library crate opens a file by
+  name at all", which `File::open`, `OpenOptions` and `fs::write` appearing nowhere in
+  `tokfold-core`'s or `tokfold-mcp`'s sources supports — with the one thing a reader
+  grepping for `std::fs` will find named explicitly, because `serve_stdio` does build
+  two `std::fs::File` values, from duplicates of the descriptors it inherits on
+  standard input and standard output rather than from a path.
+
+  The rule: **a verb scoped per file is still a claim per role.** The earlier fix
+  replaced "the only file the CLI writes" with "opens by name" because a redirect
+  falsified the first, then replaced "opens by name" with "opens to write" because the
+  input read falsified the second — and in naming the roles it assigned the archive the
+  only role it had been thinking about. Every path in that sentence needed asking
+  twice, once for reading and once for writing. Documentation only: no code, no
+  behaviour and no format change.
 ### Tests
 - **The offset in the node-budget refusal was pinned nowhere, under a comment that
   mis-stated the message.** `an_over_budget_message_reports_the_node_limit` asserted
