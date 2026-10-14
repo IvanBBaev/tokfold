@@ -220,7 +220,7 @@ What the code does, and does not do, about it:
 
 ### Archive path handling (CLI)
 
-The only file the CLI opens by name is the `--archive` path, through `write_file` in
+The only file the CLI *writes* by name is the `--archive` path, through `write_file` in
 `main.rs`. It deletes only a stale archive at that same path, through
 `clear_stale_archive`. Both resolve a symlink at that path and act on its target, so
 "that same path" names the file the path resolves to and not always the file you
@@ -240,6 +240,23 @@ and no write ever happened
 (`a_symlink_aimed_at_a_fifo_is_refused_by_the_write_path`). The guards around both are
 documented in `crates/tokfold-cli/README.md` and in the rustdoc of the functions named
 here.
+
+It is not the only file the CLI *opens* by name. The `--input` path is opened
+read-only, through `fs::read` in `read_source`, by each of the three subcommands that
+take the flag — `compress`, `expand` and `stats`, while `mcp` takes no arguments — and
+a symlink there is followed exactly as one at the archive path is. Until 2026-10-14
+the sentence this section opens with said "opens by name", and that wording was itself
+a fix: it replaced "the only file the CLI writes", which the redirected standard output
+falsifies and which the paragraph below answers. The input read falsifies the
+replacement instead, and nothing in that edit looked at it. Measured against a release
+build of this tree (`cargo build --release -p tokfold-cli`, SHA-1 `637795cf…`, macOS
+Darwin 27.0.0 arm64, rustc 1.97.0): `compress --input missing.json` exits `2` with
+"reading input file missing.json: No such file or directory (os error 2)", `expand` and
+`stats` name the same step for their own missing paths, an input at mode `000` exits
+`2` with "Permission denied (os error 13)", and `--input link` with `link -> real`
+compresses the bytes of `real`. The same-file guards reach that path a second way, by
+`stat` rather than by name, opening it only for a `/dev/fd` spelling of a regular file
+(`input_identity` and `reached_identity` in `main.rs`).
 
 It is not the only file the CLI *writes*. Every command writes to standard output, and
 a redirect puts that on disk: the CLI then writes a file it never names, through a

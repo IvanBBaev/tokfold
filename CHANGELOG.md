@@ -3645,6 +3645,54 @@ documentation a previous fix falsified.
   through `write_stdout` otherwise, as `parse_failure` documents — because those are
   writers the subcommand list does not cover.
 
+- **"The only file the CLI opens by name" was false, in the fix that wrote it.**
+  `docs/threat-model.md`'s *Archive path handling (CLI)* opened with that sentence and
+  `docs/privacy.md` repeated it three times — in its *Summary*, in *What the CLI
+  writes* ("nothing else tokfold opens itself") and in *Caches and temporary files*
+  ("opens no file of its own other than the `--archive` path"). The CLI opens a second
+  file by name on every run that passes `--input <path>`: `read_source` in
+  `crates/tokfold-cli/src/main.rs` hands that path to `fs::read` after one `is_dir`
+  check, for each of the three subcommands that take the flag — `compress`, `expand`
+  and `stats`, while `mcp` takes no arguments at all. The same document said so
+  elsewhere: *What the CLI reads* names "`--input <path>`" in its first bullet, so the
+  claim was refuted by the section above the one that made it.
+  **A fix that rewords a claim is a new claim, and is measured as the old one was.**
+  That wording was itself a fix. An earlier entry here records that "The only file the
+  CLI writes" was false because a redirect puts standard output on disk, and records its
+  own remedy as: the lead sentence *now says* "opens by name". That is a wider claim
+  than the one being corrected, since it covers reading as well as writing, and nothing
+  in that edit looked at the read path. The follow-up paragraph the same fix added
+  answers only the half it had already stepped away from — "It is not the only file the
+  CLI *writes*" — so the document was left asserting the half nobody had measured.
+
+  The four sites now scope the verb. The threat-model lead says *writes* by name, and
+  the paragraph carries the measurements, taken against a release build of this tree
+  (`cargo build --release -p tokfold-cli`, SHA-1 `637795cf…`, macOS Darwin 27.0.0
+  arm64, rustc 1.97.0): `compress --input missing.json` exits `2` with "reading input
+  file missing.json: No such file or directory (os error 2)", `expand --input` and
+  `stats --input` name the same step for their own missing paths, an input at mode
+  `000` exits `2` with "Permission denied (os error 13)", a directory exits `2` with
+  "input path adir is a directory, not a file", and `--input link` with `link -> real`
+  compresses the bytes of `real` — so a symlink at the input path is followed exactly
+  as one at the archive path is. The privacy *Summary* says "opens *to write*" and
+  names the input as the one other file it opens and only reads; *What the CLI writes*
+  says "nothing else tokfold opens to write"; *Caches and temporary files* names both
+  paths. Each of the three privacy sites points at *What the CLI reads*, and the
+  threat-model paragraph records the date and what the previous wording was, so the
+  next reader sees the correction rather than re-deriving it.
+
+  No `## Assets` row was added for the input file. The rows are counted twice in the
+  threat model's own staleness bookkeeping: *Where this document can go stale* says the
+  anchoring rule "does not reach *Attacker capabilities considered* or three of the six
+  *Assets* rows", and then that "the other three *Assets* rows do say what the code
+  does". A seventh row would falsify both sentences in order to record a path that
+  `docs/privacy.md`'s *What the CLI reads* and the threat-model paragraph corrected here
+  both describe. What the guards do with that path is worth separating, and the
+  paragraph says it: they reach it by `stat`, through `file_identity` and
+  `input_identity`, and open it only for a `/dev/fd` spelling of a regular file
+  (`reached_identity` in `main.rs`) — so "opens by name" was not the right description
+  of the guard side either. Behaviour, wire format and the binary unchanged; the
+  documents are the only thing this touches.
 ### Tests
 - **The offset in the node-budget refusal was pinned nowhere, under a comment that
   mis-stated the message.** `an_over_budget_message_reports_the_node_limit` asserted
