@@ -331,8 +331,13 @@ decides what enters the model's context and what it logs.
   archive of `{"secret":"hunter2","rows":[{"a":1},{"a":2}]}`: both fields carried
   that document in full. A client that stores only one of the two still stores the whole
   original.
-- **`tokfold_estimate`** returns the statistics without the payload (pinned by the
-  `estimate_reports_stats_without_the_payload` test in `tools.rs`).
+- **`tokfold_estimate`** returns the statistics without the payload: neither the text
+  block nor `structuredContent` carries any part of the input back. The
+  `estimate_reports_stats_without_the_payload` test in `tools.rs` pins that over the
+  whole reply rather than over two key names -- each of its three documents holds a
+  marker string and reaches a different encoder, and the marker must appear in neither
+  half. The compressing documents are the cases that matter: on a passthrough input
+  there is no rendering for the reply to withhold in the first place.
 - Every result also carries the server's name and version in `_meta`.
 - **The experimental notice is not part of any reply, and the crate does not print
   it.** `EXPERIMENTAL_NOTICE` is a constant in `crates/tokfold-mcp/src/lib.rs`; the

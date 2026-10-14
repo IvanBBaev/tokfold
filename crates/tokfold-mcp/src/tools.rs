@@ -704,17 +704,83 @@ mod tests {
         assert_eq!(encoder_name(EncoderId::E2_TABULAR), "tabular");
     }
 
+    /// Pins that `estimate` withholds the payload, not merely that two key names
+    /// are absent: a third key, or the text block, would carry the input past a
+    /// check on `archive` and `rendering` alone. So each document holds a marker
+    /// and the whole reply is searched for it.
+    ///
+    /// One document per encoder. On a passthrough input there is no rendering to
+    /// withhold in the first place, so a test that only ever reaches that path says
+    /// nothing about the other two. What selects each encoder here is width: the
+    /// 30-byte document stays raw, the 252-byte indented one pays for having its
+    /// whitespace runs stripped (252 -> 111 bytes), and twelve uniform rows let E2
+    /// hoist the keys.
     #[test]
     fn estimate_reports_stats_without_the_payload() {
-        let outcome = call(ESTIMATE, Some(&args(r#"{"text":"{\"a\": 1}"}"#))).unwrap();
-        assert!(!outcome.is_error);
-        assert!(outcome.structured.get("stats").is_some());
+        const MARKER: &str = "payload-marker-9f3a";
+        const INDENTED: &str = r#"{
+  "note": "payload-marker-9f3a",
+  "tree": {
+    "a": {
+      "b": {
+        "c": [
+          1,
+          2,
+          3
+        ],
+        "d": "x"
+      }
+    },
+    "e": [
+      {
+        "p": 1
+      },
+      {
+        "q": 2
+      }
+    ]
+  }
+}"#;
         assert!(
-            outcome.structured.get("archive").is_none(),
-            "estimate must not return a payload"
+            INDENTED.contains(MARKER),
+            "the fixture must carry the marker the reply is searched for"
         );
-        assert!(outcome.structured.get("rendering").is_none());
-        assert!(outcome.text.contains("encoder="));
+        let rows = (0..12)
+            .map(|n| format!(r#"{{"kind":"alpha","note":"{MARKER}","n":{n}}}"#))
+            .collect::<Vec<_>>()
+            .join(",");
+        let documents = [
+            ("passthrough", format!(r#"{{"note":"{MARKER}"}}"#)),
+            ("minify", INDENTED.to_owned()),
+            ("tabular", format!(r#"{{"rows":[{rows}]}}"#)),
+        ];
+        for (expected, document) in documents {
+            let arguments = Object::new().set("text", Value::string(document)).build();
+            let outcome = call(ESTIMATE, Some(&arguments)).unwrap();
+            assert!(!outcome.is_error);
+            let stats = outcome.structured.get("stats").expect("stats is reported");
+            assert_eq!(
+                stats.get("encoder").and_then(Value::as_str),
+                Some(expected),
+                "the fixture must reach the encoder it was written for"
+            );
+            assert!(
+                outcome.structured.get("archive").is_none(),
+                "{expected}: estimate must not return a payload"
+            );
+            assert!(outcome.structured.get("rendering").is_none());
+            let serialized = outcome.structured.to_string();
+            assert!(
+                !serialized.contains(MARKER),
+                "{expected}: the payload reached structuredContent: {serialized}"
+            );
+            assert!(
+                !outcome.text.contains(MARKER),
+                "{expected}: the payload reached the content block: {}",
+                outcome.text
+            );
+            assert!(outcome.text.contains("encoder="));
+        }
     }
 
     #[test]

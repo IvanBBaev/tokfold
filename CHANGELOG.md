@@ -4688,6 +4688,36 @@ same way afterwards — followed by the tests that pin this entry's fixes.
   `is_protected(lexeme).is_some()` with `false` fails the per-lexeme one. Workspace tests
   596 → 598 debug and 594 → 596 release, the delta between them unchanged.
 
+- **The test cited as the pin for "returns the statistics without the payload" pinned
+  the absence of two key names, on an input with no payload to withhold.**
+  `docs/privacy.md` names `estimate_reports_stats_without_the_payload` as what holds
+  that claim for `tokfold_estimate`. The test asserted `stats` present,
+  `structured.get("archive").is_none()`, `structured.get("rendering").is_none()` and
+  that the text block contains `encoder=`. A third key carrying the input back, or the
+  input inside the text block, satisfies all four. Its input was also the wrong case:
+  `{"a": 1}` is 8 bytes and selects `passthrough` (measured), where there is no
+  rendering and no compressed archive for the reply to withhold in the first place, so
+  nothing in the test reached the minify or tabular paths that actually build one.
+
+  The test now carries a marker through the whole reply, once per encoder. The
+  fixtures and what selects each: `{"note":"payload-marker-9f3a"}` at 30 bytes stays
+  `passthrough`; a 252-byte indented document is minified to 111 bytes; twelve uniform
+  rows reach E2 at 636 → 473. Each reply must report the expected `stats.encoder` --
+  without that, a fixture that drifted onto another path would quietly make the test a
+  claim about a path it no longer reaches -- and the marker must appear neither in the
+  serialized `structuredContent` nor in `content[0].text`.
+
+  Hand-mutated before being believed, with the mutation the old test could not see:
+  adding `.set("source", Value::string(artifact.rendering.clone()))` to
+  `compressed_outcome` leaks the payload under a third key, which the old assertions
+  pass and the new one fails with the marker quoted. Making the text block
+  unconditional (`let text = if true`) fails too. The privacy bullet now states what is
+  pinned -- the whole reply, for three encoders -- instead of citing a test name.
+
+  **A test named after a claim is a claim about its coverage**, and a check on key
+  names is not a check on the payload. Test count unchanged at 598 debug / 596
+  release: one test rewritten, no behaviour and no format change.
+
 ## [0.0.1] - 2026-08-29
 
 First version of the workspace, and the first one to leave the repository. There
