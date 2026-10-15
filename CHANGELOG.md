@@ -5648,6 +5648,26 @@ same way afterwards — followed by the tests that pin this entry's fixes.
   scope**, which a statement about the nine gates does not do for a claim about every
   job. Documentation only: no code, no behaviour and no format change.
 
+- **"On Linux that branch is dead code" named one of the three legs that never reach it.**
+  The `launcher` job in `.github/workflows/ci.yml` justifies its Windows leg partly by
+  `packaging.test.js` taking its `shell: true` path only there, and closed that argument
+  with "On Linux that branch is dead code". The matrix has four legs -- two Linux, one
+  Windows and one macOS -- `packaging.test.js` sets `THROUGH_SHELL` from
+  `process.platform === "win32"`, and the suite step carries no `if:`, so it runs on every
+  leg. The branch is therefore dead on three legs, and the sentence named one of them.
+
+  The narrowing was local to that sentence. The same comment block gets the distinction
+  right where it describes the platform table -- the win32 entries are the ones "a Linux or
+  macOS host can only reach through a stubbed `process.platform`" -- and `packaging.test.js`
+  says it exactly: "a shell on that one platform interpolates nothing".
+
+  The comment now names the mechanism and all three legs it rules out, and records the
+  wording it replaced.
+
+  The rule: **a claim about where a branch is dead is a claim about every platform in the
+  matrix** -- read them off the matrix, not off the one that came to mind. Documentation
+  only: no code, no behaviour and no format change.
+
 ## [0.0.1] - 2026-08-29
 
 First version of the workspace, and the first one to leave the repository. There

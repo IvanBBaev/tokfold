@@ -569,10 +569,17 @@ jobs:
           # publish a `tokfold-windows-x64` package, so the one host that resolves
           # it for real should be a host CI has actually used.
           #
-          # It is also the only place `packaging.test.js` takes its `shell: true`
-          # path: `npm` on PATH is `npm.cmd` there, and since the fix for
-          # CVE-2024-27980 Node refuses to spawn a `.cmd` without a shell. On
-          # Linux that branch is dead code.
+          # It is also the only leg on which `packaging.test.js` takes its
+          # `shell: true` path: `npm` on PATH is `npm.cmd` there, and since the
+          # fix for CVE-2024-27980 Node refuses to spawn a `.cmd` without a
+          # shell. That file sets `THROUGH_SHELL` from `process.platform ===
+          # "win32"`, and the `Launcher test suite (node --test)` step carries
+          # no `if:`, so the branch is dead on all three other legs -- both
+          # Linux ones and the macOS one.
+          # This sentence used to say "On Linux that branch is dead code",
+          # naming one of the three hosts that never reach it, while the comment
+          # on the win32 platform table in this same block says "a Linux or
+          # macOS host" and `packaging.test.js` itself says "that one platform".
           #
           # One Node version rather than two, and 22 because that is what
           # `release.yml` publishes from. The engines floor is a promise about
