@@ -219,12 +219,14 @@ outcome of the pass:
   for writing, so it replaces a document of any kind, but it refuses a path that is
   not a regular file or a directory, and it fails with exit `2` on a file it lacks
   write permission for. A **directory** is outside that classification on purpose —
-  the rejected pass opens one so it can report the platform's own error instead of
-  claiming there is nothing to clear — but it is no more writable for that: an
+  the rejected pass hands one to the open to report the platform's own error instead
+  of claiming there is nothing to clear — but it is no more writable for that: an
   accepted input with `--archive adir` exits `2` saying `writing archive to adir: Is a
   directory`, the platform's own diagnostic rather than tokfold's own "not a regular
-  file" refusal (`os error 21` where the measurement was taken, macOS; the test pins
-  the sentence without the number, which is the platform's to choose). Both outcomes
+  file" refusal (`os error 21` where the measurement was taken, macOS; the test that
+  pins the sentence without the number is `#[cfg(unix)]`, and both the sentence and the
+  number are the platform's to choose -- on Windows the open fails with an access
+  denial that names nothing about the path being a directory). Both outcomes
   are exit `2` with nothing on standard output; only the message differs. It also
   refuses, with exit `2`, a path whose opening does not empty it, because the archive
   would land after whatever the file already held: on macOS `/dev/fd/N`, `/dev/stdin`,
@@ -285,9 +287,15 @@ outcome of the pass:
   archive. A FIFO, a socket or a device is left alone without even being opened — stderr
   says it is not a regular file, not that it is not an archive, since nothing read it:
   it cannot hold bytes a later `expand` would read back, and opening a FIFO would block
-  until a writer appeared. A directory is the one exception — it is opened on purpose,
-  so the read fails with the platform's own diagnostic and the command exits `2`, rather
-  than reporting nothing to clear at a path that plainly is not empty.
+  until a writer appeared. A directory is the one exception — it is handed to the open
+  on purpose, so the command exits `2` with the platform's own diagnostic rather than
+  reporting nothing to clear at a path that plainly is not empty. Which call fails is
+  the platform's, and so is how much the message says: on Unix the open succeeds and
+  the read fails with `Is a directory` (`os error 21` where this was measured, macOS);
+  on Windows the open itself is refused, because `File::open` passes no
+  `FILE_FLAG_BACKUP_SEMANTICS` — the flag `CreateFileW` needs before it will return a
+  directory handle — so there the exception buys an access denial that names nothing
+  about the path being a directory.
 - Both the overwrite and the deletion follow symlinks to the **target**, because a
   successful pass writes through the link and it is the target that would go stale.
   A rejected pass therefore clears the archive behind the link and leaves the link
@@ -328,7 +336,8 @@ outcome of the pass:
   A write-only descriptor (`3>>log`) on a file of four bytes or more cannot be read to
   find out, and exits `2` too, whatever the file holds. A pipe, socket or device is
   not read at all, and stderr says it is not a regular file; a directory exits `2` with
-  the platform's own diagnostic, which is why the rejected pass opens one at all.
+  the platform's own diagnostic, which is why the rejected pass hands one to the open
+  at all.
 - **The rejected pass is not contained by the successful one.** It is tempting to
   reason that deleting is safe because a successful pass would have overwritten the
   same path anyway. That is not true, because the two use different system calls with

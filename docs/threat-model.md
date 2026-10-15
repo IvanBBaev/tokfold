@@ -308,7 +308,10 @@ input as a rejected document and clear the stale archive beside it.
   archive path <path>: Is a directory (os error 21)" — the clearing lets a directory
   through to the magic probe on purpose (the check it delegates to,
   `inspect_archive_slot`, settles "not a regular file" on `!meta.is_file() &&
-  !meta.is_dir()`), `File::open` succeeds on a directory, and the read of it fails. The
+  !meta.is_dir()`), and on Unix `File::open` succeeds on a directory and the read of it
+  fails. On Windows the open itself fails, since `File::open` passes no
+  `FILE_FLAG_BACKUP_SEMANTICS`, so the message there is an access denial that names
+  nothing about the path being a directory. The
   `is_file() || is_dir()` spelling is `write_file`'s and governs the successful pass
   below, not the clearing. On a *successful* pass both are fatal, with
   different messages: a FIFO is refused before the write ("refusing to write the

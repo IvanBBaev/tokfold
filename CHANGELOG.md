@@ -39,7 +39,10 @@ released says so, and names what `0.0.1` does in the same case.
   file is opened for the inspection: a FIFO, socket or device cannot hold bytes a later `expand` would read
   back, so it is classified without being opened — opening a FIFO would block until
   a writer appeared — and left where it was. A directory is opened deliberately, so
-  the read fails with the platform's own diagnostic.
+  the read fails with the platform's own diagnostic. (That last sentence is Unix's,
+  not every platform's -- see the entry headed '"A directory is opened on purpose, so
+  the read fails with the platform's own diagnostic" was a Unix mechanism stated as
+  the rule'; it is left as written.)
 
   The deletion is keyed to the `TKFD` archive magic, which is a *necessary*
   condition for the hazard and not a sufficient one: only a file carrying it can be
@@ -4640,6 +4643,55 @@ documentation a previous fix falsified.
   `cfg` is the scope of what it measures**: where prose and `cfg` disagree about
   coverage, the `cfg` is the measurement. Documentation only: no code, no behaviour and
   no format change.
+
+- **"A directory is opened on purpose, so the read fails with the platform's own
+  diagnostic" was a Unix mechanism stated as the rule.** Eight places said it: the
+  `clear_stale_archive`, `inspect_descriptor_slot` and `write_file` rustdoc and the
+  `inspect_archive_slot` comment in `crates/tokfold-cli/src/main.rs`, three bullets in
+  `crates/tokfold-cli/README.md`, and the "not a regular file" paragraph in
+  `docs/threat-model.md`. The carve-out those sentences explain -- `!meta.is_file() &&
+  !meta.is_dir()` on the rejected path and `is_file() || is_dir()` on the successful
+  one, so a directory is handed to the open instead of being classified away -- exists
+  only to buy the platform's better message, and only one platform has a better one
+  to give.
+
+  Measured on macOS: `open(dir, O_RDONLY)` returns a descriptor, and both `read(fd, 4)`
+  and `pread(fd, 4, 0)` on it raise `EISDIR`; `tokfold compress --archive <dir>` on a
+  rejected input exits `2` with nothing on standard output and `inspecting the archive
+  path <dir>: Is a directory (os error 21)` on stderr. Derived for Windows from std's
+  own source (`library/std/src/sys/fs/windows.rs`): `OpenOptions::new()` leaves
+  `custom_flags`, `attributes` and `security_qos_flags` at `0`;
+  `get_flags_and_attributes` adds `FILE_FLAG_OPEN_REPARSE_POINT` and only under
+  `create_new`; so a plain `File::open` reaches `CreateFileW` with flags `0`, without
+  `FILE_FLAG_BACKUP_SEMANTICS` -- the flag std's own comment in `remove_dir_all` names
+  as the one that "allows opening directories". The *open* fails there, with an access
+  denial that says nothing about the path being a directory: strictly less informative
+  than the "not a regular file" refusal the carve-out exists to bypass. The README's
+  quotation of the successful pass's message, `writing archive to adir: Is a
+  directory`, was presented with only its *number* conceded to the platform; the
+  sentence is the platform's too.
+
+  The repo already held the correct wording and every prose site read past it.
+  `a_stale_archive_that_cannot_be_removed_suppresses_the_passthrough` is documented "on
+  Unix it opens and then fails the read, on Windows it fails the open", and it asserts
+  the exit code and a context substring rather than the errno, so it passes on both.
+  The eight sites now carry that same split.
+
+  Three things are left as written, each for a reason.
+  `a_directory_at_the_archive_path_of_a_rejected_pass_costs_the_passthrough` and
+  `a_directory_at_the_archive_path_of_a_successful_pass_reports_the_platform_error`
+  state the Unix mechanism in their docs and assert `os error 21` and `Is a directory`,
+  but both are `#[cfg(unix)]` and one already names its reach ("21 is `EISDIR` on both
+  macOS and Linux, which is as far as `cfg(unix)` reaches here"): a test's `cfg` is the
+  scope of what it measures, so neither overclaims. The earlier entry opening "The same
+  bullet attributed the clearing's admission of a directory to the wrong function and
+  the wrong spelling" says `read_exact` "fails with `EISDIR`", which carries its
+  platform in the errno name, and it is a record of what that commit wrote.
+
+  The rule: **a mechanism is a claim about every platform the binary builds for.**
+  "The platform's own diagnostic" asserts that every platform has one to give, and the
+  carve-out was reasoned out on the only platform that does. Documentation only: no
+  code, no behaviour and no format change.
 
 ### Tests
 - **The offset in the node-budget refusal was pinned nowhere, under a comment that

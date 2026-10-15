@@ -775,9 +775,14 @@ fn removal_is_still_the_inspected_file(target: &Path, identity: Option<(u64, u64
 ///   reassuring message on top.
 /// * A FIFO, a socket or a device is **never opened**. Neither can hold a readable
 ///   archive, and opening a FIFO blocks until a writer appears. A directory is the
-///   one non-file this refuses to skip: it is opened on purpose, so the read fails
-///   with the platform's own diagnostic rather than silently reporting nothing to
-///   clear at a path that plainly is not empty.
+///   one non-file this refuses to skip: it is handed to the open on purpose, so the
+///   failure carries the platform's own diagnostic rather than silently reporting
+///   nothing to clear at a path that plainly is not empty. Which call fails is the
+///   platform's: on Unix the open succeeds and the read fails `EISDIR`, on Windows
+///   the open itself is refused, because `File::open` passes no
+///   `FILE_FLAG_BACKUP_SEMANTICS` — the flag `CreateFileW` needs before it will
+///   return a directory handle — so there the refusal names nothing about the path
+///   being a directory.
 /// * The **identity is re-checked** immediately before the unlink, so a target
 ///   swapped after the magic was read is refused rather than deleted.
 ///
@@ -974,9 +979,16 @@ fn inspect_archive_slot(path: &Path) -> Result<ArchiveSlot> {
 
     let meta = fs::symlink_metadata(&target).with_context(|| inspecting(path, &target))?;
 
-    // A directory falls through to the open below on purpose: `File::open` succeeds
-    // on one and the read then fails with the platform's own diagnostic, which is
-    // what a caller wants to see. Everything else that is not a regular file — FIFO,
+    // A directory falls through to the open below on purpose, so the caller is told
+    // the platform's own answer rather than tokfold's "not a regular file". Which
+    // call fails is the platform's, and only Unix gives the better message: there
+    // `File::open` succeeds on a directory and the read fails `EISDIR` ("Is a
+    // directory (os error 21)" on macOS). On Windows the open itself is refused,
+    // since `File::open` passes no `FILE_FLAG_BACKUP_SEMANTICS` — the flag
+    // `CreateFileW` needs before it will return a directory handle — so the caller
+    // gets an access denial that names nothing about the path being a directory.
+    // Exit `2` and the context line are the same either way. Everything else that is
+    // not a regular file — FIFO,
     // socket, device — cannot hold bytes a later `expand` would read back, and must
     // not be opened blind: opening a FIFO blocks until a writer appears, which would
     // hang the one path this binary promises always completes.
@@ -1010,8 +1022,9 @@ fn inspect_archive_slot(path: &Path) -> Result<ArchiveSlot> {
 /// stands for a file, pipe or device already open in this process.
 ///
 /// `metadata` follows the descriptor to the file behind it, so a FIFO, socket or
-/// device is still never opened, and a directory is opened and read on purpose, as on
-/// the plain path, so the read reports the platform's own diagnostic.
+/// device is still never opened, and a directory is handed to the open on purpose, as
+/// on the plain path, so the failure reports the platform's own diagnostic — the
+/// read's on Unix, the open's on Windows.
 ///
 /// A regular file is first asked the way the successful write reaches it: a write-only
 /// open, without create or truncate. On macOS that open duplicates the descriptor and
@@ -1320,8 +1333,11 @@ fn warn(args: fmt::Arguments<'_>) {
 /// writing blocks until a reader appears, so `--archive` pointed at one would hang the *winning* path
 /// forever, having emitted neither the archive nor the rendering; a device or a socket
 /// holds no bytes a later `expand` could read back, so writing to one is never what the
-/// caller meant. Directories fall through deliberately, so the platform's own "Is a
-/// directory" error is what the caller sees.
+/// caller meant. Directories fall through deliberately, so the platform's own error is
+/// what the caller sees rather than tokfold's refusal. Which error that is belongs to
+/// the platform: on Unix the open fails "Is a directory"; on Windows it fails too, with
+/// an access denial, because `File::create` passes no `FILE_FLAG_BACKUP_SEMANTICS` and
+/// `CreateFileW` will not return a directory handle without it.
 fn write_file(path: &Path, bytes: &[u8]) -> Result<()> {
     // `metadata` follows symlinks, so a link aimed at a FIFO is refused too, and it
     // only ever `stat`s: unlike `open`, that cannot block on any of the file types it
