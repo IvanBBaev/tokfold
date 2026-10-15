@@ -5586,6 +5586,41 @@ same way afterwards — followed by the tests that pin this entry's fixes.
   of its own paragraph, which had been correct the whole time. Documentation only: no
   code, no behaviour and no format change.
 
+- **"The only place the DEFAULT feature set is tested at all" was true of the testing
+  and false of the reason given for it.** The `ubuntu-1.85-default-features` leg in
+  `.github/workflows/ci.yml` is required, and the second of the two reasons given for
+  that said: "this is the only place the DEFAULT feature set is tested at all.
+  Everything else here runs `--all-features`, so before this leg blocked, a break
+  confined to the default build could reach main with every required check green." The
+  first clause holds. The sentence supporting it does not.
+
+  Measured over every `run:` cargo invocation in the file:
+  `cargo package --workspace --locked` carries no features flag, and `cargo package`
+  verify-builds what it packs. On this box that step compiles all three crates with
+  default features -- `Verifying tokfold-core v0.0.1` then
+  `Compiling tokfold-core v0.0.1 (target/package/tokfold-core-0.0.1)`, and the same for
+  `tokfold-mcp` and `tokfold-cli`, with no `tiktoken`, `fancy-regex` or `regex` line
+  anywhere in the log. `cargo fuzz build` compiles `tokfold-core` and `tokfold-mcp` too,
+  through a `fuzz/Cargo.toml` that names both as path dependencies with no `features`
+  key. Both steps run on every pull request and every push to `main`, and `package` is
+  on the to-be-required check list in the file's own header.
+
+  So a break confined to the default build could not reach `main` with every listed
+  check green, as long as it is a break in library or binary code. What neither of those
+  steps does is compile a test: the verify build is lib-and-bins in the dev profile and
+  resolves no dev-dependencies, which the same log shows by never compiling one. The
+  leg's real and unshared coverage is therefore a default-feature break in *test* code
+  and a default-feature test *failure* -- the suite is run without `--all-features`
+  nowhere else in the file -- plus the 1.85 floor for the default build. The comment now
+  says that.
+
+  The rule: **a reason given for a rule is a claim of its own, and it can be false while
+  the rule is right** -- the leg has to block, and the sentence arguing that it must was
+  refuted by a step on the same required list. Related: **"everything else" is a
+  superlative**, so it has to be read against every other step, including the ones that
+  compile without running. Documentation only: no code, no behaviour and no format
+  change.
+
 ## [0.0.1] - 2026-08-29
 
 First version of the workspace, and the first one to leave the repository. There

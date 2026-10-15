@@ -806,10 +806,21 @@ jobs:
           #     way purely because let-chains need 1.88. Code that quietly needs a
           #     newer rustc is written all the time; a non-blocking leg means it
           #     is merged and only discovered by a user on 1.85.
-          # (2) this is the only place the DEFAULT feature set is tested at all.
-          #     Everything else here runs `--all-features`, so before this leg
-          #     blocked, a break confined to the default build could reach main
-          #     with every required check green.
+          # (2) this is the only place the DEFAULT feature set is *tested*. Two
+          #     other steps do compile it, which is why this reason no longer
+          #     says everything else here runs `--all-features`:
+          #     `cargo package --workspace --locked` passes no features flag,
+          #     and its verify step compiles each crate's lib and bins out of
+          #     the packed tarball with default features on every pull request
+          #     and push; and `cargo fuzz build` compiles `tokfold-core` and
+          #     `tokfold-mcp` through `fuzz/Cargo.toml`, which names both with
+          #     no `features` key. Neither of them compiles a test -- the verify
+          #     build is lib-and-bins in the dev profile and resolves no
+          #     dev-dependencies -- so a default-feature break in library or
+          #     binary code is caught by `package`, which is on the
+          #     to-be-required list in this file's header. What can be caught
+          #     only here is a default-feature break in test code, or a
+          #     default-feature test failure.
           - leg: ubuntu-1.85-default-features
             os: ubuntu-latest
             toolchain: "1.85"
