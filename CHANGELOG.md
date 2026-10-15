@@ -4524,6 +4524,45 @@ documentation a previous fix falsified.
   sentence a reader quotes. Documentation only: no code, no behaviour and no format
   change.
 
+- **A count scoped by a chain is a claim about the whole graph: the privacy table's
+  Windows comparison was measured on the first ring only.** `docs/privacy.md`
+  §Environment variables said that the only target-conditional entries "anywhere along
+  the chain from `tokfold-cli` to `anstyle-query`" are `anstream`'s and
+  `anstyle-query`'s own `cfg(windows)` dependencies on `anstyle-wincon` and
+  `windows-sys`, "so a Windows graph holds two crates this one does not". The premise is
+  true and checkable -- of the chain's crates, `clap`, `clap_builder`, `anstyle` and
+  `colorchoice` declare no `[target]` table at all -- and the conclusion drawn from it
+  is still false, because the two crates the chain names bring tables of their own:
+  `anstyle-wincon 3.0.11` declares `[target."cfg(windows)".dependencies]` on
+  `once_cell_polyfill` and `windows-sys`, and `windows-sys` declares one on
+  `windows-link`.
+
+  Resolving the other graph instead of walking the chain (`cargo tree -p tokfold-cli
+  --target x86_64-pc-windows-msvc`) gives 37 crates against 34 here, 36 against 33 with
+  `--edges normal`. Four enter -- `anstyle-wincon 3.0.11`, `windows-sys 0.61.2`,
+  `once_cell_polyfill 1.70.2` and `windows-link 0.2.1` -- and one leaves: `libc
+  0.2.186`, which reaches this host through `sha2 → cpufeatures` and is in no Windows
+  graph, so neither graph is a subset of the other and the sentence was silent about the
+  direction it did not count. `aarch64-pc-windows-msvc` resolves to the same set as the
+  x64 triple. The `once_cell 1.21.4` in `Cargo.lock` is not one of the four: it is a dev
+  dependency through `tempfile` ← `proptest`, in neither shipping graph.
+
+  The conclusion that matters survives, and is now measured rather than inferred from a
+  count: none of the four crates that enter reads the environment -- `env::var`,
+  `env::vars`, `env::set_var`, `env::remove_var`, `use std::env` and `use core::env`
+  match nothing anywhere in them, tests and examples included -- and none of the four
+  has a build script, so this table's five variables are the Windows package's five as
+  well. That sweep is also what the sentence `b8dd3d6` added now rests on: it concluded
+  that "the Windows package this project publishes therefore reads these same five
+  variables and no sixth" from `anstyle-query`'s own `cfg` layout, which is a claim
+  about a package resting on one crate of it, and it is restated to say which part
+  `anstyle-query` answers and where the rest is measured.
+
+  The rule: **a walk is scoped by wherever it stopped, so resolve the graph instead of
+  following the ring** -- and **a difference between two sets has two directions**; name
+  both, or the count is a subset claim in disguise. Documentation only: no code, no
+  behaviour and no format change.
+
 ### Tests
 - **The offset in the node-budget refusal was pinned nowhere, under a comment that
   mis-stated the message.** `an_over_budget_message_reports_the_node_limit` asserted

@@ -627,16 +627,28 @@ The table is an enumeration, so here is how it was derived and what it leaves ou
 graph is the CLI's own, 34 crates (`cargo tree -p tokfold-cli`) — 33 of them with
 `--edges normal`, the 34th being `version_check 0.9.5`, which enters only as the build
 dependency of `generic-array`. It is the graph cargo resolves for this host
-(`aarch64-apple-darwin`): the only target-conditional entries anywhere along the chain
-from `tokfold-cli` to `anstyle-query` are `anstream`'s and `anstyle-query`'s own
-`cfg(windows)` dependencies on `anstyle-wincon` and `windows-sys`, so a Windows graph
-holds two crates this one does not, while none of the feature sets below is
-target-conditional. Sweeping all 34 for `env::var`, `env::vars`, `env::set_var` and
-`env::remove_var`, with each crate's `src/` tree counted separately from its build
-script and with examples, benches and tests skipped, matches nine crates rather than
-one, so here are the eight that do not reach the table. A second pass for
-`use std::env` and `use core::env` imports — which is what would let an unqualified
-call hide from the first — adds no crate and one file, `clap_builder`'s
+(`aarch64-apple-darwin`), and a Windows graph is not this one plus the `cfg(windows)`
+entries `anstream` and `anstyle-query` declare. Resolved on its own (`cargo tree -p
+tokfold-cli --target x86_64-pc-windows-msvc`) it is 37 crates against 34 here, 36
+against 33 with `--edges normal`: four enter and one leaves. The four are
+`anstyle-wincon 3.0.11` and `windows-sys 0.61.2`, which are those two declared entries,
+then `once_cell_polyfill 1.70.2` and `windows-link 0.2.1`, which come a ring further in
+— `anstyle-wincon` declares its own `[target."cfg(windows)".dependencies]` on
+`once_cell_polyfill` and `windows-sys`, and `windows-sys` declares one on
+`windows-link`. The one that leaves is `libc 0.2.186`, which reaches this host through
+`sha2 → cpufeatures` and is in no Windows graph, so neither graph is a subset of the
+other. `aarch64-pc-windows-msvc` resolves to the same set as `x86_64-pc-windows-msvc`.
+None of the four that enter reads the environment — `env::var`, `env::vars`,
+`env::set_var`, `env::remove_var`, `use std::env` and `use core::env` match nothing
+anywhere in them, tests and examples included, and none of the four has a build script —
+so this table's five variables are the Windows package's five as well, measured on its
+graph rather than inferred from this one. None of the feature sets this derivation
+quotes is target-conditional. Sweeping all 34 for `env::var`, `env::vars`,
+`env::set_var` and `env::remove_var`, with each crate's `src/` tree counted separately
+from its build script and with examples, benches and tests skipped, matches nine crates
+rather than one, so here are the eight that do not reach the table. A second pass for
+`use std::env` and `use core::env` imports — which is what would let an unqualified call
+hide from the first — adds no crate and one file, `clap_builder`'s
 `src/builder/command.rs`, whose import is for `env::args_os`, the command line.
 
 Seven of the eight read the environment while the build runs, on the build machine, and
@@ -679,9 +691,10 @@ the `enable_ansi_colors` anstream does call reaches the same crate-private funct
 step further in. The three `TERM` sites are why the variable count is the same on both
 platforms: one is `#[cfg(not(windows))]` and the other two `#[cfg(windows)]`, so a build
 compiles the one or the two, and `TERM` is read either way; no other read in the crate
-sits behind a `cfg` at all. The Windows package this project publishes therefore reads
-these same five variables and no sixth, and `truecolor` is the only reader of
-`COLORTERM` on either platform.
+sits behind a `cfg` at all. So the Windows package this project publishes reads these
+same five variables through `anstyle-query`, and the four crates its graph adds read no
+variable at all, which is where the claim that it reads no sixth is measured;
+`truecolor` is the only reader of `COLORTERM` on either platform.
 
 Grepping `truecolor` over `anstream`, `clap`, `clap_builder`, `colorchoice` and the
 other `anstyle*` sources matches nothing, each of those crate directories measured whole
