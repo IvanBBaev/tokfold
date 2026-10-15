@@ -488,13 +488,22 @@ jobs:
 
   launcher:
     # The npm launcher (`npm/tokfold/bin/tokfold` and `lib/resolve.js`) is
-    # shipped code that no other job here compiles, runs or even parses: every
-    # other gate is a cargo command, actionlint reads only the workflow files,
-    # and none of them reads JavaScript. It is also the first thing a user
-    # meets -- `npm i -g tokfold` installs the
-    # launcher, and the Rust binary is only ever reached through it -- so a
-    # broken platform mapping or a swallowed exit code is a total outage for
-    # that install path while the whole Rust gate stays green.
+    # shipped code that no other job here compiles, runs or even parses: the
+    # only `node` invocation in this file and the only `actions/setup-node`
+    # step are both in this job, and no crate packs the launcher either --
+    # every `include` list under `crates/` names `src`, `tests`, the README,
+    # the two licences and `Cargo.toml`, and nothing else. The support offered
+    # here used to be "every other gate is a cargo command, actionlint reads
+    # only the workflow files", and the second clause refutes the first:
+    # `actionlint` is one of the nine gates, and this file's header says it
+    # "runs a downloaded binary (`./actionlint -color`) rather than a cargo
+    # command". The nine were also the wrong set to argue over -- the claim is
+    # about every other job here, and `test`, `audit`, `release-test` and
+    # `nightly` are not gates. It is also the first thing a user meets --
+    # `npm i -g tokfold` installs the launcher, and the Rust binary is only
+    # ever reached through it -- so a broken platform mapping or a swallowed
+    # exit code is a total outage for that install path while the whole Rust
+    # gate stays green.
     #
     # `release.yml` checks the launcher twice. Statically, in `verify`: that
     # both files parse, that the platform table, the manifests under

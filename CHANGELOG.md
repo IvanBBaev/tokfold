@@ -5621,6 +5621,33 @@ same way afterwards — followed by the tests that pin this entry's fixes.
   compile without running. Documentation only: no code, no behaviour and no format
   change.
 
+- **"Every other gate is a cargo command" was refuted by the clause it was joined to.**
+  The `launcher` job in `.github/workflows/ci.yml` opens by saying why it exists: the
+  npm launcher is shipped code "that no other job here compiles, runs or even parses:
+  every other gate is a cargo command, actionlint reads only the workflow files, and
+  none of them reads JavaScript". `actionlint` is one of the nine gate jobs this file
+  counts, and this file's own header says that gate "runs a downloaded binary
+  (`./actionlint -color`) rather than a cargo command" -- so the universal and its
+  exception sat in one sentence, the exception unmarked.
+
+  The claim being supported is also wider than the set argued over. It is about every
+  other *job* in the file, and four of the thirteen jobs here -- `test`, `audit`,
+  `release-test` and `nightly` -- are not gates, so a statement about the nine
+  establishes nothing about them.
+
+  The conclusion holds, and is now supported by two measurements instead of a category.
+  The only `node` invocation in the file is this job's `node --test` step, and the only
+  `actions/setup-node` step is this job's; and no crate packs the launcher either, since
+  all three `include` lists under `crates/` name `src`, `tests`, the README, the two
+  licences and `Cargo.toml` and nothing else. The comment now gives those two
+  measurements and records the wording it replaced.
+
+  The rule: **a sentence that states a universal and then names its exception has stated
+  a falsehood** -- either the exception is marked as one, or the universal is narrowed
+  until it is true. Related: **support offered for a claim has to cover that claim's own
+  scope**, which a statement about the nine gates does not do for a claim about every
+  job. Documentation only: no code, no behaviour and no format change.
+
 ## [0.0.1] - 2026-08-29
 
 First version of the workspace, and the first one to leave the repository. There
