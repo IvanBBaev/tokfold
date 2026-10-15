@@ -5668,6 +5668,28 @@ same way afterwards — followed by the tests that pin this entry's fixes.
   matrix** -- read them off the matrix, not off the one that came to mind. Documentation
   only: no code, no behaviour and no format change.
 
+- **"The only CI result that commit will ever have" was refuted by the repository's own run
+  list.** The `concurrency` block in `.github/workflows/ci.yml` cancels superseded runs for
+  pull requests only, and the reason given for sparing pushes was that "cancelling mid-run
+  destroys the only CI result that commit will ever have". A commit here can have several.
+  The weekly `schedule` runs `ci` against the head of the default branch, so that commit
+  gets a new run every Monday for as long as it stays the head: `74b0722` carries one push
+  run and four scheduled ones, and `0f759f68` one and three
+  (`gh run list -L 200 --json headSha,event,workflowName`). `gh run rerun` re-runs a
+  cancelled run, and `gh workflow run ci.yml -r <ref>` dispatches a full one -- which
+  `ci.yml` itself documents as "the full matrix, every gate, *and* the weekly jobs".
+
+  The conclusion is right and the scarce thing was misnamed. What a cancelled push run costs
+  the commit is its *gate* results, and nothing replaces those by itself: eight of the nine
+  gates carry `github.event_name != 'schedule'` and are skipped on the weekly slot, and a
+  re-run or a dispatch happens only when a human asks. The comment now says that, names the
+  measurement and the command that re-derives it, and records the wording it replaced.
+
+  The rule: **"the only X that will ever happen" is a claim about every future trigger** --
+  `ci.yml` carries four (`push`, `pull_request`, `schedule`, `workflow_dispatch`), and the
+  claim had been read against one. Documentation only: no code, no behaviour and no format
+  change.
+
 ## [0.0.1] - 2026-08-29
 
 First version of the workspace, and the first one to leave the repository. There

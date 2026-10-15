@@ -188,12 +188,26 @@ on:
 
 # Cancel superseded runs, but only for pull requests. A PR gets a new run on
 # every push and only the newest one is interesting, so cancelling is free. A
-# push to a branch is not the same: cancelling mid-run destroys the only CI
-# result that commit will ever have, and on a long-lived branch a burst of
-# pushes would leave a trail of commits whose status is "cancelled" rather than
-# pass or fail. Scheduled and manual runs are never cancelled either -- the
-# weekly jobs exist precisely to run on their own schedule against a fresh
-# advisory database and a fresh nightly.
+# push to a branch is not the same: cancelling mid-run leaves that commit with
+# no gate result and nothing restores one on its own, so on a long-lived branch
+# a burst of pushes would leave a trail of commits whose gate status is
+# "cancelled" rather than pass or fail.
+#
+# That sentence used to read "cancelling mid-run destroys the only CI result
+# that commit will ever have", which this repository's own run list refutes: the
+# head of `main` collects a fresh `ci` run from the weekly schedule for as long
+# as it stays the head -- `74b0722` carries one push run and four scheduled ones
+# (`gh run list -L 200 --json headSha,event,workflowName`) -- and `gh run rerun`
+# or `gh workflow run ci.yml -r <ref>` each add another. What is scarce is the
+# gate result, not the run: eight of the nine gates carry
+# `github.event_name != 'schedule'` and are skipped on the weekly slot, `fuzz`
+# runs there at its weekly length rather than a pull request's, and a re-run or
+# a dispatch needs a human to ask for it.
+#
+# Scheduled and manual runs are never cancelled either -- the weekly jobs exist
+# precisely to run on their own schedule against a fresh advisory database and a
+# fresh nightly.
+#
 # The event name stays in the group key so a scheduled run (which carries the
 # default branch ref) can never share a bucket with a push to main.
 concurrency:
