@@ -3166,7 +3166,9 @@ documentation a previous fix falsified.
   computes different values on 32- and 64-bit targets (and on sparc64/wasm64), so
   cross-target byte identity is not established; only 64-bit aarch64 is measured.
   Comparing key text on a hash hit would change renderings of a binary on npm and is
-  left to the owner.
+  left to the owner. (That last clause was false -- see the entry headed '"Only 64-bit
+  `aarch64` has been measured" was a claim about the CI matrix'; it is left as
+  written.)
 - **The passthrough sentinel's overhead was called constant.** It costs 10
   estimated (11 cl100k, 13 o200k) tokens for an input that opens with a non-whitespace
   byte; leading whitespace merges with the sentinel's newline, and over every prefix
@@ -4599,6 +4601,45 @@ documentation a previous fix falsified.
   family. And **"the only host that runs X" is a claim about every test in X** -- count
   what the other hosts run. Documentation only: no code, no behaviour and no format
   change.
+
+- **"Only 64-bit `aarch64` has been measured" was a claim about the CI matrix, and three
+  of its five test legs are x86_64.** `crates/tokfold-core/README.md`, the `Compressor`
+  module docs in `crates/tokfold-core/src/compressor.rs` and the E2 module docs in
+  `crates/tokfold-core/src/encoder/e2_tabular.rs` all ended their cross-target
+  determinism note with that sentence.
+
+  The evidence the note cites refutes it.
+  `a_shape_hash_collision_merges_two_shapes_into_one_count` is gated
+  `#[cfg(all(target_pointer_width = "64", not(any(target_arch = "sparc64", target_arch =
+  "wasm64"))))]` -- exactly the targets where `FxHasher` computes a different value, and
+  nothing narrower -- and it asserts rendered bytes literally, down to
+  `"\n#2[\"a03c67ad\",\"b03bbddf\"]\n+[1,2]\n*{\"c004d13f\":0,\"d009908a\":0}\n"`. Its
+  own doc says the pair collides "on a 64-bit target", general and correct; the prose
+  that cites it narrowed that to one machine.
+
+  The `test` matrix in `.github/workflows/ci.yml` has five legs. Three run on
+  `ubuntu-latest`, which is x86_64: `ubuntu-stable-all-features` (`required: true`, the
+  one test leg that blocks a merge) and both MSRV legs. `macos-stable-all-features` runs
+  on `macos-latest`, which is aarch64. `windows-stable-all-features` is x86_64 and
+  `continue-on-error`. Run 38554022691 (head `482e5aa`, 2026-10-14) reported `success`
+  for all four Unix legs, so that test asserted those bytes on x86_64 Linux and on
+  aarch64 macOS in the same run. The Windows leg reported `failure` -- it has not
+  compiled since commit `6d6659e` of 2026-10-10, as the matrix comment beside it records
+  -- so the corrected text says only that `x86_64-pc-windows-msvc` has a leg, reporting
+  only, and claims no measurement for it.
+
+  What is genuinely unmeasured is what that `cfg` excludes and nothing else: 32-bit
+  targets, `sparc64` and `wasm64`. The three sites now name both sets. The entry that
+  introduced the sentence, "E2 counts array shapes by hash, and the docs said it counts
+  key lists", repeats it as its own assertion and is left as written with a pointer
+  here, in the same shape as the correction already carried by the "never makes it
+  worse" entry.
+
+  The rule: **"only X has been measured" is a claim about the whole matrix** -- read the
+  test `cfg` and the CI legs, not the box the author was sitting at. And **a test's
+  `cfg` is the scope of what it measures**: where prose and `cfg` disagree about
+  coverage, the `cfg` is the measurement. Documentation only: no code, no behaviour and
+  no format change.
 
 ### Tests
 - **The offset in the node-budget refusal was pinned nowhere, under a comment that

@@ -52,7 +52,8 @@ class and nothing more.
   caches hitting. Across targets it is not established: the tabular encoder counts
   shapes by an `FxHasher` value that differs between 32- and 64-bit targets, so an
   input whose key lists collide on one and not the other is rendered differently.
-  Only 64-bit `aarch64` has been measured.
+  Every push and pull request measures the 64-bit `x86_64` and `aarch64` renderings,
+  on Linux and on macOS; 32-bit targets, `sparc64` and `wasm64` are measured nowhere.
 - **No ML model.** The default estimator is a pure arithmetic scanner, not a
   learned model: no weights to download, no inference to run, no megabytes of BPE
   data at rest in the default build. (The opt-in `tiktoken` feature embeds exact

@@ -125,7 +125,12 @@
 //! even chance of an accidental collision — and through a different multiply on
 //! `sparc64` and `wasm64`,
 //! so an input whose key lists collide on one target and not on another is rendered
-//! differently by the two. Only 64-bit `aarch64` has been measured.
+//! differently by the two. What is unmeasured is exactly what
+//! `a_shape_hash_collision_merges_two_shapes_into_one_count` is gated against —
+//! 32-bit targets, `sparc64` and `wasm64`. That test asserts its rendered bytes
+//! literally, so every push and pull request measures it on
+//! `x86_64-unknown-linux-gnu`, the one test leg that blocks a merge, and on
+//! `aarch64-apple-darwin`; `x86_64-pc-windows-msvc` has a leg too, reporting only.
 //!
 //! # When it declines (returns `None`)
 //!
