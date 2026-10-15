@@ -496,11 +496,16 @@ jobs:
     # five packages, and that each of those packages declares the `os` and `cpu`
     # its table key promises. And dynamically, in `publish`: its "End-to-end
     # test through the launcher" step builds a `node_modules` layout and runs
-    # the command through it six times, asserting `--version`, a `cmp`-verified
-    # compress/expand round trip, and exit `3` and exit `2` crossing the
-    # wrapper. So "without running anything" is false, and of the behaviours
-    # this comment used to list as unchecked there, exit-code propagation and
-    # argument passing are checked.
+    # the command through it five times: `--version`, the compress and the
+    # expand of a `cmp`-verified round trip, and one rejected input each for
+    # exit `3` and exit `2` crossing the wrapper. Five, not the six this said
+    # -- a count of `run` lines in a step that has invoked the launcher five
+    # times in every commit since the one that created it (`d94442b`), so the
+    # number was wrong on the day it was written. Enumerated here rather than
+    # totalled, because an enumeration can be re-counted against the step. So
+    # "without running anything" is false, and of the behaviours this comment
+    # used to list as unchecked there, exit-code propagation and argument
+    # passing are checked.
     #
     # What is actually left to this job. `release.yml` is
     # `workflow_dispatch`-only, so none of it can catch a regression before

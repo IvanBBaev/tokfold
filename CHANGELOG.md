@@ -5524,6 +5524,40 @@ same way afterwards — followed by the tests that pin this entry's fixes.
   at 599 debug and 597 release: the sweep is inside a test that already existed, and no
   behaviour and no format changed.
 
+- **"The only one that exercises the shipped launcher" was a claim about every other
+  step in the file, and the `verify` job in the same workflow refutes it.**
+  `.github/workflows/release.yml`'s "End-to-end test through the launcher" opened with
+  "The last check before anything leaves the runner, and the only one that exercises the
+  shipped launcher rather than the binary directly". Neither half held.
+
+  The `verify` job's "Launcher parses and maps every platform" runs `node --check` over
+  `npm/tokfold/bin/tokfold` and `npm/tokfold/lib/resolve.js` and then `require`s
+  `lib/resolve.js` to read `PACKAGES` out of it -- both of the shipped launcher files,
+  one of them parsed and executed. That step's own comment draws the line correctly
+  ("This does not run tokfold"), so the distinction was already written down one job
+  away. What the end-to-end step alone does is run the launcher as a command, with a
+  platform package behind it, so the resolve path is taken for real and a process's exit
+  code crosses the wrapper. The comment now says that instead.
+
+  Nor is it the last check. "Publish" refuses a `VERSION` that is not a literal `x.y.z`
+  before any upload at all, and asks the registry who owns each name before that
+  package's own upload. Checking does not stop at the end-to-end step, it stops being a
+  step of its own.
+
+  And `.github/workflows/ci.yml`'s `launcher` job, which describes that step so that the
+  two files' division of labour is written down somewhere, said it "runs the command
+  through it six times". It runs five -- `--version`, the compress and the expand of a
+  `cmp`-verified round trip, and one rejected input each for exit `3` and exit `2` --
+  and it has run five in every commit that has ever touched `release.yml`, starting with
+  `d94442b`, the commit that created the step. The number was wrong on the day it was
+  written (`b086731`). It is enumerated now rather than totalled, because an enumeration
+  can be re-counted against the step it describes.
+
+  The rule: **a superlative is a claim about everything it excludes** -- "the only one"
+  and "the last" each have to be read against every other step in the file, and both of
+  these were refuted by steps in the same workflow. Documentation only: no code, no
+  behaviour and no format change.
+
 ## [0.0.1] - 2026-08-29
 
 First version of the workspace, and the first one to leave the repository. There

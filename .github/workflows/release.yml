@@ -693,12 +693,26 @@ jobs:
           echo "Licence texts staged into all six packages."
 
       - name: End-to-end test through the launcher
-        # The last check before anything leaves the runner, and the only one that
-        # exercises the shipped launcher rather than the binary directly. It
-        # builds the exact node_modules layout npm produces -- launcher plus one
+        # The last step in this file whose whole purpose is to check something,
+        # and the only step in it that runs the launcher as a command. It builds
+        # the exact node_modules layout npm produces -- launcher plus one
         # platform package -- and runs the `tokfold` command through it, so a
         # broken resolve path or a lost exit code is caught here rather than by
         # the first person to install it.
+        #
+        # Neither half held of what this comment said before -- "the last check
+        # before anything leaves the runner, and the only one that exercises
+        # the shipped launcher". Checking does not stop here, it stops being a
+        # step of its own: the "Publish" step that follows refuses a VERSION
+        # that is not a literal x.y.z before any upload at all, and asks the
+        # registry who owns each name before that package's own upload. And the
+        # `verify` job's "Launcher parses and maps every platform" does
+        # exercise the shipped launcher -- it runs `node --check` over both of
+        # its files and then imports `lib/resolve.js` to read the platform
+        # table out of it. What that step never does, and says it never does,
+        # is spawn the binary: the resolve path is not taken for real and no
+        # exit code crosses the wrapper. Those two are what this step alone
+        # covers.
         #
         # Not a missing executable bit, though this comment claimed it for a
         # while. "Place the binaries" runs earlier in this same job and ends with
