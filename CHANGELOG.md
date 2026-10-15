@@ -5558,6 +5558,34 @@ same way afterwards — followed by the tests that pin this entry's fixes.
   these were refuted by steps in the same workflow. Documentation only: no code, no
   behaviour and no format change.
 
+- **"The only one of the nine that is not" free of `if:` was refuted by the sentence
+  that counts them.** `.github/workflows/ci.yml`'s job-layout legend says of the nine
+  gate jobs that eight carry one job-level condition, `if: github.event_name !=
+  'schedule'`, and then said of the ninth, `fuzz`, that "it is not free of `if:`
+  altogether, and it is the only one of the nine that is not". The eight it had just
+  counted are not free of `if:` either -- that is what the count says.
+
+  Measured over the file: `if:` appears fifteen times, eight of them job-level on gates
+  (in `actionlint`, `fmt`, `clippy`, `docs`, `doc-drift`, `deny`, `package` and
+  `launcher`), three job-level on the weekly jobs (`audit`, `release-test`, `nightly`),
+  one job-level on `test`, and three step-level `if: failure()` -- in `fuzz`, in `test`
+  and in `release-test`. So all nine gates carry an `if:` somewhere, and what is unique
+  to `fuzz` among them is the level, not the presence: it is the only gate whose only
+  `if:` is step-level, and the only gate with a step-level one at all. The legend now
+  says that, and records what it said before.
+
+  The two claims around it were checked and hold. "`fuzz` is the only gate that runs on
+  the weekly slot" follows from the same eight conditions. "Nothing a contributor can
+  rename or mistype in a `required:` key can turn one of those nine gates off" holds
+  because `required:` exists only in the `test` matrix: `launcher` is the one gate with
+  a matrix, its `include:` entries carry `leg`, `os` and `node` and no `required`, and
+  no job in the file has a `needs:` through which a skip could propagate.
+
+  The rule: **a superlative is a claim about everything it excludes, including the
+  sentences it sits beside** -- this one was refuted by the count in the first sentence
+  of its own paragraph, which had been correct the whole time. Documentation only: no
+  code, no behaviour and no format change.
+
 ## [0.0.1] - 2026-08-29
 
 First version of the workspace, and the first one to leave the repository. There

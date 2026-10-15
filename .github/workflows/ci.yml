@@ -43,9 +43,15 @@
 # github.event_name != 'schedule'`, which keeps the weekly cron from paying for
 # the whole gate a second time. The ninth, `fuzz`, carries no job-level `if:`:
 # it runs on every trigger, and the trigger decides only how long it fuzzes. It
-# is not free of `if:` altogether, and it is the only one of the nine that is
-# not -- its crash-artifact upload step carries `if: failure()`, which skips
-# that step on success and gates nothing. The job-level condition is the only
+# is not free of `if:` altogether -- its crash-artifact upload step carries
+# `if: failure()`, which skips that step on success and gates nothing. What is
+# unique to `fuzz` there is the *level*: it holds the only step-level `if:` any
+# of the nine has, and the two other step-level ones in this file sit in `test`
+# and in `release-test`, neither of which is a gate. This paragraph said
+# instead that `fuzz` is "the only one of the nine that is not" free of `if:`
+# altogether, which the eight job-level conditions it counts in its own first
+# sentence refute: all nine carry an `if:` somewhere, and `fuzz` is the only
+# one whose `if:` is not a job-level one. The job-level condition is the only
 # way a gate can be skipped, and it is visible in one grep. What it
 # deliberately is *not* is conditional on a matrix value: nothing a
 # contributor can rename or mistype in a `required:` key can turn one of *those
