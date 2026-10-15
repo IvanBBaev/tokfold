@@ -4563,6 +4563,43 @@ documentation a previous fix falsified.
   both, or the count is a subset claim in disguise. Documentation only: no code, no
   behaviour and no format change.
 
+- **"macOS is the only non-Linux host that runs the process-level suite" was a claim
+  about every test in that suite, and the Windows leg runs 49 of them.** `npm/README.md`
+  said it of the three-OS matrix. The file defines the term itself, in the paragraph
+  describing how non-host platforms are simulated: "in-process for the resolver tests,
+  via `node --require` for the process-level ones". By that definition Windows runs part
+  of the process-level suite, so the sentence is refuted by its own glossary.
+
+  The guards predict the split, and they are in the suite rather than in prose.
+  `launcher.test.js` has five of them. On Windows `SKIP` is the shell-script reason and
+  covers 26 of that file's 35 runtime tests; `NO_MODE_BITS` covers one more;
+  `NO_PACKAGE` is false there, because `tokfold-windows-x64` is in the platform table.
+  That leaves 8 launcher tests, every one of them going through the `run` helper --
+  `spawnSync(process.execPath, [...launcher, ...args])`, a real launcher process -- and
+  four of them adding `--require`. With `packaging.test.js`'s 8 and `resolve.test.js`'s
+  33 the leg runs 49 and skips 27, which is what the `windows-node22` leg reported on
+  `482e5aa`: `# tests 76`, `# pass 49`, `# fail 0`, `# skipped 27`.
+
+  The sentence also contradicted its own paragraph, which names Windows as the only host
+  where the packaging test has to go through a shell to reach `npm.cmd` -- a statement
+  that the packaging suite runs there -- and the paragraph beginning "What Windows skips
+  is narrower than it looks" then spells out what does and does not run on that leg.
+
+  `9f266fc` wrote the point into `.github/workflows/ci.yml` and `npm/README.md` in the
+  same commit and in two different wordings. The workflow got the careful one, "macOS
+  runs the process-level suite *for real*", beside a matrix comment enumerating what the
+  Windows leg does cover; the README got the absolute one. `0f759f6` then edited both
+  files again and added the comment on `SKIP` warning that reading it as "every failure
+  path runs on Windows" "is how that claim reached `.github/workflows/ci.yml` and
+  `npm/README.md`, where it was false" -- and read past this sentence in the file it was
+  editing.
+
+  The rule: **the same claim written into two files is two claims**, so hedging one copy
+  does not reach the other, and a correction to one file is not a correction to the
+  family. And **"the only host that runs X" is a claim about every test in X** -- count
+  what the other hosts run. Documentation only: no code, no behaviour and no format
+  change.
+
 ### Tests
 - **The offset in the node-budget refusal was pinned nowhere, under a comment that
   mis-stated the message.** `an_over_budget_message_reports_the_node_limit` asserted

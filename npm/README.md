@@ -69,12 +69,17 @@ every push to `main` — pushes to other branches run nothing — across Node 18
 The three operating systems are not redundancy. Windows is the only host where
 `lib/resolve.js` takes its `.exe` branch for real, and the only one where the
 packaging test has to go through a shell to reach `npm.cmd`; macOS is the only
-non-Linux host that runs the process-level suite, and signals, orphan reaping and
-inherited descriptors are kernel behaviour rather than something Linux can vouch
-for on macOS's behalf. The same holds between Node versions, and the matrix has no
-macOS leg on Node 18: an intermittent hang of the launcher measured only on macOS
-with Node v18.20.8 is therefore invisible to CI. `npm/tokfold/README.md` has the
-measurement under "Known issue"; no fix has been chosen.
+non-Linux host that exercises the launcher's exit-code and signal contract,
+because it is the only one where the stand-in binary runs. It is not the only
+non-Linux host that spawns the launcher: Windows does that for real on every
+failure path it reaches. What `SKIP` takes there is each test that needs a child
+that runs, so signals, orphan reaping and inherited descriptors are measured on
+Linux and macOS alone — and they are kernel behaviour rather than something Linux
+can vouch for on macOS's behalf. The same holds between Node versions, and the
+matrix has no macOS leg on Node 18: an intermittent hang of the launcher measured
+only on macOS with Node v18.20.8 is therefore invisible to CI.
+`npm/tokfold/README.md` has the measurement under "Known issue"; no fix has been
+chosen.
 
 What Windows skips is narrower than it looks. The tests that need the launcher
 to *succeed* are skipped there, because the stand-in binary is a `#!/bin/sh`
