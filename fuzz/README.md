@@ -183,8 +183,9 @@ and copies everything else), imported into each of the four targets that parse J
 
 Seeds for selector targets carry a leading selector byte, with one exception: the
 seven `.tkfd` archives under `seeds/decompress/` begin with the `T` of the `TKFD`
-magic, which the second half reads as a selector nobody chose (`0x54` is an
-overwrite of the `table` document).
+magic, which the second half reads as a selector nobody chose. `0x54` is an overwrite
+of document index 2, the target's own third document, so `table.tkfd` -- an archive of
+the corpus `table` -- drives an edit of an 8-row table it does not contain.
 
 `json.dict` is a libFuzzer dictionary with the following tokens:
 
@@ -398,11 +399,24 @@ byte for some of them and in two for others.
 
 Those three are the target's own. They are not the seven originals the `seeds/`
 directories are built from, and the name `table` denotes a different document in each
-set: the corpus `table` is four rows and 122 bytes -- `seeds/mcp_json/table.json` is
-the document alone at 122, and the 123-byte copies in the other directories are that
-document behind one selector byte -- so its archive would carry a one-byte
-`original_len` where the target's carries two, and every offset in the `patch-*.bin`
-table would land on a different field.
+set: the corpus `table` is four rows and 122 bytes. `seeds/mcp_json/table.json` is
+that document alone at 122, and six 123-byte copies carry it behind one selector byte
+-- four under `seeds/roundtrip/` and two under `seeds/tape_parse/`. Neither of the
+other two directories holds one: `seeds/mcp_handle_line/` is built from the seven MCP
+sessions and carries no `table` document at all, and `seeds/decompress/` carries the
+corpus document as the archive `table.tkfd`.
+
+That archive is what to compare against, and it is shipped rather than hypothetical:
+165 bytes, `original_len` the single byte `7a`, payload byte-identical to
+`seeds/mcp_json/table.json` -- where index 2's length needs the two bytes `91 02`.
+That one missing header byte moves one of the six `patch-*.bin` offsets to a different
+field, not all of them. Every offset in that table is below 165, so the modulo leaves
+all six where they are, and only `patch-len`'s 11 changes meaning: with a one-byte
+varint ending at 11, byte 11 is the first byte of the digest rather than the second
+byte of `original_len`. The other five keep their field and move within it --
+`patch-meta`'s 5 is `encoder_id` either way, the three offset-100 rows are in the
+payload either way (its byte 58 rather than 57), and `patch-short`'s truncation at 20
+cuts inside the digest either way, leaving 9 of its 32 bytes rather than 8.
 
 Every seed in `seeds/decompress/` selects index 2, the 8-row table: `TKFD` opens all
 seven archives, and `0x54 & 0x3F` is 20, which is 2 modulo 3, while the patch
@@ -429,9 +443,19 @@ macOS arm64) -- the header layout each offset is read against is
 | `patch-insert.bin` | `c2 00 64 41` | insert | 100 | `41` | payload, archive grows to 318 | `Corrupt` at byte 10 -- the payload no longer matches `original_len` |
 | `patch-short.bin` | `82 00 14` | truncate | 20 | none | cuts inside the digest | `Corrupt` at byte 12 -- the digest starts there and 8 of its 32 bytes survive |
 
-Each name is therefore earned against this document and would not be against another:
-`patch-len` names the length varint only because index 2's length needs two bytes, and
-`patch-short` reports byte 12 only because the varint ends at 11.
+Three of the six names are earned against this document in particular and would not be
+against another. `patch-len` names the length varint only because index 2's length
+needs two bytes: against the target's other two documents and against the corpus
+`table`, whose lengths all fit in one, byte 11 is the first byte of the digest.
+`patch-payload` and `patch-insert` name the payload only because 100 is inside index
+2's, and against the 45-byte and 88-byte archives the same offset wraps to 10 and 12,
+landing on `original_len` and inside the digest. The other three hold against every
+document the target could hold. `patch-meta`'s 5 is `encoder_id` whatever the length;
+`patch-noop`'s zero-wide overwrite is a no-op wherever it lands; and `patch-short`'s
+truncation at 20 cuts inside the digest for every `original_len` the format admits,
+because the varint starts at 10 and is at most ten bytes, so the digest begins at 20
+at the latest. What the document moves there is the byte the error reports -- 12 here,
+11 against a one-byte length -- and not the field.
 
 Measured on 2026-09-30, same machine, toolchain and build as the runs under
 "Measured runs", each from

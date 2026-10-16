@@ -5690,6 +5690,62 @@ same way afterwards — followed by the tests that pin this entry's fixes.
   claim had been read against one. Documentation only: no code, no behaviour and no format
   change.
 
+- **"Every offset would land on a different field" described one of six.** `fuzz/README.md`
+  contrasts the `decompress` target's three built-in documents with the seven corpus
+  originals that share a name with them, and closed that contrast with "so its archive would
+  carry a one-byte `original_len` where the target's carries two, and every offset in the
+  `patch-*.bin` table would land on a different field". The first half is right. The second
+  holds for one of the six rows.
+
+  The corpus `table` is 122 bytes, so its `original_len` is the single byte `7a` against
+  index 2's `91 02` and its header is one byte shorter. Every offset in the patch table --
+  5, 11, 20, and 100 three times -- is below that archive's 165 bytes, so the modulo moves
+  none of them, and only `patch-len`'s 11 crosses a field boundary: it is the second byte of
+  `original_len` under the 317-byte archive and the first byte of the digest under the
+  165-byte one. The other five keep their field and move within it. `patch-meta`'s 5 is
+  `encoder_id` either way, the three offset-100 rows are in the payload either way, and
+  `patch-short`'s truncation at 20 cuts inside the digest either way, leaving 9 of the 32
+  digest bytes rather than 8.
+
+  Two more claims in the same sentence were loose. "Its archive would carry" hypothesizes
+  about a file the repository ships: `seeds/decompress/table.tkfd` *is* that archive -- 165
+  bytes, `original_len` `7a`, payload byte-identical to `seeds/mcp_json/table.json` -- so
+  the paragraph now measures it rather than predicting it. And "the 123-byte copies in the
+  other directories" covers four directories of which two hold no such copy: the six copies
+  are four under `seeds/roundtrip/` and two under `seeds/tape_parse/`,
+  `seeds/mcp_handle_line/` is built from the seven MCP sessions and carries no `table`
+  document at all, and `seeds/decompress/` carries it as that archive. The paragraph names
+  the set.
+
+  The same shape stood once more in the paragraph under the patch table: "each name is
+  therefore earned against this document and would not be against another", supported by
+  `patch-len` and by `patch-short`, which is a counterexample to it. Three of the six names
+  hold against every document the target could hold. `patch-meta`'s 5 is `encoder_id`
+  whatever the length is; `patch-noop`'s zero-wide overwrite is a no-op wherever it lands;
+  and `patch-short`'s truncation at 20 cuts inside the digest for every `original_len` the
+  format admits, because the varint starts at 10 and runs to at most ten bytes, so the
+  digest begins at 20 at the latest -- the document moves the byte the error reports, 12 or
+  11, and not the field. The three that are document-specific are `patch-len` and, against
+  the 45-byte and 88-byte archives where offset 100 wraps to 10 and 12, `patch-payload` and
+  `patch-insert`. The paragraph now says which three are which and why.
+
+  Sweeping the rest of the file for the same confusion found a third site, where it had gone
+  the other way. The note on the `.tkfd` seeds' accidental selector said "`0x54` is an
+  overwrite of the `table` document", and the only `table` a reader has met by then is the
+  corpus original. `0x54 & 0x3F` is 20, which is 2 modulo 3, so it selects index 2 -- the
+  target's own third document, which the `seeds/decompress/` row of the seed table
+  distinguishes from the `table` original in so many words. The note now says which document
+  index 2 is, and what that makes of the seed it is read off: `table.tkfd` is an archive of
+  the corpus `table` that drives an edit of an 8-row table it does not contain.
+
+  The rule: **a category in a sentence is a claim about every member of it** -- "every
+  offset" has six members and described one, "each name" has six and described three. Each
+  sentence carried its own counterexample. The `patch-*.bin` table the first one closes
+  states the field each offset lands on, which is where the one field that moves can be read
+  off; the second cites `patch-short` as support, and `patch-short` is one of the names that
+  does not depend on the document. Documentation only: no code, no behaviour and no format
+  change.
+
 ## [0.0.1] - 2026-08-29
 
 First version of the workspace, and the first one to leave the repository. There
