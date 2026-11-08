@@ -644,8 +644,10 @@ did move is the `rust-src` component, installed into the stable toolchain on
 2026-10-15: with it present the release binary embeds 21 standard-library paths under
 `~/.rustup/toolchains/` where it would otherwise carry `/rustc/<hash>/`. It is not the
 only one — a build of `166873f` with a copy of the toolchain that lacks `rust-src`
-gave a third hash, `f70e7f2e…`, still at 1 261 712 bytes. The release binary also
-embeds dependency paths under `~/.cargo/registry/src/`, so it depends on the home
+gave a third hash, `f70e7f2e…`, still at 1 261 712 bytes. The build directory is not
+it either: on 2026-11-08 `166873f` built in three directories of different depths, each
+with its own `target/`, gave `6f8f7c86…` all three times. The release binary does
+embed dependency paths under `~/.cargo/registry/src/`, so it depends on the home
 directory even where it does not depend on the build directory. The hashes cited in
 this document therefore identify the bytes each measurement ran against; they are not
 something this recipe is known to reproduce. That a value does not depend on where it is built takes a second
