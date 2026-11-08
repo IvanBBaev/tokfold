@@ -452,10 +452,12 @@ needs two bytes: against the target's other two documents and against the corpus
 landing on `original_len` and inside the digest. The other three hold against every
 document the target could hold. `patch-meta`'s 5 is `encoder_id` whatever the length;
 `patch-noop`'s zero-wide overwrite is a no-op wherever it lands; and `patch-short`'s
-truncation at 20 cuts inside the digest for every `original_len` the format admits,
-because the varint starts at 10 and is at most ten bytes, so the digest begins at 20
-at the latest. What the document moves there is the byte the error reports -- 12 here,
-11 against a one-byte length -- and not the field.
+truncation at 20 cuts the digest for every `original_len` the format admits, because
+the varint starts at 10 and is at most ten bytes, so the digest begins at 20 at the
+latest: the cut falls inside it, or -- behind a ten-byte length, which the decoder
+accepts though no archive `compress` writes carries one -- at its first byte, leaving
+none of it. What the document moves there is the byte the error reports -- 12 here,
+11 against a one-byte length, 20 against a ten-byte one -- and not the field.
 
 Measured on 2026-09-30, same machine, toolchain and build as the runs under
 "Measured runs", each from
