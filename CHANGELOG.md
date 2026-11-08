@@ -2462,10 +2462,15 @@ documentation a previous fix falsified.
   wider of the two, which is the claim that actually matters and the one the docs
   now make. The list opened "The entry above" until 2026-10-01: the two bullets
   directly above this one are a different fix, and the site meant is in `Fixed`.
-- **`Corrupt.byte_offset` did not say it can point past the end of the archive.** It
-  is a position in the format, produced by fields the header itself declares, and a
-  caller who took it for a buffer index and sliced with it could panic on a
-  truncated archive. Its documentation now says which of the two it is.
+- **`Corrupt.byte_offset` did not say it can equal the archive's length.** It is a
+  position in the format, produced by fields the header itself declares, and a caller
+  who took it for a buffer index and indexed with it could panic on a truncated
+  archive. Its documentation now says which of the two it is. Until 2026-11-08 that
+  documentation, the CLI README and this entry said the offset could also *exceed*
+  the length; no decode site can produce that — each reports a byte it read, the
+  first byte it found missing, or the end of a slice it has just required — and
+  `corrupt_offset_never_exceeds_the_archive_length` now pins the bound over every
+  truncation of a real archive.
 - **The licence links in all three crate READMEs pointed at a symlink, not at a
   licence.** `crates/*/LICENSE-MIT` and `LICENSE-APACHE` are symlinks to the
   workspace-root texts, which is right for the tarball — `cargo package`

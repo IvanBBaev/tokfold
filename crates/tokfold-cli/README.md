@@ -179,7 +179,7 @@ at that byte is reported — a byte missing, an overlong spelling, or one that w
 overflow — with byte 20, one past the field, when the tenth byte is `0x80` or `0x81`,
 the only two values that still ask for an eleventh byte without overflowing (overflow
 is checked first: nine `0x80` bytes and a `0x82` say byte 19, nine and a `0x81` say
-byte 20). An offset at or past the end of the file usually means the decoder needed a
+byte 20). An offset equal to the file's length (it is never larger) usually means the decoder needed a
 byte the archive does not have, but not always, and byte 20 is where the two part
 company: a 20-byte archive whose length field is ten `0x80` bytes reports byte 20,
 which is the end of that file, having found every byte it asked for — it stopped

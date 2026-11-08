@@ -1575,6 +1575,51 @@ mod tests {
         );
     }
 
+    /// `Corrupt.byte_offset` can equal `archive.len()` but never exceed it: each
+    /// decode site reports either a byte it read, the first byte it found missing
+    /// (which, read in order, is exactly the length), or the end of a slice it has
+    /// just required to exist. Driven over every truncation of a real archive, three
+    /// byte values at every position, and the ten-`0x80` length field that reports
+    /// byte 20 on a 20-byte file.
+    #[test]
+    fn corrupt_offset_never_exceeds_the_archive_length() {
+        let c = compressor();
+        let art = c.compress(b"{\"k\":\"hello\"}").unwrap();
+        let mut cases: Vec<Vec<u8>> = (0..=art.archive.len())
+            .map(|n| art.archive[..n].to_vec())
+            .collect();
+        for index in 0..art.archive.len() {
+            for value in [0x00, 0x80, 0xFF] {
+                let mut a = art.archive.clone();
+                a[index] = value;
+                cases.push(a);
+            }
+        }
+        let mut ten = b"TKFD\x01\x00\x00\x00\x00\x00".to_vec();
+        ten.extend_from_slice(&[0x80; 10]);
+        cases.push(ten.clone());
+
+        let mut at_end = 0;
+        for archive in &cases {
+            if let Err(DecompressError::Corrupt { byte_offset }) = c.decompress(archive) {
+                assert!(
+                    byte_offset <= archive.len(),
+                    "offset {byte_offset} past a {}-byte archive",
+                    archive.len()
+                );
+                if byte_offset == archive.len() {
+                    at_end += 1;
+                }
+            }
+        }
+        // The bound is reached, so "equal" is not vacuous.
+        assert!(at_end > 0);
+        assert!(matches!(
+            c.decompress(&ten),
+            Err(DecompressError::Corrupt { byte_offset: 20 })
+        ));
+    }
+
     /// A payload whose length disagrees with the header is **framing**, and the two
     /// failures have to stay distinguishable.
     ///

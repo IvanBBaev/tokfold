@@ -128,9 +128,10 @@ pub enum DecompressError {
         ///
         /// This is where the decoder *needed* a byte, which is not always a byte
         /// the archive has: an archive that ends early reports the offset it ran
-        /// out at, so the value can equal or exceed `archive.len()`. Treat it as a
-        /// position in the format, not as an index into the buffer — indexing an
-        /// archive with it can panic.
+        /// out at, so the value can equal `archive.len()` (it never exceeds it —
+        /// pinned by `corrupt_offset_never_exceeds_the_archive_length`). Treat it
+        /// as a position in the format, not as an index into the buffer — indexing
+        /// an archive with it can panic.
         byte_offset: usize,
     },
 
