@@ -151,7 +151,8 @@ a model reads the rendering.
 - **Deterministic output.** The same input bytes under the same configuration produce
   byte-identical output, every time, from one build. Across 32- and 64-bit targets
   that is not established: E2 counts array shapes by an `FxHasher` value, which
-  differs between them (see the `tokfold-core` `Compressor` rustdoc). Bytes, not the same JSON value:
+  differs between them (see the "Determinism" section of the `tokfold-core`
+  `compressor` module docs). Bytes, not the same JSON value:
   the archive keeps the input as written, so reformatting a document changes its
   archive.
 

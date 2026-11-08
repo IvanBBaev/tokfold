@@ -42,10 +42,12 @@
 //! targets it is not established: E2 counts shapes by an `FxHasher` value, which
 //! differs between 32- and 64-bit targets, so an input whose key lists collide on one
 //! target and not the other gets a different table there — and, where that changes
-//! which encoder wins, a different encoder id in the archive header too. See the
-//! determinism note in [`encoder`](mod@crate::encoder)'s E2 module: every pull request
-//! and every push to `main` measures the 64-bit `x86_64` and `aarch64` renderings, on Linux and
-//! on macOS; 32-bit targets, `sparc64` and `wasm64` are measured nowhere.
+//! which encoder wins, a different [`Stats::encoder`]. The archive does not differ:
+//! its header always records `encoder_id = 0`. See the determinism note in
+//! [`encoder`](mod@crate::encoder)'s E2 module: every pull request and every push to
+//! `main` measures one pinned colliding rendering on `x86_64` Linux and `aarch64`
+//! macOS (and, reporting only, `x86_64` Windows); 32-bit targets, `sparc64` and
+//! `wasm64` are measured nowhere.
 
 use std::sync::Arc;
 
