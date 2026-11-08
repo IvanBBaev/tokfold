@@ -39,9 +39,12 @@ class and nothing more.
 ## Guarantees
 
 - **Zero network calls.** Sans-io: no file, network, or clock access anywhere in
-  this crate. A `cargo-deny` policy mechanises one half of that guarantee — no
-  HTTP, socket, or DNS *dependency* may enter the workspace graph, so the
-  capability cannot arrive with a crate. It reaches no further: `std::net` is
+  this crate. A `cargo-deny` denylist mechanises part of one half of that
+  guarantee — the HTTP, socket and DNS crates it names may not enter the workspace
+  graph. A crate it does not name is not stopped, and `libc` and `nix` are
+  deliberately not banned although they can open sockets (`sha2` pulls `libc` in
+  through `cpufeatures` on `aarch64` Linux, Android and Apple targets and on
+  `loongarch64` Linux), so the capability can still arrive with a crate. It reaches no further: `std::net` is
   standard library and no lint can ban it, so first-party code opening a socket is
   caught by review rather than by the build, and `std::fs` and `std::time` are
   outside that policy's view entirely. The property holds by design; only part of
