@@ -4634,8 +4634,9 @@ documentation a previous fix falsified.
   that cites it narrowed that to one machine.
 
   The `test` matrix in `.github/workflows/ci.yml` has five legs. Three run on
-  `ubuntu-latest`, which is x86_64: `ubuntu-stable-all-features` (`required: true`, the
-  one test leg that blocks a merge) and both MSRV legs. `macos-stable-all-features` runs
+  `ubuntu-latest`, which is x86_64: `ubuntu-stable-all-features` and both MSRV legs, the
+  three marked `required: true` (a to-do for branch protection: `main` is not
+  protected, so no leg blocks a merge). `macos-stable-all-features` runs
   on `macos-latest`, which is aarch64. `windows-stable-all-features` is x86_64 and
   `continue-on-error`. Run 38554022691 (head `482e5aa`, 2026-10-14) reported `success`
   for all four Unix legs, so that test asserted those bytes on x86_64 Linux and on

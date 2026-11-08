@@ -43,8 +43,8 @@
 //! differs between 32- and 64-bit targets, so an input whose key lists collide on one
 //! target and not the other gets a different table there — and, where that changes
 //! which encoder wins, a different encoder id in the archive header too. See the
-//! determinism note in [`encoder`](mod@crate::encoder)'s E2 module: every push and
-//! pull request measures the 64-bit `x86_64` and `aarch64` renderings, on Linux and
+//! determinism note in [`encoder`](mod@crate::encoder)'s E2 module: every pull request
+//! and every push to `main` measures the 64-bit `x86_64` and `aarch64` renderings, on Linux and
 //! on macOS; 32-bit targets, `sparc64` and `wasm64` are measured nowhere.
 
 use std::sync::Arc;
