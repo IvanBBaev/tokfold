@@ -1107,6 +1107,28 @@ fn the_instructions_promise_is_kept_for_input_that_does_not_compress() {
 }
 
 #[test]
+fn an_unpaired_surrogate_in_the_text_is_an_id_less_parse_error_as_the_instructions_say() {
+    // The instructions scope "never dropped silently" to input that reaches the
+    // engine, and name the one input that does not: text holding an unpaired UTF-16
+    // surrogate escape fails the whole line, so the error cannot carry the call's id.
+    // Both escapes Python's `json.dumps` can write for undecodable bytes are covered —
+    // a lone high surrogate and a lone low one. If the reader ever recovered the id
+    // here, or replaced the escape instead of refusing it, this test and the sentence
+    // in `INSTRUCTIONS` must change together.
+    for text in [r#""x\ud800""#, r#""caf\udcff""#] {
+        let line = call_line(7, "tokfold_compress", &format!(r#"{{"text":{text}}}"#));
+        let message = reply(&line);
+        assert_eq!(error_code(&message), Some(-32700), "{text}: {message}");
+        assert_eq!(reply_id(&message), None, "{text}: {message}");
+    }
+    assert!(
+        tokfold_mcp::server::INSTRUCTIONS.contains("unpaired UTF-16 surrogate escape")
+            && tokfold_mcp::server::INSTRUCTIONS.contains("(`-32700`) that carries no id"),
+        "the instructions must name the case this test measures"
+    );
+}
+
+#[test]
 fn json_with_nothing_to_save_comes_back_verbatim_behind_the_raw_marker() {
     // The second half of the instructions' promise. Valid JSON that no encoder
     // shortens is not a decline: it is a successful compress through the passthrough

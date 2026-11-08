@@ -643,8 +643,13 @@ released says so, and names what `0.0.1` does in the same case.
   back unchanged with `compressed: false` and a `reasonCode`. Valid JSON
   with nothing to save comes back with `compressed: true` and a rendering that is
   the input behind a `⟦tkfd:v1:raw⟧` marker line — not unchanged. The sentence now
-  names both cases. A client that shows the instructions to a model sees a different
-  string than `0.0.1` sent.
+  names both cases, and it scopes "never dropped silently" to input that reaches
+  the engine: text holding an unpaired UTF-16 surrogate escape (`\ud800` alone)
+  fails the whole line as an id-less `-32700`, so the client cannot tie the error to
+  its call, and the instructions now say so (pinned by
+  `an_unpaired_surrogate_in_the_text_is_an_id_less_parse_error_as_the_instructions_say`).
+  A client that shows the instructions to a model sees a different string than
+  `0.0.1` sent.
 - **MCP: the `profile` argument's description no longer reads "How hard to try".**
   `balanced` and `aggressive` select the same encoders, so no output can tell them
   apart and `aggressive` tries no harder; the description now says `aggressive` is
@@ -671,8 +676,13 @@ released says so, and names what `0.0.1` does in the same case.
   that a reply larger than the message limit (32 MiB by default) is an error.** The
   description adds that the error carries no text, so a client keeps its own copy
   of a large input; the instructions say it is "an error rather than a truncated
-  answer". `0.0.1` sent neither sentence; a client that shows either string to a
-  model sees a different one.
+  answer", and where to expect it: from roughly 10 MiB of JSON text, because an
+  accepted call's reply carries the rendering twice plus a base64 archive, and from
+  roughly 16 MiB of declined text, which is echoed back twice (measured on the
+  escape-free `{"k":"z"×n}`: answered at a 10,000,130-byte call, refused at
+  11,000,130; a run of `A` answered at 16,000,118 and refused at 16,800,118).
+  `0.0.1` sent neither sentence; a client that shows either string to a model sees
+  a different one.
 - **npm launcher: the message for a missing platform package no longer suggests
   installing it by itself.** `0.0.1` said "Fix it with: npm install <package>@<version>",
   which helps only for a project-local install run from that project's root: the

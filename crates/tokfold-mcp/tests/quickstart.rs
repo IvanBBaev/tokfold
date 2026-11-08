@@ -9,7 +9,7 @@
 //! one block's share as if it covered all three ("that is under a quarter of the bytes
 //! it quotes"): the session block is pinned whole, its first and last lines by equality
 //! and its seven request lines by being served; the rendering is compared byte for
-//! byte; and only the replies are quoted with elisions, holding 1693 bytes of the 7178
+//! byte; and only the replies are quoted with elisions, holding 1693 bytes of the 7471
 //! the real replies carry -- the share
 //! `the_quoted_replies_anchor_only_part_of_what_they_quote` asserts. The request lines
 //! are the ones the reader runs, and every quoted reply is matched against the real
@@ -274,7 +274,7 @@ fn the_quoted_replies_anchor_only_part_of_what_they_quote() {
     // coverage this file provides can never shrink unnoticed. The `tools/list` reply is
     // the one to look at -- the widest reply is the least anchored, at 205 bytes of 2521.
     const COVERAGE: [(usize, usize, usize); 6] = [
-        (3, 214, 1321),
+        (3, 214, 1614),
         (5, 205, 2521),
         (2, 452, 527),
         (6, 301, 1502),
@@ -313,7 +313,7 @@ fn the_quoted_replies_anchor_only_part_of_what_they_quote() {
         anchored_total += held;
         actual_total += actual;
     }
-    assert_eq!((anchored_total, actual_total), (1693, 7178));
+    assert_eq!((anchored_total, actual_total), (1693, 7471));
     // The rows that reach the loop inside `matches_trimmed`, rather than only its prefix
     // and suffix check. Derived here so that no comment has to carry the count.
     assert_eq!(past_the_loop, 4, "quotes with more than two pieces");

@@ -47,14 +47,19 @@ for JSON-shaped payloads — tool results, API responses, logs — where repeate
 and whitespace dominate. Embed the returned `rendering` in context and keep the \
 `archive`; `tokfold_decompress` recovers the original bytes exactly. Call \
 `tokfold_estimate` first when you want to know whether compressing is worth it. \
-Input is never dropped silently: input the engine declines (not JSON, nested too \
+Input that reaches the engine is never dropped silently: input it declines (not JSON, nested too \
 deep) comes back unchanged with `compressed: false` and a `reasonCode`, \
 JSON with nothing to save comes back verbatim after a \
 `⟦tkfd:v1:raw⟧` marker line, and a reply too large for the message limit (32 MiB by \
 default) is an error rather than a truncated answer. That last case is the one to \
-expect from `tokfold_compress` for text from roughly 16 MiB upwards — sooner when the \
-text needs JSON escaping — because a declined call echoes the input back twice. \
-`tokfold_estimate` still answers there: it reports numbers and never the input.";
+expect from `tokfold_compress` for JSON text from roughly 10 MiB upwards, because \
+the reply carries the rendering twice plus a base64 archive, and for declined text \
+from roughly 16 MiB, because it is echoed back twice — both sooner when the text \
+needs JSON escaping. \
+`tokfold_estimate` still answers there: it reports numbers and never the input. \
+A call whose text holds an unpaired UTF-16 surrogate escape (`\\ud800` alone) never \
+reaches the engine: the whole line is refused as a parse error (`-32700`) that \
+carries no id.";
 
 /// The protocol state machine.
 ///

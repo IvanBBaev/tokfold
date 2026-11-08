@@ -174,14 +174,15 @@ real model tokenizer):
 The archive in that reply is the one the fifth request sends back, and the text the
 fifth reply returns is byte-for-byte the original input. The tool results of this
 session (replies 3 to 6) are byte-identical between this repository and the published
-`0.0.1` binary; replies 1 and 2 differ only in the `instructions` text and the
-`tokfold_compress` description, both reworded since that release. Those two strings
-account for the whole difference — 560 bytes of the first reply's line and 110 of the
-second — so the rest of each line, tool order and input schemas included, is
-byte-identical as well.
+`0.0.1` binary; replies 1 and 2 differ only in the `instructions` text, the
+`tokfold_compress` description and the `profile` argument's description (which both
+`tokfold_compress` and `tokfold_estimate` carry), all reworded since that release. The
+first reply's line is 853 bytes longer (761 → 1 614) and the second 110 (2 411 →
+2 521); the `profile` rewording is the same 75 bytes wide as the text it replaced, so
+it changes the second line's bytes without changing its width.
 
 That pair of runs is the evidence for the replies-3-to-6 byte-identity and for the two
-reworded strings being the whole of replies 1 and 2's difference — not for a
+strings reworded by then being the whole of replies 1 and 2's difference — not for a
 byte-identity across all six, which replies 1 and 2 refute. It is also one platform's. On
 2026-10-03 the seven lines this session sends were replayed through the `bin/tokfold` of
 the published `tokfold-darwin-arm64` package (SHA-1
@@ -192,7 +193,12 @@ against `cargo build --release -p tokfold-cli` (SHA-1 `834c01f2…`, which commi
 `166873f` builds — measured 2026-10-14) and every number in
 this paragraph reproduced — replies 3 to 6 byte-identical at 527, 1 502, 921 and 386
 bytes, reply 1 growing 761 → 1 321 and reply 2 2 411 → 2 521, and overwriting only those
-two strings in the release replies reproducing that build's lines exactly. The
+two strings in the release replies reproducing that build's lines exactly. That run
+predates the third reworded string and the first line's growth to 1 614 bytes. On
+2026-11-09 the same seven lines were replayed through the same registry binary and a
+`cargo build --release -p tokfold-cli` of the working tree that adds them, on macOS
+arm64: replies 3 to 6 byte-identical at the same widths, and the decoded replies
+differing in exactly the three strings named above and nowhere else. The
 other four platform packages were not run, and for them this is reasoning rather than
 measurement. No reply text here is platform-conditional:
 `tokfold-core` carries no `cfg(unix)`, `cfg(windows)` or `cfg(target_os)` in its source
@@ -282,6 +288,12 @@ newest handshake-era version it serves.
   above it. A declined shape whose reason is longer lowers the ceiling too,
   escape-free though it is: `[1,2` reports `unexpected end of input` and its envelope
   is 361. Text the reply must escape lowers it much further.
+- **Unpaired surrogates.** The server's JSON reader refuses an unpaired UTF-16
+  surrogate escape (`"\ud800"` alone, or `"\udcff"`) rather than replacing it, and it
+  refuses it as a parse error of the whole line: `-32700`, with no `id`, so the
+  client cannot tie the error to its call. Python's `json.dumps` writes exactly that
+  escape for a string decoded with `surrogateescape`, so a client that passes
+  undecodable bytes through that way gets an uncorrelated error back.
 - **One request at a time.** Requests are answered in order, each reply written
   before the next line is read.
 - **Experimental** means: no security review has been done, the wire shape may
