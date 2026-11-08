@@ -87,7 +87,9 @@ released says so, and names what `0.0.1` does in the same case.
   they did in `0.0.1`.
 - **`compress --archive` aimed at its own standard output is refused (Unix).**
   `tokfold compress --archive a.tkfd > a.tkfd` (or `>>`) wrote the archive and the
-  rendering into one file, so a later `expand` refused it as corrupt; with the
+  rendering into one file, so a later `expand` refused it — `not a recognized payload
+  (bad magic)` after `>`, which let the rendering overwrite the header, and
+  `integrity checksum mismatch` after `>>`; with the
   rejected-pass clearing above, a rejected input would additionally delete the file
   its own passthrough was being appended to, losing both. The descriptor behind
   standard output is now compared with the archive path by the same identity as
@@ -275,11 +277,12 @@ released says so, and names what `0.0.1` does in the same case.
   carries is counted from the start of the *archive*. Five fixed header fields
   raise it — byte 4 (a missing or zero version), byte 5 (encoder id), byte 6
   (tokenizer id), byte 8 (the flag word) and byte 10 (the ULEB128 original-length
-  field) — and exactly one site names a position in the payload region. So the two
-  ordinary causes, a bit-flip in the flags and a truncated copy whose length field
-  disagrees with the bytes after it, printed `payload corrupted at byte 8` and
-  `payload corrupted at byte 10` while the payload of a minimal archive does not
-  begin until byte 43. A reader who took the word at face value looked for the
+  field) — and exactly one site names a position in the payload region. So a
+  bit-flip in the flags printed `payload corrupted at byte 8`, and a copy cut inside
+  the header printed `payload corrupted at byte 10` or `11`, while the payload of a
+  minimal archive does not begin until byte 43. (A copy cut inside the payload never
+  printed this message in `0.0.1`: it reached `integrity checksum mismatch`, as the
+  entry headed "A truncated archive is reported as framing corruption" records.) A reader who took the word at face value looked for the
   damage in the wrong region, and one who used the number as an index into the
   payload landed on archive byte 51 — forty-three bytes past the byte that was
   actually wrong. It now reads `archive corrupted
@@ -307,7 +310,7 @@ released says so, and names what `0.0.1` does in the same case.
   JSON value`. Measured on the built binary: `nonsense` → `invalid JSON at byte 0:
   expected a JSON value`; `nul` and `nulX` → `invalid literal, expected 'null'`.
 - **The MCP `name` parameter reported a wrong type as a missing one.** `tools/call`
-  answered `"name": 42` with `\`name\` must be a string`, the same text it produced
+  answered `"name": 42` with `` `name` is required and must be a string ``, the same text it produced
   when `name` was absent, so a client that had sent the key could not tell from the
   reply that it had. The message now names what arrived — `it was not supplied` or
   `a number was supplied` — and the same constructor is shared with the tool
@@ -2644,8 +2647,10 @@ documentation a previous fix falsified.
   and both halves were wrong.** The `Fixed` entry in this section on the
   corrupt-archive message, and the rustdoc on `DecompressError::Corrupt` beside it,
   said five fixed header fields raise it — bytes 4, 5, 6, 8 and 10 — "and exactly
-  one site names a position in the payload region". Measured through the shipped
-  binary on the 56-byte archive of `{"k":"hello"}`: a copy cut at 11, 12, 20 or 42
+  one site names a position in the payload region". Measured on a working-tree
+  build on the 56-byte archive of `{"k":"hello"}` (`0.0.1` prints `payload
+  corrupted at byte 11` for the cuts at 11, 12, 20 and 42, and `integrity checksum
+  mismatch` for the 43-byte copy, the appended one and the 141-byte claim): a copy cut at 11, 12, 20 or 42
   bytes says `archive corrupted at byte 11`, because a checksum the archive ends
   inside is reported at the offset the checksum should begin — the byte after the
   length varint, 11 for an original under 128 bytes and up to 20; a length spelled
