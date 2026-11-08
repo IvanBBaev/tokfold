@@ -24,7 +24,10 @@ for the command line.
   binary of its own; it declares one package per platform
   (`tokfold-darwin-arm64`, `tokfold-darwin-x64`, `tokfold-linux-x64-gnu`,
   `tokfold-linux-arm64-gnu`, `tokfold-windows-x64`) as optional dependencies, so
-  an install pulls down only the binary matching the machine. All six are
+  an install pulls down only the package whose `os` and `cpu` match the machine.
+  None declares `libc`, so on musl Linux (Alpine) the glibc build is pulled down
+  and the launcher then refuses it; on a platform with no package (Windows on
+  `arm64`, for one) nothing is pulled down. All six are
   published at `0.0.1` with npm provenance attestations. See `npm/README.md` for
   why the launcher is published last, and for why the Windows package is
   `tokfold-windows-x64` rather than the `win32` name Node itself uses.
