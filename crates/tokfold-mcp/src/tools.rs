@@ -206,7 +206,7 @@ fn profile_property() -> Value {
         .set(
             "description",
             Value::string(
-                "How hard to try. Defaults to `balanced`. Every profile is fully reversible.",
+                "`aggressive` is the same as `balanced` now. Default `balanced`. Reversible.",
             ),
         )
         .build()

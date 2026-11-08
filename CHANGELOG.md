@@ -645,6 +645,13 @@ released says so, and names what `0.0.1` does in the same case.
   the input behind a `⟦tkfd:v1:raw⟧` marker line — not unchanged. The sentence now
   names both cases. A client that shows the instructions to a model sees a different
   string than `0.0.1` sent.
+- **MCP: the `profile` argument's description no longer reads "How hard to try".**
+  `balanced` and `aggressive` select the same encoders, so no output can tell them
+  apart and `aggressive` tries no harder; the description now says `aggressive` is
+  the same as `balanced`. It is kept at the old string's 75 bytes, because the
+  `tools/list` reply's width sets the batch windows pinned by
+  `a_larger_limit_can_collapse_a_batch_that_a_smaller_one_answered`. A client that
+  shows the schema to a model sees a different string.
 - **A standard stream that cannot be used now fails the command (Unix).** The
   standard library treats `EBADF` on stdout as a successful write and on stdin as
   end of input. So with fd 1 open read-only (`tokfold compress < in.json 1< in.json`,
