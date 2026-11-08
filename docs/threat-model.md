@@ -174,7 +174,9 @@ code holds it today.
 
 The CLI reads its whole input into memory before the engine's size ceiling applies
 (`read_source` in `main.rs` uses `fs::read` or `read_to_end`). The 16 MiB ceiling
-therefore bounds what the engine processes, not what the CLI reads. The CLI's input
+therefore bounds what the engine compresses, not what the CLI reads — and not what
+it expands: `decompress` applies no size ceiling, so `expand` reads and decodes an
+archive of any size, holding the archive and the decoded copy in memory together. The CLI's input
 is chosen by the trusted invoking user, so this is recorded here rather than treated
 as a threat.
 

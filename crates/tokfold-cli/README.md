@@ -136,6 +136,11 @@ raise it; only the library does, through `ConfigBuilder::max_input_bytes`. It al
 refuses JSON nested deeper than **512** levels: 512 is accepted and 513 is not, and
 again only the library can raise it, through `ConfigBuilder::max_depth`.
 
+Both ceilings apply to what `compress` and `stats` take in. `expand` has neither: it
+decodes an archive of any size the machine can hold, and an archive of a 20 MiB
+original expands at exit `0` (measured 2026-11-08 on a working-tree build, macOS
+arm64), holding the archive and the output in memory at once.
+
 Neither refusal is loud. `compress` forwards the input unchanged, exits `0` and
 explains itself on standard error, so a caller that pipes stdout onward and drops
 stderr sees a successful run that saved nothing; if `--archive` was given, no
