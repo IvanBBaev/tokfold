@@ -33,11 +33,14 @@ for the command line.
   on every push to `main`, and pushes to other branches run nothing — open a pull
   request to get a gate. But the badge URL carries no `?event=` filter, so it shows
   the newest run on `main` whatever triggered it, and that workflow also runs on a
-  weekly schedule in which every gate job is skipped by design (`if:
-  github.event_name != 'schedule'`) and only the weekly jobs run. On 2026-10-05 the
-  badge read *passing* for exactly such a run: `audit`, `release-test` and `nightly`
-  succeeded, and `actionlint`, `fmt`, `clippy`, `docs`, `doc-drift`, `deny`,
-  `package`, `launcher` and `test` were all skipped. A green badge therefore says
+  weekly schedule in which every gate job but `fuzz` is skipped by design (`if:
+  github.event_name != 'schedule'`), so only the weekly jobs and `fuzz` (600 seconds
+  a target there, 60 on a push or a pull request) run. On 2026-10-05 the badge read
+  *passing* for exactly such a run, on `0f759f6`, which predates the `fuzz` job:
+  `audit`, `release-test` and `nightly` succeeded, and `actionlint`, `fmt`, `clippy`,
+  `docs`, `doc-drift`, `deny`, `package`, `launcher` and `test` were all skipped.
+  Since `df6a0fc` a scheduled run also carries `fuzz`, and it is still not the gate
+  on the current commit. A green badge therefore says
   the newest run on `main` passed, not that the gate passed on the current commit.
   Adding `?event=push` to the badge URL would narrow it to the runs this bullet used
   to describe; it is not set.
