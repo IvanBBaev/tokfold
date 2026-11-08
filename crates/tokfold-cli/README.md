@@ -163,8 +163,10 @@ never a payload byte, so the number is only useful next to the layout:
 | after the length | 32 | `SHA-256` of the original |
 | after the checksum | rest | payload |
 
-An archive of 4 to 9 bytes is cut short at or inside a fixed field and is reported
-at the field it cuts short (4, 5, 6 or 8); one of 1 to 3 bytes is reported as a bad
+A real archive cut to 4 to 9 bytes ends at or inside a fixed field and is reported
+at the field the cut falls in (4, 5, 6 or 8); any other file of that size that starts
+with `TKFD` is reported at the first field it gets wrong instead — a version byte of
+`0` at 4, one above `1` as `format version N > supported 1`; one of 1 to 3 bytes is reported as a bad
 magic, and an empty one as empty rather than as corruption -- measured at 0, 1, 2 and 3
 bytes, and stated the same way in the `expand` bullet above. Otherwise `archive
 corrupted at byte 8` is a flag bit this build knows
