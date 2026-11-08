@@ -37,9 +37,12 @@ branch protection (`gh api repos/IvanBBaev/tokfold/branches/main/protection` ans
 **enforced** statement but does not stop it landing.
 
 A SHA-1 or a byte size beside a build command below names **bytes**, not this tree. The
-commit named with it is the recipe: `git archive <commit> | tar -x -C <dir>` followed by
-the command quoted beside the hash reproduces those bytes on macOS Darwin 27.0.0 arm64
-with rustc 1.97.0. Two commits appear below for one command, because the bytes moved
+commit named with it is the tree they were built from: `git archive <commit> | tar -x -C
+<dir>` followed by the command quoted beside the hash produced those bytes on macOS
+Darwin 27.0.0 arm64 with rustc 1.97.0 on 2026-10-14, and on 2026-11-08 the same recipe
+on the same machine gave the same sizes and different hashes, so it does not pin every
+input the build reads (`docs/threat-model.md`, *Where this document can go stale*,
+names the ones measured). Two commits appear below for one command, because the bytes moved
 between the measurements. A release build does not depend on where it is built — one
 commit built as `--workspace --all-features` in two directories outside the repository
 gave `30e93939…` both times — while a *debug* build's size does, which is why no size

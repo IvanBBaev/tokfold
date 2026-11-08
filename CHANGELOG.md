@@ -3633,7 +3633,10 @@ documentation a previous fix falsified.
   (both measured 2026-10-14, each in a directory outside the repository and with its
   own `target/`, so neither value depends on where it is built). Each of the eight now
   names its commit, and *Where this document can go stale* carries the derivation, the
-  recipe and what was false.
+  recipe and what was false. On 2026-11-08 that recipe, on the same machine and rustc,
+  gave the same two sizes and different hashes (`6f8f7c86…`, `4f4e7d98…`), so "it
+  gives" held on the day it was measured and not since; both documents now say the
+  recipe does not pin every input the build reads.
 
   **A rule stated for every claim above was unable to reach this one.** That section
   anchors a claim to the function, file or `--help` entry that holds it, or to a

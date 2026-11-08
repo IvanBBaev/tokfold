@@ -628,15 +628,27 @@ made those sentences look guarded when review is all that holds them.
 
 The rule does not reach a binary's bytes either. Several claims above name the build
 they were measured against by its SHA-1, and that hash identifies bytes rather than a
-tree: the commit beside it is the recipe for rebuilding those bytes, not a claim that
-the current tree builds them. Two hashes appear above for one build command, because
+tree: the commit beside it names the tree those bytes were built from, not a claim
+that the current tree builds them — and not a guarantee that the recipe below rebuilds
+them, since the build reads inputs the commit does not pin. Two hashes appear above for one build command, because
 the bytes moved between the commits the measurements were taken at. The recipe is `git
 archive <commit> | tar -x -C <dir>` followed by `cargo build --release -p tokfold-cli`,
 and on macOS Darwin 27.0.0 arm64 with rustc 1.97.0 it gives
 `834c01f2be12ebacab13057ed40aa570742dcddc` at 1 261 712 bytes for `166873f` and
 `637795cf1c33ddb91c414c04c4a8409633d4765e` at 1 262 112 for `ae065a8` (both measured
 2026-10-14, each in its own directory outside the repository and with its own
-`target/`). That a value does not depend on where it is built takes a second
+`target/`). On 2026-11-08 the same recipe on the same machine and the same rustc
+1.97.0 gave the same sizes and different hashes: `6f8f7c86…` for `166873f` and
+`4f4e7d98…` for `ae065a8`. The input that moved is not identified. One input that
+did move is the `rust-src` component, installed into the stable toolchain on
+2026-10-15: with it present the release binary embeds 21 standard-library paths under
+`~/.rustup/toolchains/` where it would otherwise carry `/rustc/<hash>/`. It is not the
+only one — a build of `166873f` with a copy of the toolchain that lacks `rust-src`
+gave a third hash, `f70e7f2e…`, still at 1 261 712 bytes. The release binary also
+embeds dependency paths under `~/.cargo/registry/src/`, so it depends on the home
+directory even where it does not depend on the build directory. The hashes cited in
+this document therefore identify the bytes each measurement ran against; they are not
+something this recipe is known to reproduce. That a value does not depend on where it is built takes a second
 measurement of *one* commit, not one measurement each of two: `--workspace
 --all-features` gave `30e9393951f14769ecd0b2279a064d86aac4097a` at 1 263 776 bytes in
 two different directories, and that is the support for it. It holds for the release
