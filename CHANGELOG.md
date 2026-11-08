@@ -4640,10 +4640,11 @@ documentation a previous fix falsified.
   on `macos-latest`, which is aarch64. `windows-stable-all-features` is x86_64 and
   `continue-on-error`. Run 38554022691 (head `482e5aa`, 2026-10-14) reported `success`
   for all four Unix legs, so that test asserted those bytes on x86_64 Linux and on
-  aarch64 macOS in the same run. The Windows leg reported `failure` -- it has not
-  compiled since commit `6d6659e` of 2026-10-10, as the matrix comment beside it records
-  -- so the corrected text says only that `x86_64-pc-windows-msvc` has a leg, reporting
-  only, and claims no measurement for it.
+  aarch64 macOS in the same run. The Windows leg reported `failure` -- it did not
+  compile from commit `6d6659e` of 2026-10-10, as the matrix comment beside it records,
+  until `4b56e52` of 2026-10-15 gated the three Unix-only CLI tests -- so the corrected
+  text says only that `x86_64-pc-windows-msvc` has a leg, reporting only, and claims no
+  measurement for it.
 
   What is genuinely unmeasured is what that `cfg` excludes and nothing else: 32-bit
   targets, `sparc64` and `wasm64`. The three sites now name both sets. The entry that
