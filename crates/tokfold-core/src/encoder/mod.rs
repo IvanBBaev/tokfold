@@ -33,7 +33,12 @@
 //! `compress` guarantees follow directly:
 //!
 //! * **Total on valid JSON within the configured limits** — no winner yields a
-//!   passthrough artifact, never an error.
+//!   passthrough artifact, never an error. JSON Lines that `crate::ndjson`
+//!   recognises is treated the same way.
+//!
+//! A JSON Lines input goes through `select_records` instead of `select`: the record
+//! encoder renders the records as one array, and the gate prices that rendering, and
+//! frames the passthrough fallback, against the input as given.
 //! * **Do-no-harm** — the chosen rendering's estimated tokens never exceed the
 //!   input's, or the result is passthrough.
 
@@ -56,27 +61,34 @@ pub(crate) enum Encoder {
     E1Minify,
     /// Shape-deduplicated tabular re-encoding. id 2.
     E2Tabular,
+    /// E2's tabular re-encoding applied to a JSON Lines input, rendered as the array
+    /// of its records (see [`crate::ndjson`]). id 4: id 3 is reserved for E3 legend
+    /// folding, which is not implemented.
+    E4Jsonl,
 }
 
 impl Encoder {
     /// The frozen id for this encoder; a released id never changes. In v0.0.1 the
     /// compressor writes only `encoder_id = 0` (passthrough) to the archive header;
-    /// ids 1 and 2 identify the rendering out-of-band via `Stats.encoder` and the
+    /// ids 1, 2 and 4 identify the rendering out-of-band via `Stats.encoder` and the
     /// sentinel tag, never on the wire.
     pub(crate) const fn id(self) -> u8 {
         match self {
             Self::Passthrough => 0,
             Self::E1Minify => 1,
             Self::E2Tabular => 2,
+            Self::E4Jsonl => 4,
         }
     }
 
-    /// The sentinel tag opening this encoder's rendering: `raw`, `min` or `tbl`.
+    /// The sentinel tag opening this encoder's rendering: `raw`, `min`, `tbl` or
+    /// `jsonl`.
     const fn tag(self) -> &'static str {
         match self {
             Self::Passthrough => "raw",
             Self::E1Minify => "min",
             Self::E2Tabular => "tbl",
+            Self::E4Jsonl => "jsonl",
         }
     }
 }
@@ -127,7 +139,12 @@ pub(crate) fn render(enc: Encoder, tape: &Tape, input: &str) -> Option<String> {
     match enc {
         Encoder::Passthrough => Some(framed(enc, input)),
         Encoder::E1Minify => e1_minify::render(tape, input).map(|body| framed(enc, &body)),
-        Encoder::E2Tabular => e2_tabular::render(tape, input).map(|body| framed(enc, &body)),
+        // The same body grammar as E2; what differs is what `tape` and `input` are —
+        // the array of a JSON Lines input's records, never the input itself — and
+        // so what the body describes. Only [`select_records`] passes that pair.
+        Encoder::E2Tabular | Encoder::E4Jsonl => {
+            e2_tabular::render(tape, input).map(|body| framed(enc, &body))
+        }
     }
 }
 
@@ -179,7 +196,37 @@ pub(crate) fn select(
     enabled: &[Encoder],
     min_saving_bps: u32,
 ) -> Selection {
-    let est_before = estimator.estimate(input);
+    select_from(tape, input, input, estimator, enabled, min_saving_bps)
+}
+
+/// [`select`] for a JSON Lines input: candidates render `array` — the records as one
+/// JSON array, with `tape` its tape — while the gate prices them against `original`,
+/// the input as given, and the passthrough fallback frames `original`.
+///
+/// `enabled` should hold only [`Encoder::E4Jsonl`]: E1 and E2 describe the document
+/// they render, and `array` is not the input.
+pub(crate) fn select_records(
+    tape: &Tape,
+    array: &str,
+    original: &str,
+    estimator: &dyn TokenEstimator,
+    enabled: &[Encoder],
+    min_saving_bps: u32,
+) -> Selection {
+    select_from(tape, array, original, estimator, enabled, min_saving_bps)
+}
+
+/// The candidate rule over a rendering source (`tape` with the text it was parsed
+/// from, `source`) that may differ from the text the gate prices (`original`).
+fn select_from(
+    tape: &Tape,
+    source: &str,
+    original: &str,
+    estimator: &dyn TokenEstimator,
+    enabled: &[Encoder],
+    min_saving_bps: u32,
+) -> Selection {
+    let est_before = estimator.estimate(original);
     let mut best: Option<(usize, Encoder, String)> = None;
     let mut gate_rejected_candidate = false;
 
@@ -188,7 +235,7 @@ pub(crate) fn select(
             // Passthrough is the fallback, never a candidate that must beat the input.
             continue;
         }
-        let Some(candidate) = render(enc, tape, input) else {
+        let Some(candidate) = render(enc, tape, source) else {
             continue; // encoder does not apply to this input
         };
         let est = estimator.estimate(&candidate);
@@ -217,7 +264,7 @@ pub(crate) fn select(
         },
         None => Selection {
             encoder: Encoder::Passthrough,
-            rendering: framed(Encoder::Passthrough, input),
+            rendering: framed(Encoder::Passthrough, original),
             est_tokens_before: est_before,
             est_tokens_after: est_before,
             gate_rejected_candidate,
@@ -305,6 +352,7 @@ mod tests {
         assert_eq!(Encoder::Passthrough.id(), 0);
         assert_eq!(Encoder::E1Minify.id(), 1);
         assert_eq!(Encoder::E2Tabular.id(), 2);
+        assert_eq!(Encoder::E4Jsonl.id(), 4);
     }
 
     #[test]

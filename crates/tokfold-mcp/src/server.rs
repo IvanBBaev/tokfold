@@ -46,8 +46,8 @@ tokfold reversibly compresses text so it costs fewer tokens in a prompt. It is b
 for JSON-shaped payloads — tool results, API responses, logs — where repeated keys \
 and whitespace dominate. Embed the returned `rendering` in context and keep the \
 `archive`; `tokfold_decompress` recovers the original bytes exactly. Call \
-`tokfold_estimate` first when you want to know whether compressing is worth it. \
-Input that reaches the engine is never dropped silently: input it declines (not JSON, nested too \
+`tokfold_estimate` first to tell whether compressing is worth it. \
+Input that reaches the engine is never dropped silently: input it declines (not JSON or JSON Lines, nested too \
 deep) comes back unchanged with `compressed: false` and a `reasonCode`, \
 JSON with nothing to save comes back verbatim after a \
 `⟦tkfd:v1:raw⟧` marker line, and a reply too large for the message limit (32 MiB by \

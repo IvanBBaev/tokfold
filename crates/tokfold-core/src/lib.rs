@@ -95,6 +95,7 @@ pub mod error;
 pub mod estimator;
 pub mod fidelity;
 pub mod format;
+mod ndjson;
 pub mod never_compress;
 pub mod tape;
 

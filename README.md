@@ -277,6 +277,14 @@ measure `Artifact::rendering` directly. Invalid input (including `NaN`/`Infinity
 documents, or trailing garbage) returns a `CompressError`; the caller then forwards
 the original bytes unmodified. The engine never repairs input.
 
+JSON Lines is the one input that is not a single JSON document and is still
+accepted (after `0.0.1`, which rejected it): two or more JSON values, one per line,
+blank and CRLF lines allowed, each line under the nesting limit on its own. Under
+the default `Balanced` profile and `Aggressive` the records are rendered as the
+tabular encoder renders the array of them, behind a `⟦tkfd:v1:jsonl⟧` sentinel,
+when that saves estimated tokens; `Conservative` passes them through. Either way
+the archive holds the original bytes, so `decompress` returns the lines exactly.
+
 ### What is in v0.0.1 — and what is not
 
 Present: the parser, the archive format, the token estimator, and the first encoders

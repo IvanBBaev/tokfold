@@ -725,6 +725,46 @@ released says so, and names what `0.0.1` does in the same case.
 
 ### Added
 
+- **JSON Lines (NDJSON) input.** An input that is not one JSON document but two or
+  more JSON values, one per line, is now accepted where `0.0.1` returned
+  `CompressError::InvalidJson` ("trailing data after top-level value"). Recognition
+  runs only after the whole-input parse has failed, so every input `0.0.1` accepted
+  is handled as before, and an input that is not JSON Lines either is rejected with
+  the same offset and message as before. The rule, in `tokfold-core`'s `ndjson`
+  module: split at every line feed; a line made only of spaces, tabs and carriage
+  returns (or empty) is blank and skipped, so CRLF and blank lines are accepted;
+  every other line must parse alone as one JSON value under `max_depth`. A record
+  past `max_depth` on the first line is still reported as `DepthExceeded`, on a
+  later line as the whole-input `InvalidJson`.
+
+  The records are rendered the way E2 renders the array of them, under a new
+  `⟦tkfd:v1:jsonl⟧` sentinel and a new encoder id **4** (`EncoderId::E4_JSONL`;
+  id 3 stays reserved for E3). The CLI names it `e4-jsonl`, the MCP server `jsonl`.
+  The do-no-harm gate prices that rendering against the original text, and when it
+  loses, the input passes through behind the `raw` sentinel like any other. The
+  archive is always a passthrough of the original bytes, so line endings and blank
+  lines come back exactly. The `jsonl` sentinel is 20 bytes and costs 11 estimated
+  (12 real `cl100k`, 14 real `o200k`) tokens, one more than `raw`, pinned in
+  `the_sentinel_costs_what_the_docs_say_it_costs`.
+
+  Behaviour changes against `0.0.1`: under `Balanced` (the default) and `Aggressive`
+  a JSON Lines input is compressed when that saves estimated tokens. Under
+  `Conservative` it passes through — `compress` succeeds with encoder `passthrough`
+  where it used to fail. So `tokfold compress --archive PATH` on such an input now
+  writes an archive instead of taking the rejected path (which deletes a stale `TKFD`
+  file at `PATH`), and the MCP `tokfold_compress` answers `compressed: true` where it
+  answered `compressed: false` with `reasonCode` `invalid_json`. The MCP
+  `instructions` and the `tokfold_compress` description now say "not JSON or JSON
+  Lines" where they said "not JSON"; both strings keep their byte widths, so no reply
+  width quoted in `crates/tokfold-mcp/README.md` moves.
+
+  Measured on macOS arm64 with a release build of this change, default profile,
+  heuristic estimator: 300 generated log records (7 flat keys, LF, 44 694 bytes)
+  0.5417 estimated token ratio; 100 issue-like records with a nested object and an
+  array (compact, CRLF, 9 330 bytes) 0.6222; 50 records alternating two shapes
+  (910 bytes) 0.7584. Each `tokfold compress --archive` round-tripped byte for byte
+  through `tokfold expand`.
+
 - `Stats::gate_rejected_candidate` — whether the do-no-harm gate refused a candidate
   rendering during the pass. `Stats` is `#[non_exhaustive]`, so the field is
   additively compatible.
@@ -2986,7 +3026,7 @@ documentation a previous fix falsified.
   "overwrites log.json", and both READMEs said "either way the source document is
   gone" (or "destroyed"). Only a successful pass writes there, and what it writes is
   the archive, which `tokfold expand` turns back into the document byte for byte; a
-  rejected pass — piped NDJSON, say — exits `0` and leaves `log.json` untouched, unless
+  rejected pass — piped plain text, say — exits `0` and leaves `log.json` untouched, unless
   that file opens with the `TKFD` magic, in which case it is deleted. The help and
   both READMEs now say that. The stdin identity entry under `Fixed` ("the pass
   overwrites `log.json`") and the entry on `npm/tokfold/README.md`'s redirect

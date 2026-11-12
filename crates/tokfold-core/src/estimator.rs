@@ -1008,18 +1008,26 @@ mod tiktoken_tests {
             "1234567890",
         ];
         // (tag, heuristic, cl100k, o200k). Only `raw` is quoted in the docs — it is
-        // the tag the passthrough path always writes. `min` and `tbl` are measured
-        // alongside it so a future retag cannot move the published number unnoticed;
-        // `min` happens to cost one token less under both exact tokenizers.
+        // the tag the passthrough path always writes. `min`, `tbl` and `jsonl` are
+        // measured alongside it so a future retag cannot move the published number
+        // unnoticed; `min` happens to cost one token less under both exact tokenizers,
+        // and the two bytes longer `jsonl` one token more under all three.
         let expected = [
             ("raw", 10, 11, 13),
             ("min", 10, 10, 12),
             ("tbl", 10, 11, 13),
+            ("jsonl", 11, 12, 14),
         ];
 
         for (tag, heur, cl, o2) in expected {
             let sentinel = format!("\u{27E6}tkfd:v1:{tag}\u{27E7}\n");
-            assert_eq!(sentinel.len(), 18, "the sentinel line is 18 bytes");
+            // 15 bytes of frame (two 3-byte brackets, `tkfd:v1:`, the newline) plus
+            // the tag: 18 for the three-letter tags, 20 for `jsonl`.
+            assert_eq!(
+                sentinel.len(),
+                15 + tag.len(),
+                "the {tag} sentinel line's length"
+            );
             for payload in payloads {
                 let framed = format!("{sentinel}{payload}");
                 assert_eq!(

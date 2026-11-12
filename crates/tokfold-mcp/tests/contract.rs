@@ -1176,9 +1176,10 @@ fn json_with_nothing_to_save_comes_back_verbatim_behind_the_raw_marker() {
     // a third, "too large", which no call can ever see -- see
     // `the_engines_own_size_ceiling_is_unreachable_through_the_echoing_tool` for why,
     // and for the two ceilings whose overlap makes it so. A category in a sentence
-    // handed to a model is a claim about every member of it.
+    // handed to a model is a claim about every member of it: the first reason read
+    // "not JSON" until JSON Lines, which is not one JSON document, was accepted.
     assert!(
-        instructions.contains("(not JSON, nested too deep) comes back unchanged"),
+        instructions.contains("(not JSON or JSON Lines, nested too deep) comes back unchanged"),
         "{instructions}"
     );
     assert!(

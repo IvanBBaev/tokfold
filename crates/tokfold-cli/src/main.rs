@@ -1420,6 +1420,7 @@ fn encoder_name(id: u8) -> &'static str {
         0 => "passthrough",
         1 => "e1-minify",
         2 => "e2-tabular",
+        4 => "e4-jsonl",
         _ => "unknown",
     }
 }
@@ -1658,13 +1659,16 @@ mod tests {
         assert_eq!(encoder_name(0), "passthrough");
         assert_eq!(encoder_name(1), "e1-minify");
         assert_eq!(encoder_name(2), "e2-tabular");
+        assert_eq!(encoder_name(4), "e4-jsonl");
     }
 
     #[test]
     fn an_unknown_encoder_id_is_named_rather_than_hidden() {
         // A build that meets an archive from a newer writer must still print a report;
-        // the id itself is always shown alongside, so nothing is lost.
+        // the id itself is always shown alongside, so nothing is lost. Id 3 is
+        // reserved for legend folding, which no build implements.
         assert_eq!(encoder_name(3), "unknown");
+        assert_eq!(encoder_name(5), "unknown");
         assert_eq!(encoder_name(u8::MAX), "unknown");
     }
 

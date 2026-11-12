@@ -943,7 +943,9 @@ proptest! {
 // ===========================================================================
 
 /// Required by the frozen spec: `NaN`, `Infinity`, truncated JSON, ANSI escape codes
-/// and JSONL must all yield `CompressError::InvalidJson`, never a panic.
+/// and several documents on one line must all yield `CompressError::InvalidJson`,
+/// never a panic. JSON Lines -- one document per line -- was on the spec's list too
+/// and is accepted since the record encoder; see `json_lines_*` below.
 #[test]
 fn dirty_reality_inputs_are_invalid_json() {
     let c = compressor();
@@ -964,12 +966,14 @@ fn dirty_reality_inputs_are_invalid_json() {
         "\"abc",
         "tru",
         "nul",
-        // Trailing garbage / multiple documents (JSONL).
+        // Trailing garbage / several documents on one line.
         "1 2",
         "{} {}",
         "[]x",
         "null null",
-        "{\"a\":1}\n{\"b\":2}",
+        // Lines that are not one document each are not JSON Lines either.
+        "{\"a\":1}\n{\"b\":",
+        "{\"a\":1}\n1 2",
         // Leading zeros.
         "01",
         "-01",
@@ -990,6 +994,130 @@ fn dirty_reality_inputs_are_invalid_json() {
             other => panic!("expected InvalidJson for {input:?}, got {other:?}"),
         }
     }
+}
+
+/// Builds `n` same-shaped JSON Lines records, one per line, newline-terminated.
+fn json_lines(n: usize) -> String {
+    let mut out = String::new();
+    for i in 0..n {
+        out.push_str(&format!(
+            "{{\"ts\":\"2026-11-12T10:00:{:02}Z\",\"level\":\"info\",\"msg\":\"request done\",\"status\":200,\"id\":{i}}}\n",
+            i % 60
+        ));
+    }
+    out
+}
+
+/// Same-shaped records are rendered as one E2 table under the `jsonl` sentinel, and
+/// the archive gives back the original bytes, line structure included.
+#[test]
+fn json_lines_records_are_rendered_as_one_table() {
+    let c = compressor();
+    let input = json_lines(20);
+    let a = c
+        .compress(input.as_bytes())
+        .expect("JSON Lines is accepted");
+    assert_eq!(a.stats.encoder, EncoderId::E4_JSONL);
+    assert!(
+        a.rendering.starts_with("\u{27E6}tkfd:v1:jsonl\u{27E7}\n"),
+        "{:?}",
+        a.rendering
+    );
+    // The body is E2's table over the records: the header, then one row per record.
+    assert!(a.rendering.contains("#20["), "{:?}", a.rendering);
+    assert!(a.stats.est_tokens_after < a.stats.est_tokens_before);
+    assert_eq!(a.stats.bytes_after, a.rendering.len());
+    assert_eq!(c.decompress(&a.archive).unwrap(), input.as_bytes());
+}
+
+/// The body under `jsonl` is exactly what E2 renders for the records as one array:
+/// the record encoder adds the recognition, not a second table format.
+#[test]
+fn json_lines_body_is_the_e2_body_of_the_records_array() {
+    let c = compressor();
+    let input = json_lines(12);
+    let array = format!("[{}]", input.lines().collect::<Vec<_>>().join(","));
+    let lines = c.compress(input.as_bytes()).unwrap();
+    let doc = c.compress(array.as_bytes()).unwrap();
+    assert_eq!(doc.stats.encoder, EncoderId::E2_TABULAR);
+    let lines_body = lines
+        .rendering
+        .strip_prefix("\u{27E6}tkfd:v1:jsonl\u{27E7}\n")
+        .unwrap();
+    let doc_body = doc
+        .rendering
+        .strip_prefix("\u{27E6}tkfd:v1:tbl\u{27E7}\n")
+        .unwrap();
+    assert_eq!(lines_body, doc_body);
+}
+
+/// Records E2 cannot tabulate (no two share a shape) pass through, and the gate
+/// prices the passthrough against the original lines, not against the array.
+#[test]
+fn json_lines_without_a_shared_shape_pass_through() {
+    let c = compressor();
+    let input = "{\"a\":1}\n{\"b\":2}\n[3]\n";
+    let a = c.compress(input.as_bytes()).unwrap();
+    assert_eq!(a.stats.encoder, EncoderId::PASSTHROUGH);
+    assert_eq!(a.rendering, format!("{RAW_SENTINEL_LINE}{input}"));
+    assert!(!a.stats.gate_rejected_candidate);
+    assert_eq!(a.stats.bytes_after, input.len());
+    assert_eq!(
+        a.stats.est_tokens_before,
+        HeuristicEstimator.estimate(input)
+    );
+    assert_eq!(c.decompress(&a.archive).unwrap(), input.as_bytes());
+}
+
+/// `Conservative` offers no record encoder: JSON Lines passes through, where before
+/// the record encoder it was rejected as invalid JSON.
+#[test]
+fn json_lines_pass_through_under_conservative() {
+    let c = Compressor::new(
+        Config::builder()
+            .profile(tokfold_core::Profile::Conservative)
+            .build(),
+    );
+    let input = json_lines(20);
+    let a = c.compress(input.as_bytes()).unwrap();
+    assert_eq!(a.stats.encoder, EncoderId::PASSTHROUGH);
+    assert!(!a.stats.gate_rejected_candidate);
+    assert_eq!(a.rendering, format!("{RAW_SENTINEL_LINE}{input}"));
+}
+
+/// When recognition fails, the error is the whole-input parse error, offset and all:
+/// an input `compress` rejected before is rejected exactly as before.
+#[test]
+fn json_lines_recognition_failure_reports_the_whole_input_error() {
+    let c = compressor();
+    let input = "{\"a\":1}\n{\"a\":2}\nnot json\n";
+    match c.compress(input.as_bytes()) {
+        // The whole-input parser reports the first byte after the first value and
+        // its whitespace: byte 8, the `{` that opens the second line.
+        Err(CompressError::InvalidJson { byte_offset, .. }) => assert_eq!(byte_offset, 8),
+        other => panic!("expected InvalidJson, got {other:?}"),
+    }
+}
+
+/// A record nested past `max_depth` after the first line fails recognition, so the
+/// input is reported as the whole-input `InvalidJson`; on the first line the
+/// whole-input parse meets it first and reports `DepthExceeded`, as before -- the
+/// two consequences stated in `ndjson`'s module docs.
+#[test]
+fn json_lines_record_past_max_depth() {
+    let c = Compressor::new(Config::builder().max_depth(3).build());
+    match c.compress(b"[1]\n[[[[1]]]]\n") {
+        // Byte 4: the `[` that opens the second line, where trailing data begins.
+        Err(CompressError::InvalidJson { byte_offset, .. }) => assert_eq!(byte_offset, 4),
+        other => panic!("expected InvalidJson, got {other:?}"),
+    }
+    match c.compress(b"[[[[1]]]]\n[1]\n") {
+        Err(CompressError::DepthExceeded { .. }) => {}
+        other => panic!("expected DepthExceeded, got {other:?}"),
+    }
+    // The array wrapper does not count against a record: depth 3 on each line passes.
+    let ok = "[[[1]]]\n[[[2]]]\n";
+    assert!(c.compress(ok.as_bytes()).is_ok());
 }
 
 /// Non-UTF-8 input is rejected as `NotUtf8`, never a panic.

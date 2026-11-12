@@ -62,7 +62,8 @@ use crate::format::{self, Flags, Header};
 // while every offset an archive reports names the wrong field. The CLI makes the
 // same call about `MAGIC` for the same reason.
 use crate::format::{ENCODER_ID_OFFSET, FLAGS_OFFSET, ORIGINAL_LEN_OFFSET, TOKENIZER_ID_OFFSET};
-use crate::tape;
+use crate::ndjson::{self, Records};
+use crate::tape::{self, Tape};
 
 /// Default input ceiling: 16 MiB. Inputs larger than this are rejected with
 /// [`CompressError::InputTooLarge`] before any work is done.
@@ -113,9 +114,11 @@ const FULL_ENCODERS: &[Encoder] = &[Encoder::E1Minify, Encoder::E2Tabular];
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Profile {
-    /// Minification only — the smallest, safest change to the text.
+    /// Minification only — the smallest, safest change to the text. A JSON Lines
+    /// input, which minification does not apply to, passes through.
     Conservative,
-    /// Minification plus tabular re-encoding. The default.
+    /// Minification plus tabular re-encoding, including the tabular rendering of a
+    /// JSON Lines input's records. The default.
     #[default]
     Balanced,
     /// Every shipped encoder. Identical to [`Profile::Balanced`] in v0.0.1 until
@@ -269,14 +272,15 @@ impl Default for ConfigBuilder {
 /// The type is `#[non_exhaustive]`, so downstream crates cannot construct one — a
 /// later version may add fields. Compare against the associated constants instead
 /// ([`PASSTHROUGH`](Self::PASSTHROUGH), [`E1_MINIFY`](Self::E1_MINIFY),
-/// [`E2_TABULAR`](Self::E2_TABULAR)); without them the derived `PartialEq` would be
+/// [`E2_TABULAR`](Self::E2_TABULAR), [`E4_JSONL`](Self::E4_JSONL)); without them the derived `PartialEq` would be
 /// unusable outside this crate, because there would be no way to build the
 /// right-hand side. The wire id stays readable through the public field for ids a
 /// given build does not name.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EncoderId(
-    /// The frozen id: `0` = passthrough, `1` = E1 minify, `2` = E2 tabular. Reported
+    /// The frozen id: `0` = passthrough, `1` = E1 minify, `2` = E2 tabular, `4` = E4
+    /// JSON Lines. Reported
     /// out-of-band via [`Stats::encoder`]; v0.0.1's compressor always records
     /// `encoder_id = 0` in the archive header, since the archive is a passthrough blob.
     pub u8,
@@ -289,6 +293,9 @@ impl EncoderId {
     pub const E1_MINIFY: Self = Self(1);
     /// Shape-deduplicated tabular re-encoding (wire id `2`).
     pub const E2_TABULAR: Self = Self(2);
+    /// The tabular re-encoding applied to a JSON Lines input's records (wire id `4`;
+    /// `3` is reserved for legend folding, which is not implemented).
+    pub const E4_JSONL: Self = Self(4);
 }
 
 /// What a compression pass achieved.
@@ -352,10 +359,14 @@ pub struct Stats {
     /// Note what that does *not* say. An input the encoders cannot improve — an
     /// already-minified document, say — still reaches passthrough with this `true`:
     /// minification does render it, and the rendering then loses the strict
-    /// comparison by the width of the sentinel. Every profile enables E1, and E1
-    /// declines only on a defensive path that valid JSON does not reach, so a
-    /// passthrough artifact from [`compress`](Compressor::compress) reports `true` in
-    /// practice. What the flag separates in the field is the other case: a pass that
+    /// comparison by the width of the sentinel. Every profile enables E1 for a single
+    /// document, and E1 declines only on a defensive path that valid JSON does not
+    /// reach, so a passthrough artifact from [`compress`](Compressor::compress) of a
+    /// single document reports `true` in practice. A JSON Lines input is the
+    /// exception: its only candidate is the record encoder, which declines when no
+    /// two records give E2 a table, and `Conservative` offers it no candidate at all,
+    /// so a JSON Lines passthrough commonly reports `false`. What the flag separates
+    /// in the field is the other case: a pass that
     /// *won* and still refused something, which says the winning encoder was not the
     /// only one that had a rendering to offer.
     ///
@@ -434,6 +445,15 @@ impl Compressor {
     /// the encoder candidate rule to build the rendering, then frame a `TKFD`
     /// recovery archive around the original bytes.
     ///
+    /// An input the parser rejects as one document with
+    /// [`CompressError::InvalidJson`] is then tried as JSON Lines — one JSON value per
+    /// line, blank lines skipped, at least two records (the rule is in the
+    /// `ndjson` module). A recognised input is rendered by the record encoder
+    /// ([`EncoderId::E4_JSONL`]) under `Balanced` and `Aggressive`, or passed through;
+    /// `Conservative` always passes it through. Its archive holds the original bytes,
+    /// as every archive does. An input that is not JSON Lines either is refused with
+    /// the whole-input error, offset unchanged.
+    ///
     /// # Errors
     ///
     /// Returns [`CompressError::InputTooLarge`] past the configured byte ceiling,
@@ -461,7 +481,18 @@ impl Compressor {
         })?;
 
         // 3. Parse to a lexeme-preserving tape (propagates InvalidJson / DepthExceeded).
-        let parsed = tape::parse(text, self.config.max_depth)?;
+        //    An input rejected as one document is tried as JSON Lines before the
+        //    rejection stands; if that fails too, the whole-input error is returned.
+        let parsed = match tape::parse(text, self.config.max_depth) {
+            Ok(tape) => Parsed::Document(tape),
+            Err(err @ CompressError::InvalidJson { .. }) => {
+                match ndjson::records(text, self.config.max_depth) {
+                    Some(records) => Parsed::Records(records),
+                    None => return Err(err),
+                }
+            }
+            Err(err) => return Err(err),
+        };
 
         // 4. Candidate rule: pick the encoder whose framed rendering is the strictest
         //    token win, or fall back to passthrough at ratio 1.0.
@@ -474,7 +505,19 @@ impl Compressor {
             .min_saving_bps
             .unwrap_or_else(|| estimator.over_claim_bps())
             .min(MAX_SAVING_BPS);
-        let selection = encoder::select(&parsed, text, estimator, enabled, min_saving_bps);
+        let selection = match &parsed {
+            Parsed::Document(tape) => {
+                encoder::select(tape, text, estimator, enabled, min_saving_bps)
+            }
+            Parsed::Records(records) => encoder::select_records(
+                &records.tape,
+                &records.array,
+                text,
+                estimator,
+                record_encoders(self.config.profile),
+                min_saving_bps,
+            ),
+        };
 
         // 5. Recovery archive: a passthrough TKFD blob wrapping the original bytes.
         //    Only passthrough is byte-exact reversible, so the archive header always
@@ -605,6 +648,25 @@ fn enabled_encoders(profile: Profile) -> &'static [Encoder] {
         Profile::Conservative => CONSERVATIVE_ENCODERS,
         Profile::Balanced | Profile::Aggressive => FULL_ENCODERS,
     }
+}
+
+/// The encoders a profile may put forward for a JSON Lines input. The record encoder
+/// is E2's tabular re-encoding, so it is offered exactly where E2 is; under
+/// [`Profile::Conservative`] there is no candidate and a JSON Lines input passes
+/// through.
+fn record_encoders(profile: Profile) -> &'static [Encoder] {
+    match profile {
+        Profile::Conservative => &[],
+        Profile::Balanced | Profile::Aggressive => &[Encoder::E4Jsonl],
+    }
+}
+
+/// What step 3 of [`Compressor::compress`] recognised the input as.
+enum Parsed {
+    /// One JSON document.
+    Document(Tape),
+    /// A JSON Lines input; see [`crate::ndjson`].
+    Records(Records),
 }
 
 #[cfg(test)]

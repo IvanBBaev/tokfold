@@ -92,6 +92,14 @@ of up to six spaces, tabs, CRs and LFs before `{}`: 10–11 estimated, 10–12
 counterparts instead of being measured. Callers that must account for every token
 should measure `Artifact::rendering` directly.
 
+JSON Lines is the one input that is not a single JSON document and is still
+accepted (after `0.0.1`, which rejected it): two or more JSON values, one per line,
+blank and CRLF lines allowed, each line under the nesting limit on its own. Under
+the default `Balanced` profile and `Aggressive` the records are rendered as the
+tabular encoder renders the array of them, behind a `⟦tkfd:v1:jsonl⟧` sentinel,
+when that saves estimated tokens; `Conservative` passes them through. Either way
+the archive holds the original bytes, so `decompress` returns the lines exactly.
+
 **No benchmark numbers are published yet** — they will ship with a versioned
 public corpus and a reproducible harness, or not at all.
 

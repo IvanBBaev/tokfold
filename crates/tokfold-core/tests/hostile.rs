@@ -40,6 +40,8 @@
 //!   differ in one value, swap two keys, drop a key or repeat one — checked through
 //!   the public API with an E2 body decoder written from the grammar in the
 //!   `encoder::e2_tabular` rustdoc;
+//! * JSON Lines of those documents, with blank and CRLF lines, held to the same
+//!   contract with the E2 decoder applied to the records as one array;
 //! * every prefix of a hostile document of at most 256 bytes (the loop is quadratic
 //!   in the document, so longer draws are filtered out), and the size cap at a
 //!   generated limit.
@@ -55,7 +57,8 @@
 //! `compress` must agree; property 2 of the frozen spec says "`compress(decompress(a))`
 //! is a fixed point"; and the rendering body must stand for the input — verbatim on
 //! passthrough, semantically equal under E1, and semantically equal after table
-//! expansion under E2.
+//! expansion under E2 — and under E4, equal after the same expansion to the records
+//! of the JSON Lines input as one array.
 //!
 //! # Case count
 //!
@@ -98,14 +101,27 @@ const DEFAULT_MAX_INPUT_BYTES: usize = 16 * 1024 * 1024;
 // ===========================================================================
 
 /// The sentinel line an encoder's rendering opens with, without its newline. The
-/// tags are the ones `encoder::Encoder` documents: `raw`, `min` and `tbl`.
+/// tags are the ones `encoder::Encoder` documents: `raw`, `min`, `tbl` and `jsonl`.
 fn sentinel_for(encoder: EncoderId) -> Option<&'static str> {
     match encoder {
         EncoderId::PASSTHROUGH => Some("\u{27E6}tkfd:v1:raw\u{27E7}"),
         EncoderId::E1_MINIFY => Some("\u{27E6}tkfd:v1:min\u{27E7}"),
         EncoderId::E2_TABULAR => Some("\u{27E6}tkfd:v1:tbl\u{27E7}"),
+        EncoderId::E4_JSONL => Some("\u{27E6}tkfd:v1:jsonl\u{27E7}"),
         _ => None,
     }
+}
+
+/// The records of a JSON Lines input as one JSON array, by the rule the crate's
+/// `ndjson` module documents: split at every line feed, skip a line made only of
+/// space, tab and carriage return, join the rest with `,` inside `[` `]`. Written
+/// from that rule, not shared with the code under test.
+fn records_array(input: &str) -> String {
+    let records: Vec<&str> = input
+        .split('\n')
+        .filter(|line| !line.bytes().all(|b| matches!(b, b' ' | b'\t' | b'\r')))
+        .collect();
+    format!("[{}]", records.join(","))
 }
 
 /// Compresses `input`, which the caller expects to be accepted, and holds the result
@@ -182,9 +198,58 @@ fn check_accepted(c: &Compressor, input: &str) -> Result<Artifact, TestCaseError
                 expanded
             );
         }
+        EncoderId::E4_JSONL => {
+            // E4 renders E2's table over the records, so its body expands by the same
+            // grammar -- to the records as one array, not to the input, which is not
+            // one document.
+            let expanded = expand_e2_body(body);
+            prop_assert!(
+                expanded.is_some(),
+                "E4 body does not follow the E2 grammar\n  in   = {:?}\n  body = {:?}",
+                input,
+                body
+            );
+            let expanded = expanded.unwrap();
+            let array = records_array(input);
+            prop_assert!(
+                json_semantically_eq(&array, &expanded),
+                "E4 body does not expand to the records\n  records  = {:?}\n  body     = {:?}\n  expanded = {:?}",
+                array,
+                body,
+                expanded
+            );
+        }
         other => prop_assert!(false, "unknown encoder {:?}", other),
     }
     Ok(art)
+}
+
+/// JSON Lines built from hostile documents: 2 to 8 records drawn, with repetition,
+/// from one to three documents, so same-shaped records -- and through the table
+/// documents, record arrays E2 can tabulate -- occur. A document's line feeds are
+/// insignificant whitespace (a JSON string cannot hold a raw one), so each becomes
+/// a space and every document fits on its line. Blank and CRLF-terminated lines are
+/// mixed in by `crlf` and `blank`.
+fn arb_json_lines() -> impl Strategy<Value = String> {
+    (
+        prop::collection::vec(arb_hostile_valid(), 1..=3),
+        prop::collection::vec(any::<prop::sample::Index>(), 2..=8),
+        any::<bool>(),
+        any::<bool>(),
+    )
+        .prop_map(|(docs, picks, crlf, blank)| {
+            let eol = if crlf { "\r\n" } else { "\n" };
+            let mut out = String::new();
+            for (i, pick) in picks.iter().enumerate() {
+                if blank && i == 1 {
+                    out.push_str(" \t");
+                    out.push_str(eol);
+                }
+                out.push_str(&pick.get(&docs).replace('\n', " "));
+                out.push_str(eol);
+            }
+            out
+        })
 }
 
 // ===========================================================================
@@ -800,6 +865,20 @@ proptest! {
         check_accepted(&compressor(), &doc)?;
     }
 
+    /// JSON Lines of hostile records hold the whole contract: byte-exact archive,
+    /// determinism, fixed point, and a body that stands for the records. Only
+    /// passthrough or the record encoder can answer a JSON Lines input -- E1 and E2
+    /// see only single documents.
+    #[test]
+    fn json_lines_of_hostile_records_hold_the_contract(input in arb_json_lines()) {
+        let art = check_accepted(&compressor(), &input)?;
+        prop_assert!(
+            art.stats.encoder == EncoderId::PASSTHROUGH || art.stats.encoder == EncoderId::E4_JSONL,
+            "a JSON Lines input reached {:?}",
+            art.stats.encoder
+        );
+    }
+
     /// Two compressors built independently from equal configs, and one compressor
     /// shared by two threads, give byte-identical renderings, archives and stats.
     /// `Compressor` documents "one instance is safely shared across threads", and the
@@ -1399,6 +1478,30 @@ fn hostile_generators_reach_every_encoder_and_row_kind() {
             "RowEdit::{name} never drawn in {TABLE_DRAWS} table draws"
         );
     }
+}
+
+/// [`json_lines_of_hostile_records_hold_the_contract`] holds the record encoder's
+/// body to the grammar only when E4 wins, so that it wins -- and that passthrough
+/// still occurs -- is pinned here rather than assumed.
+#[test]
+fn the_json_lines_generator_reaches_both_outcomes() {
+    use proptest::strategy::ValueTree;
+    use proptest::test_runner::TestRunner;
+
+    const DRAWS: usize = 300;
+    let mut runner = TestRunner::deterministic();
+    let c = compressor();
+    let (mut raw, mut jsonl) = (0usize, 0usize);
+    for _ in 0..DRAWS {
+        let input = arb_json_lines().new_tree(&mut runner).unwrap().current();
+        match c.compress(input.as_bytes()).unwrap().stats.encoder {
+            EncoderId::PASSTHROUGH => raw += 1,
+            EncoderId::E4_JSONL => jsonl += 1,
+            other => panic!("a JSON Lines input reached {other:?}"),
+        }
+    }
+    assert!(raw > 0, "no passthrough in {DRAWS} JSON Lines draws");
+    assert!(jsonl > 0, "no E4 in {DRAWS} JSON Lines draws");
 }
 
 /// [`number_lexemes_survive_every_encoder`] is named after a claim about every

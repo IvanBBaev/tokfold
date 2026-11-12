@@ -229,7 +229,9 @@ newest handshake-era version it serves.
   `structuredContent`, `compressed`, `stats`, `rendering` and the base64
   `archive`. **The archive is only in `structuredContent`** — see
   [Reading a compress result](#reading-a-compress-result). Input the engine
-  declines — not JSON, or nested deeper than 512 levels — is not a tool error: it
+  declines — not JSON or JSON Lines (one JSON value per line, which is
+  compressed like the array of its records), or nested deeper than 512 levels — is
+  not a tool error: it
   comes back unchanged with `compressed: false`, a `reason` and a `reasonCode`, as
   reply 6 shows, provided the reply fits the frame (see [Limits](#5-limits)). The
   reply carries such text twice, so it stops fitting a little *under* 16 MiB, and a

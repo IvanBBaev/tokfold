@@ -97,8 +97,8 @@ fn compress_tool() -> Value {
          Returns a rendering to embed and an archive that recovers the input exactly. \
          The archive is returned only in `structuredContent.archive`; the `content` \
          block carries the rendering alone, so a client that reads only `content` keeps \
-         text it can never decompress. Input that is not valid JSON is returned \
-         unchanged with `compressed` false — the call never fails for that reason. A \
+         text it can never decompress. Input that is not JSON or JSON Lines comes \
+         back unchanged with `compressed` false — the call never fails for that. A \
          reply larger than the message limit (32 MiB by default) is an error and \
          carries no text, so keep your own copy of a large input.",
         Object::new()
@@ -457,6 +457,8 @@ fn encoder_name(encoder: EncoderId) -> &'static str {
         "minify"
     } else if encoder == EncoderId::E2_TABULAR {
         "tabular"
+    } else if encoder == EncoderId::E4_JSONL {
+        "jsonl"
     } else {
         "unknown"
     }
@@ -678,6 +680,48 @@ mod tests {
         assert_eq!(restored.text, original);
     }
 
+    /// JSON Lines reaches the record encoder through the tool, not only through the
+    /// name table: the default profile renders it under `jsonl` and reports encoder
+    /// id 4 by name, and `conservative`, which offers no record encoder, passes it
+    /// through as accepted input rather than declining it as invalid JSON.
+    #[test]
+    fn json_lines_input_is_compressed_by_the_record_encoder() {
+        let mut lines = String::new();
+        for i in 0..20 {
+            lines.push_str(r#"{\"id\":"#);
+            lines.push_str(&i.to_string());
+            lines.push_str(r#",\"name\":\"item"#);
+            lines.push_str(&i.to_string());
+            lines.push_str(r#"\",\"ok\":true}\n"#);
+        }
+        let stats_of = |profile: &str| {
+            let arguments = args(&format!(r#"{{"text":"{lines}","profile":"{profile}"}}"#));
+            let outcome = call(COMPRESS, Some(&arguments)).unwrap();
+            assert!(!outcome.is_error, "{profile}");
+            assert_eq!(
+                outcome.structured.get("compressed"),
+                Some(&Value::Bool(true)),
+                "{profile}"
+            );
+            let stats = outcome.structured.get("stats").cloned().unwrap();
+            let name = stats
+                .get("encoder")
+                .and_then(Value::as_str)
+                .unwrap()
+                .to_owned();
+            (name, outcome.text)
+        };
+        let (name, text) = stats_of("balanced");
+        assert_eq!(name, "jsonl");
+        assert!(
+            text.starts_with("\u{27E6}tkfd:v1:jsonl\u{27E7}\n"),
+            "{text}"
+        );
+        let (name, text) = stats_of("conservative");
+        assert_eq!(name, "passthrough");
+        assert!(text.starts_with("\u{27E6}tkfd:v1:raw\u{27E7}\n"), "{text}");
+    }
+
     #[test]
     fn non_json_input_passes_through_instead_of_failing() {
         let outcome = call(COMPRESS, Some(&args(r#"{"text":"not json at all"}"#))).unwrap();
@@ -698,10 +742,11 @@ mod tests {
         // The name is written by a comparison chain rather than a `match`, so nothing
         // checks at compile time that each arm returns the name its id is frozen to.
         // The `"unknown"` arm cannot be driven from here: `EncoderId` is
-        // `#[non_exhaustive]`, so this crate can build only the three named ids.
+        // `#[non_exhaustive]`, so this crate can build only the four named ids.
         assert_eq!(encoder_name(EncoderId::PASSTHROUGH), "passthrough");
         assert_eq!(encoder_name(EncoderId::E1_MINIFY), "minify");
         assert_eq!(encoder_name(EncoderId::E2_TABULAR), "tabular");
+        assert_eq!(encoder_name(EncoderId::E4_JSONL), "jsonl");
     }
 
     /// Pins that `estimate` withholds the payload, not merely that two key names
