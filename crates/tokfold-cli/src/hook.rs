@@ -1,0 +1,281 @@
+//! `tokfold hook` — a Claude Code `PostToolUse` hook that hands the model the
+//! rendering of a tool's result instead of the result itself.
+//!
+//! Claude Code runs a hook command with one JSON object on standard input. For a
+//! `PostToolUse` event that object carries the tool's result in `tool_response`, and
+//! a hook that prints
+//! `{"hookSpecificOutput":{"hookEventName":"PostToolUse","updatedToolOutput":…}}`
+//! on standard output replaces what the model sees with that value. This module
+//! decides what, if anything, to print.
+//!
+//! # The policy
+//!
+//! A hook sits in front of every tool call it matches, so the one rule above all
+//! others is that it never costs the call anything: every path below that does not
+//! end in a replacement prints nothing and exits `0`, and Claude Code then shows the
+//! model the original result. A replacement is printed only when all of these hold:
+//!
+//! * standard input is UTF-8 and parses as one JSON object;
+//! * `hook_event_name`, when present, is `PostToolUse` — any other event would be
+//!   handed a `hookSpecificOutput` it does not define;
+//! * `tool_response` is a **non-empty string**. That is how an MCP tool's result
+//!   arrives (measured under Claude Code: the JSON text of the result, as a string).
+//!   A built-in tool's result arrives as an object with a tool-specific shape — Bash's
+//!   is `{stdout, stderr, interrupted, isImage}` — and Claude Code ignores a
+//!   replacement that does not match that shape, so an object is left alone;
+//! * the engine accepts the string and an encoder other than passthrough wins. A
+//!   passthrough rendering is the input behind an 18-byte `⟦tkfd:v1:raw⟧` line, which
+//!   only adds tokens. Skipping it is what turns the hook from a net loss into a net
+//!   saving on real input (see the CLI README);
+//! * the rendering is shorter in bytes than the string it replaces.
+//!
+//! [`respond`] is that policy as a pure function, so the unit tests below reach every
+//! branch without a process; `tests/cli.rs` drives the binary end to end.
+
+use std::io::{self, Read as _};
+use std::panic::{self, AssertUnwindSafe};
+
+use tokfold_core::{Compressor, Config, EncoderId, Profile};
+use tokfold_mcp::json::{self, Object, Value};
+
+/// The only hook event whose output this module knows how to shape.
+pub const EVENT: &str = "PostToolUse";
+
+/// The `settings.json` fragment `tokfold hook --print-config` prints.
+///
+/// The matcher is a regular expression over the tool name, and `mcp__.*` selects
+/// every MCP tool and nothing else: Claude Code names MCP tools
+/// `mcp__<server>__<tool>`, and a matcher of letters, digits, `_` and `|` alone is
+/// compared exactly rather than as a pattern, so `mcp__` by itself would match no
+/// tool. Narrow it to one server with `mcp__<server>__.*`.
+pub const SETTINGS_SNIPPET: &str = r#"{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "mcp__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "tokfold hook"
+          }
+        ]
+      }
+    ]
+  }
+}
+"#;
+
+/// Apply the hook policy to the bytes Claude Code wrote on standard input.
+///
+/// Returns the line to print — the hook output object followed by a newline — or
+/// `None` when the original result should stand. It never fails: every reason to
+/// leave the result alone is a `None`.
+pub fn respond(stdin: &[u8], profile: Profile) -> Option<String> {
+    let text = std::str::from_utf8(stdin).ok()?;
+    let event = json::parse(text).ok()?;
+    if event
+        .get("hook_event_name")
+        .is_some_and(|name| name.as_str() != Some(EVENT))
+    {
+        return None;
+    }
+    let original = event.get("tool_response")?.as_str()?;
+    if original.is_empty() {
+        return None;
+    }
+    let compressor = Compressor::new(Config::builder().profile(profile).build());
+    let artifact = compressor.compress(original.as_bytes()).ok()?;
+    if artifact.stats.encoder == EncoderId::PASSTHROUGH
+        || artifact.rendering.len() >= original.len()
+    {
+        return None;
+    }
+    let output = Object::new()
+        .set(
+            "hookSpecificOutput",
+            Object::new()
+                .set("hookEventName", Value::string(EVENT))
+                .set("updatedToolOutput", Value::Str(artifact.rendering))
+                .build(),
+        )
+        .build();
+    Some(format!("{output}\n"))
+}
+
+/// Run the hook: read standard input, apply [`respond`], print what it returns.
+///
+/// Nothing here can fail the process. A read error, a panic anywhere in the engine
+/// (none is known — the bulkhead is there because a hook that aborts a tool call is
+/// the one outcome this subcommand exists to rule out) and a failed write all end in
+/// the same place as "nothing to replace": exit `0`. A write that fails part-way can
+/// leave a truncated object on standard output; Claude Code cannot parse it as hook
+/// output and shows the original result.
+pub fn run(profile: Profile) {
+    let mut stdin = Vec::new();
+    if io::stdin().lock().read_to_end(&mut stdin).is_err() {
+        return;
+    }
+    let reply = panic::catch_unwind(AssertUnwindSafe(|| respond(&stdin, profile)));
+    if let Ok(Some(line)) = reply {
+        let _ = crate::write_stdout(line.as_bytes());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::{EVENT, SETTINGS_SNIPPET, respond};
+    use tokfold_core::{Compressor, Config, Profile};
+    use tokfold_mcp::json::{self, Object, Value};
+
+    /// A homogeneous array the tabular encoder wins on.
+    const TABULAR: &str = r#"[{"id":0,"name":"item0","active":true},{"id":1,"name":"item1","active":true},{"id":2,"name":"item2","active":true},{"id":3,"name":"item3","active":true}]"#;
+
+    /// Build the stdin object Claude Code sends, with `tool_response` set to `response`.
+    fn event(response: Value) -> String {
+        Object::new()
+            .set("session_id", Value::string("s"))
+            .set("hook_event_name", Value::string(EVENT))
+            .set("tool_name", Value::string("mcp__demo__query"))
+            .set("tool_input", Object::new().build())
+            .set("tool_response", response)
+            .set("tool_use_id", Value::string("toolu_1"))
+            .build()
+            .to_string()
+    }
+
+    fn updated_output(line: &str) -> String {
+        assert!(line.ends_with('\n'), "the reply is one line: {line:?}");
+        let reply = json::parse(line.trim_end_matches('\n')).expect("the reply is JSON");
+        let inner = reply.get("hookSpecificOutput").expect("hookSpecificOutput");
+        assert_eq!(
+            inner.get("hookEventName").and_then(Value::as_str),
+            Some(EVENT)
+        );
+        inner
+            .get("updatedToolOutput")
+            .and_then(Value::as_str)
+            .expect("updatedToolOutput is a string")
+            .to_owned()
+    }
+
+    #[test]
+    fn a_compressible_string_result_is_replaced_by_its_rendering() {
+        let line = respond(event(Value::string(TABULAR)).as_bytes(), Profile::Balanced)
+            .expect("a tabular win is replaced");
+        let expected = Compressor::new(Config::default())
+            .compress(TABULAR.as_bytes())
+            .unwrap()
+            .rendering;
+        assert!(
+            expected.starts_with("\u{27E6}tkfd:v1:tbl\u{27E7}"),
+            "{expected}"
+        );
+        assert_eq!(updated_output(&line), expected);
+    }
+
+    #[test]
+    fn the_profile_reaches_the_engine() {
+        // `Conservative` has no tabular encoder; a compact array leaves minify nothing
+        // to remove, so the same input that `Balanced` replaces stands.
+        assert!(
+            respond(
+                event(Value::string(TABULAR)).as_bytes(),
+                Profile::Conservative
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn a_passthrough_rendering_is_never_printed() {
+        // Valid JSON the engine accepts but no encoder shrinks: a short scalar.
+        let response = "\"a short string\"";
+        let artifact = Compressor::new(Config::default())
+            .compress(response.as_bytes())
+            .unwrap();
+        assert!(
+            artifact
+                .rendering
+                .starts_with("\u{27E6}tkfd:v1:raw\u{27E7}")
+        );
+        assert!(respond(event(Value::string(response)).as_bytes(), Profile::Balanced).is_none());
+    }
+
+    #[test]
+    fn a_rejected_string_is_left_alone() {
+        assert!(
+            respond(
+                event(Value::string("plain text, not JSON")).as_bytes(),
+                Profile::Balanced
+            )
+            .is_none()
+        );
+        assert!(respond(event(Value::string("")).as_bytes(), Profile::Balanced).is_none());
+    }
+
+    #[test]
+    fn a_result_that_is_not_a_string_is_left_alone() {
+        // A built-in tool's result is an object whose shape Claude Code checks; even
+        // when its text would compress, the hook does not touch it.
+        let bash = Object::new()
+            .set("stdout", Value::string(TABULAR))
+            .set("stderr", Value::string(""))
+            .set("interrupted", Value::Bool(false))
+            .set("isImage", Value::Bool(false))
+            .build();
+        assert!(respond(event(bash).as_bytes(), Profile::Balanced).is_none());
+        assert!(respond(event(Value::Null).as_bytes(), Profile::Balanced).is_none());
+    }
+
+    #[test]
+    fn bad_stdin_and_other_events_produce_nothing() {
+        for stdin in [
+            &b""[..],
+            b"not json",
+            b"[]",
+            b"{}",
+            b"\xff\xfe",
+            br#"{"tool_name":"x"}"#,
+        ] {
+            assert!(respond(stdin, Profile::Balanced).is_none(), "{stdin:?}");
+        }
+        let pre = event(Value::string(TABULAR)).replace(EVENT, "PreToolUse");
+        assert!(respond(pre.as_bytes(), Profile::Balanced).is_none());
+    }
+
+    #[test]
+    fn an_event_without_a_name_is_still_answered() {
+        let bare = Object::new()
+            .set("tool_response", Value::string(TABULAR))
+            .build()
+            .to_string();
+        assert!(respond(bare.as_bytes(), Profile::Balanced).is_some());
+    }
+
+    #[test]
+    fn the_settings_snippet_is_json_with_the_documented_matcher() {
+        let settings = json::parse(SETTINGS_SNIPPET).expect("the snippet is JSON");
+        let entry = &settings
+            .get("hooks")
+            .and_then(|h| h.get(EVENT))
+            .and_then(Value::as_array)
+            .and_then(|a| a.first())
+            .expect("a PostToolUse entry");
+        assert_eq!(
+            entry.get("matcher").and_then(Value::as_str),
+            Some("mcp__.*")
+        );
+        let hook = &entry
+            .get("hooks")
+            .and_then(Value::as_array)
+            .and_then(|a| a.first())
+            .unwrap();
+        assert_eq!(hook.get("type").and_then(Value::as_str), Some("command"));
+        assert_eq!(
+            hook.get("command").and_then(Value::as_str),
+            Some("tokfold hook")
+        );
+    }
+}

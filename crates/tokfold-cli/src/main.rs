@@ -1,6 +1,6 @@
 //! `tokfold` — the one shipped binary for the reversible context-compression engine.
 //!
-//! Four subcommands sit on top of [`tokfold_core`]:
+//! Five subcommands sit on top of [`tokfold_core`]:
 //!
 //! * `compress` — read input, emit the token-reduced rendering, optionally persist a
 //!   recovery archive. Compression is an optimization, never a gate: a
@@ -28,6 +28,10 @@
 //!   shipped in the 0.0.1 npm release in exactly that state — labelled experimental
 //!   at every layer a user can meet (the stderr notice, the subcommand's help text,
 //!   the README, and this paragraph) rather than held back until it is hardened.
+//! * `hook` — act as a Claude Code `PostToolUse` hook: replace an MCP tool's result
+//!   with its rendering when an encoder shrinks it, and otherwise print nothing. It
+//!   always exits `0`, because a hook that fails would fail the tool call it sits in
+//!   front of; see the `hook` module.
 //!
 //! Exit codes are normative: `0` success, `2` bad input (usage, I/O, or an input the
 //! compressor rejects on `stats`), `3` a corrupt, empty, or otherwise unrecoverable
@@ -54,6 +58,8 @@ use anyhow::{Context, Result, bail, ensure};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use tokfold_core::format::MAGIC as ARCHIVE_MAGIC;
 use tokfold_core::{Compressor, Config, Profile, Stats};
+
+mod hook;
 
 /// Bad usage, an I/O failure, or an input the compressor rejects on `stats`.
 const EXIT_BAD_INPUT: u8 = 2;
@@ -125,9 +131,23 @@ const ROOT_STREAM_AND_EXIT_HELP: &str = concat!(
      --input names a file, and every diagnostic goes to standard error. `compress` and \
      `expand` write their payload to standard output; `stats` writes a measurement \
      report there and no payload. `mcp` is outside this contract: it speaks a JSON-RPC \
-     stream, takes no --input, and never exits 3.\n\n",
+     stream, takes no --input, and never exits 3. So is `hook`: it reads one Claude \
+     Code hook event and, as a hook, always exits 0.\n\n",
     exit_codes!()
 );
+
+/// The contract for `hook`, which shares none of the payload subcommands' stream text.
+const HOOK_HELP: &str = "Reads one Claude Code hook event (JSON) on standard input. When the \
+     event is PostToolUse, its tool_response is a non-empty string, and an encoder other \
+     than passthrough wins with a rendering shorter than that string, prints \
+     {\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"updatedToolOutput\":\"<rendering>\"}} \
+     on standard output. Otherwise it prints nothing and Claude Code keeps the original \
+     result. A built-in tool's result arrives as an object and is always left alone.\n\n\
+     Exit code: always 0 as a hook, so it can never fail the tool call; a malformed \
+     event, a read error or a rejected input all leave the result unchanged. \
+     --print-config exits 2 if it cannot write the snippet.\n\n\
+     Install: tokfold hook --print-config, and merge the printed object into \
+     ~/.claude/settings.json or a project's .claude/settings.json.";
 
 fn main() -> ExitCode {
     let cli = match Cli::try_parse() {
@@ -267,6 +287,7 @@ fn run(cli: &Cli) -> Result<ExitCode> {
         Command::Expand(args) => cmd_expand(args),
         Command::Stats(args) => cmd_stats(args),
         Command::Mcp => cmd_mcp(),
+        Command::Hook(args) => cmd_hook(args),
     }
 }
 
@@ -1183,6 +1204,21 @@ fn cmd_mcp() -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// `hook`: act as a Claude Code `PostToolUse` hook, or print the settings that install
+/// it.
+///
+/// A hook run exits `0` whatever happens — see [`hook::run`]. `--print-config` is not
+/// a hook run but a setup step a person types, so a failure to write the snippet is
+/// reported like any other command's and exits `2`.
+fn cmd_hook(args: &HookArgs) -> Result<ExitCode> {
+    if args.print_config {
+        write_stdout(hook::SETTINGS_SNIPPET.as_bytes())?;
+    } else {
+        hook::run(args.profile.into());
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 /// Build a [`Config`] from the shared profile flag; all other knobs stay at their
 /// defaults (16 MiB input ceiling, depth 512, heuristic estimator).
 fn config_for(profile: ProfileArg) -> Config {
@@ -1471,6 +1507,24 @@ enum Command {
     /// EXPERIMENTAL Model Context Protocol server on stdio. Unhardened; not for
     /// production secrets.
     Mcp,
+    /// Claude Code hook run after each tool call: replace an MCP tool's result with its rendering
+    /// when an encoder shrinks it. Always exits 0; prints nothing when it leaves the
+    /// result alone.
+    #[command(after_help = HOOK_HELP)]
+    Hook(HookArgs),
+}
+
+/// Arguments for `hook`.
+#[derive(Debug, Args)]
+struct HookArgs {
+    /// Print the settings.json fragment that installs this hook for every MCP tool,
+    /// and exit.
+    #[arg(long)]
+    print_config: bool,
+
+    /// Which encoders may compete for the rendering.
+    #[arg(long, value_enum, default_value = "balanced")]
+    profile: ProfileArg,
 }
 
 /// Arguments for `compress`.

@@ -725,6 +725,21 @@ released says so, and names what `0.0.1` does in the same case.
 
 ### Added
 
+- **`tokfold hook`, a Claude Code `PostToolUse` hook.** It reads one hook event on
+  standard input and, when `tool_response` is a non-empty string (how an MCP tool's
+  result arrives), the engine accepts it, an encoder other than passthrough wins, and
+  the rendering is shorter in bytes, prints
+  `{"hookSpecificOutput":{"hookEventName":"PostToolUse","updatedToolOutput":…}}` so
+  the model is shown the rendering instead of the result. Otherwise it prints nothing.
+  A passthrough is never forwarded: its `⟦tkfd:v1:raw⟧` line only adds tokens. A
+  built-in tool's result is an object and is left alone. As a hook it always exits
+  `0` — a read or write failure, a malformed event and a panic in the engine all
+  leave the result unchanged — so it cannot fail the tool call it sits in front of.
+  `tokfold hook --print-config` prints the `settings.json` fragment (matcher
+  `mcp__.*`) and exits `2` if it cannot write it; `--profile` works as for
+  `compress`. No format change: the rendering is exactly what `tokfold compress`
+  prints for the same text. The measured effect and its scope are in the CLI
+  README, *Using it as a Claude Code hook*.
 - **JSON Lines (NDJSON) input.** An input that is not one JSON document but two or
   more JSON values, one per line, is now accepted where `0.0.1` returned
   `CompressError::InvalidJson` ("trailing data after top-level value"). Recognition

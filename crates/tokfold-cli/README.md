@@ -66,6 +66,8 @@ cargo build --release -p tokfold-cli   # binary at target/release/tokfold
   the `0.0.1` npm release in exactly that state — labelled experimental at every
   layer a user can meet rather than withheld — so treat "experimental" as a current
   description, not a plan.
+- `tokfold hook` — a Claude Code `PostToolUse` hook; see *Using it as a Claude Code
+  hook* below. It always exits `0`.
 
 Exit codes are normative: `0` success, `2` bad input (usage, I/O, or an input the
 compressor rejects on `stats`), `3` a corrupt, empty, or otherwise unrecoverable
@@ -127,6 +129,58 @@ requests >> requests`); elsewhere standard output has no identity to compare
 against and that redirect is not refused, which *The `--archive` path belongs to
 tokfold* states for every command. Earlier in development this subcommand was an
 unimplemented stub that always exited `69`.
+
+`hook` is outside every rule above except the signal deaths: run as a hook it exits
+`0` whatever happens — an unreadable standard input, a standard output it cannot
+write, an event it cannot parse — because a hook that fails fails the tool call it
+sits in front of. `hook --print-config` is a setup step, not a hook run, and exits
+`2` when it cannot write the snippet.
+
+## Using it as a Claude Code hook
+
+`tokfold hook` reads one Claude Code hook event on standard input. When the event is
+`PostToolUse`, its `tool_response` is a non-empty string, the engine accepts that
+string, an encoder other than passthrough wins, and the rendering is shorter in bytes
+than the string, it prints one line —
+
+```json
+{"hookSpecificOutput":{"hookEventName":"PostToolUse","updatedToolOutput":"<rendering>"}}
+```
+
+— and Claude Code shows the model the rendering in place of the tool's result. In
+every other case it prints nothing, and the model sees the original result.
+
+An MCP tool's result reaches a hook as a string holding the tool's JSON text. A
+built-in tool's result arrives as an object with a tool-specific shape (Bash's is
+`{stdout, stderr, interrupted, isImage}`), and Claude Code ignores a replacement that
+does not match it, so the hook leaves objects alone: in practice it acts on MCP tools
+only. Install it for every MCP tool with
+
+```sh
+tokfold hook --print-config
+```
+
+and merge the printed object into `~/.claude/settings.json` or a project's
+`.claude/settings.json`. The matcher `mcp__.*` is a regular expression; narrow it to
+one server with `mcp__<server>__.*`. A matcher made only of letters, digits, `_` and
+`|` is compared exactly, so `mcp__` alone matches no tool. `--profile` selects the
+encoders as it does for `compress` (default `balanced`).
+
+Skipping the passthrough is the point. A passthrough rendering is the input behind an
+18-byte `⟦tkfd:v1:raw⟧` line, so a hook that forwarded every `compress` output would
+make most results longer. Measured on one user's Claude Code transcripts (2 194
+results that are one whole JSON document, 246 of them from a single MCP server), in
+`o200k_base` tokens — a GPT vocabulary, not Claude's — over the original: forwarding
+every `compress` output gives 1.047 on all of them and 0.949 on the MCP ones; this
+hook's policy gives 0.970 and 0.939 (measured through this binary: 165 results
+replaced, 141 of them MCP). The policy compares bytes, not tokens, so 43 of those 165
+replacements, 42 of them MCP, cost more `o200k_base` tokens than the result they
+replaced. That is one workload and one server; measure your own before relying on a
+figure.
+
+The hook writes no recovery archive: what it replaces is what the model is shown.
+Claude Code's hooks documentation states that its telemetry still records the
+original output.
 
 ## The size ceiling is 16 MiB, and reaching it is quiet
 

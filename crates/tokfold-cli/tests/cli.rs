@@ -4515,3 +4515,225 @@ fn a_new_archives_mode_is_what_the_umask_leaves() {
         "the overwrite must actually have happened for the mode above to mean anything"
     );
 }
+
+/// A Claude Code `PostToolUse` event for an MCP tool whose result is `response`, as the
+/// JSON text Claude Code writes on the hook's standard input.
+fn hook_event(response: &str) -> Vec<u8> {
+    tokfold_mcp::json::Object::new()
+        .set("session_id", tokfold_mcp::json::Value::string("s"))
+        .set(
+            "hook_event_name",
+            tokfold_mcp::json::Value::string("PostToolUse"),
+        )
+        .set(
+            "tool_name",
+            tokfold_mcp::json::Value::string("mcp__demo__query"),
+        )
+        .set("tool_input", tokfold_mcp::json::Object::new().build())
+        .set("tool_response", tokfold_mcp::json::Value::string(response))
+        .set("tool_use_id", tokfold_mcp::json::Value::string("toolu_1"))
+        .build()
+        .to_string()
+        .into_bytes()
+}
+
+/// The hook's whole job, through the binary: an MCP result the tabular encoder shrinks
+/// comes back as exactly the object Claude Code reads, carrying exactly what
+/// `tokfold compress` prints for the same text, and nothing goes to standard error.
+#[test]
+fn hook_replaces_a_compressible_mcp_result_with_its_rendering() {
+    let text = std::str::from_utf8(COMPRESSIBLE_JSON).expect("utf-8 fixture");
+    let out = run_tokfold(&["hook"], &hook_event(text));
+    assert_eq!(out.status.code(), Some(0));
+    assert!(
+        out.stderr.is_empty(),
+        "{:?}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stdout = String::from_utf8(out.stdout).expect("the reply is UTF-8");
+    assert!(
+        stdout.ends_with('\n') && stdout.matches('\n').count() == 1,
+        "{stdout:?}"
+    );
+    let reply = tokfold_mcp::json::parse(stdout.trim_end()).expect("the reply is JSON");
+    let inner = reply.get("hookSpecificOutput").expect("hookSpecificOutput");
+    assert_eq!(
+        inner.get("hookEventName").and_then(|v| v.as_str()),
+        Some("PostToolUse")
+    );
+    let updated = inner
+        .get("updatedToolOutput")
+        .and_then(|v| v.as_str())
+        .expect("updatedToolOutput is a string");
+
+    let compressed = run_tokfold(&["compress"], COMPRESSIBLE_JSON);
+    assert_eq!(updated.as_bytes(), &compressed.stdout[..]);
+    assert!(updated.as_bytes().starts_with(SENTINEL_PREFIX));
+    assert!(updated.len() < text.len(), "a replacement must be shorter");
+}
+
+/// Every reason to leave a result alone ends the same way through the binary: nothing
+/// on standard output, nothing on standard error, exit `0`. The passthrough case is
+/// the one that matters most — its frame only adds tokens.
+#[test]
+fn hook_leaves_every_other_result_alone_silently_and_exits_zero() {
+    let bash_shaped = br#"{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_response":{"stdout":"[1,2,3]","stderr":"","interrupted":false,"isImage":false}}"#;
+    let pre_tool_use = String::from_utf8(hook_event(
+        std::str::from_utf8(COMPRESSIBLE_JSON).expect("utf-8 fixture"),
+    ))
+    .expect("utf-8 event")
+    .replace("PostToolUse", "PreToolUse");
+    let cases: [(&str, Vec<u8>); 8] = [
+        ("passthrough", hook_event("\"a short string\"")),
+        ("not JSON", hook_event("plain text, not JSON")),
+        ("empty result", hook_event("")),
+        ("object result", bash_shaped.to_vec()),
+        ("other event", pre_tool_use.into_bytes()),
+        ("empty stdin", Vec::new()),
+        ("garbage stdin", b"not json at all".to_vec()),
+        ("invalid UTF-8", b"\xff\xfe{}".to_vec()),
+    ];
+    for (name, stdin) in cases {
+        let out = run_tokfold(&["hook"], &stdin);
+        assert_eq!(out.status.code(), Some(0), "{name}");
+        assert!(
+            out.stdout.is_empty(),
+            "{name}: {:?}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        assert!(
+            out.stderr.is_empty(),
+            "{name}: {:?}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+/// `--profile` reaches the engine: `conservative` has no tabular encoder and minify
+/// finds nothing to remove in compact JSON, so the result `balanced` replaces stands.
+#[test]
+fn hook_honours_the_profile_flag() {
+    let event = hook_event(std::str::from_utf8(COMPRESSIBLE_JSON).expect("utf-8 fixture"));
+    let out = run_tokfold(&["hook", "--profile", "conservative"], &event);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(out.stdout.is_empty());
+    let out = run_tokfold(&["hook", "--profile", "balanced"], &event);
+    assert!(!out.stdout.is_empty());
+}
+
+/// A hook whose reply cannot be delivered must still not fail the tool call: a
+/// read-only standard output loses the reply and the exit code stays `0`, and so does
+/// an unreadable standard input. The setup command is not a hook run, so the same
+/// output failure there is reported and exits `2`.
+#[cfg(unix)]
+#[test]
+fn an_undeliverable_hook_reply_still_exits_zero_but_print_config_does_not() {
+    let dir = scratch_dir("hook-read-only-stdout");
+    let sink = dir.join("out");
+    fs::write(&sink, b"").expect("create the sink");
+    let event = dir.join("event.json");
+    fs::write(
+        &event,
+        hook_event(std::str::from_utf8(COMPRESSIBLE_JSON).expect("utf-8 fixture")),
+    )
+    .expect("write the event");
+
+    let read_only = || fs::File::open(&sink).expect("open the sink read-only");
+    let hook = run_tokfold_on(
+        &["hook"],
+        Stdio::from(fs::File::open(&event).expect("open the event")),
+        read_only(),
+    );
+    assert_eq!(
+        hook.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&hook.stderr)
+    );
+    assert!(hook.stderr.is_empty());
+
+    // The input side's mirror: a standard input open for writing only is a read
+    // failure, which every payload subcommand reports with `2`. A hook stays silent.
+    let write_only = fs::OpenOptions::new()
+        .write(true)
+        .open(&event)
+        .expect("open the event write-only");
+    let unreadable = run_tokfold_on(
+        &["hook"],
+        Stdio::from(write_only),
+        fs::File::create(dir.join("out2")).expect("create a writable sink"),
+    );
+    assert_eq!(
+        unreadable.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&unreadable.stderr)
+    );
+    assert!(unreadable.stderr.is_empty());
+    assert!(
+        fs::read(dir.join("out2"))
+            .expect("read the sink")
+            .is_empty(),
+        "an unreadable event must produce no reply"
+    );
+
+    let config = run_tokfold_on(&["hook", "--print-config"], Stdio::null(), read_only());
+    assert_eq!(
+        config.status.code(),
+        Some(2),
+        "{}",
+        String::from_utf8_lossy(&config.stderr)
+    );
+}
+
+/// `--print-config` prints a `settings.json` object that installs the hook for every
+/// MCP tool, and reads nothing from standard input.
+#[test]
+fn hook_print_config_prints_the_settings_fragment() {
+    let out = run_tokfold_without_stdin(&["hook", "--print-config"]);
+    assert_eq!(out.status.code(), Some(0));
+    let text = String::from_utf8(out.stdout).expect("utf-8");
+    let settings = tokfold_mcp::json::parse(text.trim_end()).expect("the fragment is JSON");
+    let entry = &settings
+        .get("hooks")
+        .and_then(|h| h.get("PostToolUse"))
+        .and_then(|a| a.as_array())
+        .and_then(|a| a.first())
+        .expect("a PostToolUse entry");
+    assert_eq!(
+        entry.get("matcher").and_then(|m| m.as_str()),
+        Some("mcp__.*")
+    );
+    let hook = &entry
+        .get("hooks")
+        .and_then(|h| h.as_array())
+        .and_then(|a| a.first())
+        .expect("a hook entry");
+    assert_eq!(
+        hook.get("command").and_then(|c| c.as_str()),
+        Some("tokfold hook")
+    );
+}
+
+/// The help screens say what a hook author needs before trusting it: the exit code is
+/// always `0`, and the exact object it prints.
+#[test]
+fn hook_help_states_its_contract() {
+    let help = flatten(&run_tokfold_without_stdin(&["hook", "--help"]).stdout);
+    for phrase in [
+        "always 0 as a hook",
+        "updatedToolOutput",
+        "prints nothing",
+        "--print-config exits 2",
+        "left alone",
+    ] {
+        assert!(
+            help.contains(phrase),
+            "`hook --help` omits {phrase:?}: {help}"
+        );
+    }
+    let root = flatten(&run_tokfold_without_stdin(&["--help"]).stdout);
+    assert!(root.contains("hook"), "{root}");
+    assert!(root.contains("So is `hook`"), "{root}");
+}

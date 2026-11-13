@@ -112,6 +112,26 @@ or a tool get back what was really there.
   and needs a threat model of its own before any of it is written
   (`crates/tokfold-mcp/src/lib.rs`, module docs). This document does not cover it.
 
+### 4. Claude Code hook (`tokfold hook`)
+
+- **Shape.** One process per tool call, started by Claude Code as a `PostToolUse`
+  hook (`crates/tokfold-cli/src/hook.rs`). It reads the whole hook event from
+  standard input (`read_to_end`, with no size bound of its own), parses it with the
+  MCP crate's JSON parser, and, when `tool_response` is a string the engine
+  compresses to a shorter non-passthrough rendering, writes one JSON line naming that
+  rendering as `updatedToolOutput`. Otherwise it writes nothing. It exits `0` in
+  every case but a signal death: a read error, a parse failure, a write error and a
+  panic (caught by `catch_unwind` in `run`) all end with nothing on standard output
+  (a panic still prints Rust's default panic message on standard error). It writes no
+  archive.
+- **Trust boundary.** Claude Code writes the event and is trusted for its envelope;
+  the `tool_response` text inside it is tool output, so A1 applies to it as it does to
+  any input.
+- **What reaches the model.** The rendering, in place of the tool's result: the
+  rendering's meaning (*Semantic integrity of the rendering*) is the asset at stake.
+  Nothing in this process keeps the original, so the model cannot recover it through
+  tokfold.
+
 ## Assets
 
 | Asset | Why it matters |
@@ -121,7 +141,7 @@ or a tool get back what was really there.
 | **The rendering's meaning** | The model acts on the rendering. A rendering that reads differently from the original misleads the agent, even if the archive is intact. |
 | **Availability of the host** | tokfold runs inside, or next to, an agent. A crash, a hang or a runaway allocation takes the agent's tool path down with it. |
 | **Files at the `--archive` path** | `compress` overwrites that path, and can delete it (see *Archive path handling*). |
-| **The file standard output is redirected to** | All four subcommands write there: `expand` the original bytes verbatim, `compress` the rendering, `mcp` its JSON-RPC replies, and `stats` a report whose eight lines carry six numbers and a name-with-id for the encoder and the tokenizer (`format_stats` in `crates/tokfold-cli/src/main.rs`) — the one of the four that puts nothing from the input there. `--help` and `--version` land there too, through clap's printer or `write_stdout` depending on the stream (`parse_failure` in the same file). The CLI does not name that file and does not set its mode (see *Archive path handling*). Until 2026-10-14 this row named three of the four subcommands, omitting the only one whose output is content-free. |
+| **The file standard output is redirected to** | All five subcommands write there: `expand` the original bytes verbatim, `compress` the rendering, `mcp` its JSON-RPC replies, `hook` one JSON line carrying the rendering of the tool result it replaced (or nothing, when it leaves the result alone), and `stats` a report whose eight lines carry six numbers and a name-with-id for the encoder and the tokenizer (`format_stats` in `crates/tokfold-cli/src/main.rs`) — the one of the five that puts nothing from the input there. `--help` and `--version` land there too, through clap's printer or `write_stdout` depending on the stream (`parse_failure` in the same file). The CLI does not name that file and does not set its mode (see *Archive path handling*). Until 2026-10-14 this row named three of the four subcommands, omitting the only one whose output is content-free. |
 
 ## Attacker capabilities considered
 
