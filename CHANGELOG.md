@@ -725,6 +725,18 @@ released says so, and names what `0.0.1` does in the same case.
 
 ### Added
 
+- **A comprehension harness, `bench/comprehension/`.** Asks models, through
+  `claude -p` with no tools, questions about tool-result documents rendered as the
+  original JSON and as `tokfold compress` output from a built binary, and grades the
+  answers against keys computed from the parsed JSON. The default documents are
+  synthetic and seeded; a local corpus can be passed with `--docs`. A run refuses a
+  plan above `--max-calls`, which may not exceed 200, counts retries as calls, has a
+  `--dry-run` and an optional `--max-cost-usd`, and records its configuration
+  (document source and seed, profile, the binary's SHA-256, the repository HEAD, the
+  CLI version, the model ids returned), per-cell accuracy, calls and the cost the CLI
+  reports. Its tests use fake `claude` and `tokfold` executables and call no model;
+  they are not part of CI. No format change.
+
 - **`tokfold hook --tokenizer heuristic|cl100k|o200k`.** Chooses what a rendering
   must be cheaper in before the hook forwards it. `heuristic`, the default, keeps the
   byte comparison unchanged. `cl100k` and `o200k` forward a rendering only when it has
