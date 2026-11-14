@@ -659,10 +659,11 @@ section rather than directly: the *Availability* row for a client that stops rea
 the *Confidentiality* row for file permissions, the *Assets* rows for files at the
 `--archive` path and for the file standard output is redirected to, F6, E2 shape
 interning, forged archives, the Unix-only same-file guards, and the archive's mode
-following the umask. `grep -nE '[Ss]ee \*' docs/threat-model.md` finds those nine plus
-the *Availability* row for oversized input, which carries direct anchors as well; match
-`see \*` rather than a section name, because one of the nine wraps mid-reference. A
-change to one of those places can falsify a sentence here. When one changes, re-read the
+following the umask. `grep -nE '[Ss]ee \*' docs/threat-model.md` finds those nine, the
+*Availability* row for oversized input, which carries direct anchors as well, and the
+opening paragraph's pointer to this section, which anchors no claim about code: eleven
+lines in all; match `see \*` rather than a section name, because one of the nine wraps
+mid-reference. A change to one of those places can falsify a sentence here. When one changes, re-read the
 matching entry rather than assuming it still holds.
 
 The rule does not reach *Attacker capabilities considered* or three of the six
