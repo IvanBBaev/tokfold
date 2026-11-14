@@ -146,15 +146,18 @@ const ROOT_STREAM_AND_EXIT_HELP: &str = concat!(
 /// The contract for `hook`, which shares none of the payload subcommands' stream text.
 const HOOK_HELP: &str = "Reads one Claude Code hook event (JSON) on standard input. When the \
      event is PostToolUse, its tool_response is a non-empty string, and an encoder other \
-     than passthrough wins with a rendering shorter than that string, prints \
+     than passthrough wins with a rendering cheaper than that string -- shorter in bytes, \
+     or with --tokenizer cl100k|o200k strictly fewer tokens in that tokenizer -- prints \
      {\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"updatedToolOutput\":\"<rendering>\"}} \
      on standard output. Otherwise it prints nothing and Claude Code keeps the original \
      result. A built-in tool's result arrives as an object and is always left alone.\n\n\
      Exit code: always 0 as a hook, so it can never fail the tool call; a malformed \
-     event, a read error or a rejected input all leave the result unchanged. \
-     --print-config exits 2 if it cannot write the snippet.\n\n\
+     event, a read error, a rejected input and a --tokenizer this build cannot count \
+     with all leave the result unchanged. --print-config exits 2 if this build cannot \
+     count with its --tokenizer or if it cannot write the snippet.\n\n\
      Install: tokfold hook --print-config, and merge the printed object into \
-     ~/.claude/settings.json or a project's .claude/settings.json.";
+     ~/.claude/settings.json or a project's .claude/settings.json. The command it prints \
+     carries --profile and --tokenizer when they differ from their defaults.";
 
 /// The contract for `bench`, which reads a tree of transcripts rather than one input.
 const BENCH_HELP: &str = "Reads the regular *.jsonl files under PATH (or PATH itself, when it \
@@ -166,7 +169,7 @@ const BENCH_HELP: &str = "Reads the regular *.jsonl files under PATH (or PATH it
      tree.\n\n\
      Every main-chain tool result is compressed with --profile and replaced only when an \
      encoder other than passthrough wins with a rendering shorter in bytes (the rule tokfold \
-     hook applies); --tokenizer only chooses what the texts are counted with. Each number is \
+     hook applies under its default --tokenizer heuristic); --tokenizer only chooses what the texts are counted with. Each number is \
      printed beside the tokenizer and the profile it was measured with. Shares of the bill \
      mix units: tool results in the chosen tokenizer's tokens, the bill in the tokens Claude \
      reported in each request's usage.\n\n\
@@ -1254,13 +1257,49 @@ fn cmd_mcp() -> Result<ExitCode> {
 /// A hook run exits `0` whatever happens — see [`hook::run`]. `--print-config` is not
 /// a hook run but a setup step a person types, so a failure to write the snippet is
 /// reported like any other command's and exits `2`.
+///
+/// The two treat a `--tokenizer` this build cannot count with in opposite ways, for
+/// the same reason. `--print-config` refuses it with exit `2` before printing
+/// anything, so a build without the `tiktoken` feature does not hand out a
+/// `settings.json` entry it cannot honour. A hook run given it anyway — a settings
+/// file copied from a `tiktoken` build — leaves every result alone and exits `0`,
+/// silently, because a hook must not fail the tool call it sits in front of.
 fn cmd_hook(args: &HookArgs) -> Result<ExitCode> {
     if args.print_config {
-        write_stdout(hook::SETTINGS_SNIPPET.as_bytes())?;
+        exact_tokenizer(args.tokenizer)?;
+        write_stdout(hook::settings_snippet(&hook_command(args)).as_bytes())?;
     } else {
-        hook::run(args.profile.into());
+        let price = match args.tokenizer {
+            TokenizerArg::Heuristic => hook::Price::Bytes,
+            exact => hook::Price::Tokens(Box::new(move || exact_tokenizer(exact).ok().flatten())),
+        };
+        hook::run(args.profile.into(), price);
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// The command `--print-config` installs: `tokfold hook`, followed by `--profile` and
+/// `--tokenizer` when either was given a value other than its default, so the hook
+/// that runs is the one the person configured.
+fn hook_command(args: &HookArgs) -> String {
+    let mut command = String::from("tokfold hook");
+    if !matches!(args.profile, ProfileArg::Balanced) {
+        push_flag(&mut command, "--profile", &args.profile);
+    }
+    if args.tokenizer != TokenizerArg::Heuristic {
+        push_flag(&mut command, "--tokenizer", &args.tokenizer);
+    }
+    command
+}
+
+/// Append ` <flag> <value>` to `command`, `value` in the spelling clap parses back.
+fn push_flag<T: ValueEnum>(command: &mut String, flag: &str, value: &T) {
+    if let Some(possible) = value.to_possible_value() {
+        command.push(' ');
+        command.push_str(flag);
+        command.push(' ');
+        command.push_str(possible.get_name());
+    }
 }
 
 /// Build a [`Config`] from the shared profile flag; all other knobs stay at their
@@ -1724,6 +1763,17 @@ struct HookArgs {
     /// Which encoders may compete for the rendering.
     #[arg(long, value_enum, default_value = "balanced")]
     profile: ProfileArg,
+
+    /// What a rendering must be cheaper in to replace the result.
+    ///
+    /// heuristic (the default) replaces a result only with a rendering shorter in
+    /// bytes. cl100k and o200k replace it only with a rendering that has strictly fewer
+    /// tokens in that exact tokenizer. The encoder is chosen by the heuristic estimate
+    /// either way. cl100k and o200k need a build with the `tiktoken` feature; without
+    /// it --print-config refuses them with exit 2, and a hook run leaves every result
+    /// alone and exits 0.
+    #[arg(long, value_enum, default_value = "heuristic")]
+    tokenizer: TokenizerArg,
 }
 
 /// Arguments for `compress`.
@@ -1818,11 +1868,12 @@ struct StatsArgs {
     json: bool,
 }
 
-/// The tokenizer `stats --tokenizer` and `bench --tokenizer` count with.
+/// The tokenizer `stats --tokenizer` and `bench --tokenizer` count with, and the one
+/// `hook --tokenizer` prices a replacement in.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]
 enum TokenizerArg {
     /// The engine's own estimate, the one the do-no-harm gate prices with. Adds no
-    /// rows to `stats`.
+    /// rows to `stats`; `hook` compares bytes under it.
     Heuristic,
     /// Exact `cl100k_base` (GPT-3.5 / GPT-4).
     Cl100k,

@@ -4910,6 +4910,143 @@ fn hook_honours_the_profile_flag() {
     assert!(!out.stdout.is_empty());
 }
 
+/// A tabular array the byte rule and the token rule disagree on: the rendering is one
+/// byte shorter (72 against 73) and costs more real tokens (42 against 39 in
+/// `cl100k`, 44 against 39 in `o200k`).
+const SHORTER_BUT_DEARER: &str =
+    r#"[{"id":0,"v":"x0"},{"id":1,"v":"x1"},{"id":2,"v":"x2"},{"id":3,"v":"x3"}]"#;
+
+/// The default `--tokenizer heuristic` keeps the byte rule: a rendering one byte
+/// shorter is forwarded, whatever it costs in tokens.
+#[test]
+fn hook_compares_bytes_by_default() {
+    let compressed = run_tokfold(&["compress"], SHORTER_BUT_DEARER.as_bytes());
+    assert!(compressed.stdout.len() < SHORTER_BUT_DEARER.len());
+    for args in [&["hook"][..], &["hook", "--tokenizer", "heuristic"]] {
+        let out = run_tokfold(args, &hook_event(SHORTER_BUT_DEARER));
+        assert_eq!(out.status.code(), Some(0), "{args:?}");
+        assert!(!out.stdout.is_empty(), "{args:?}");
+    }
+}
+
+/// With an exact tokenizer the hook forwards a rendering only on strictly fewer real
+/// tokens: the byte-shorter fixture is withheld under both, and `COMPRESSIBLE_JSON`
+/// (54 tokens; its rendering 52 in `cl100k`, 54 in `o200k`) is forwarded under
+/// `cl100k` and withheld under `o200k`, where the counts tie.
+#[cfg(feature = "tiktoken")]
+#[test]
+fn hook_with_an_exact_tokenizer_replaces_only_on_fewer_tokens() {
+    let compressible = std::str::from_utf8(COMPRESSIBLE_JSON).expect("utf-8 fixture");
+    for (tokenizer, input, replaced) in [
+        ("cl100k", SHORTER_BUT_DEARER, false),
+        ("o200k", SHORTER_BUT_DEARER, false),
+        ("cl100k", compressible, true),
+        ("o200k", compressible, false),
+    ] {
+        let out = run_tokfold(&["hook", "--tokenizer", tokenizer], &hook_event(input));
+        assert_eq!(out.status.code(), Some(0), "{tokenizer}");
+        assert!(
+            out.stderr.is_empty(),
+            "{tokenizer}: {:?}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(!out.stdout.is_empty(), replaced, "{tokenizer} on {input}");
+        if replaced {
+            let reply = tokfold_mcp::json::parse(
+                std::str::from_utf8(&out.stdout).expect("utf-8").trim_end(),
+            )
+            .expect("the reply is JSON");
+            let updated = reply
+                .get("hookSpecificOutput")
+                .and_then(|h| h.get("updatedToolOutput"))
+                .and_then(|v| v.as_str())
+                .expect("updatedToolOutput");
+            let compressed = run_tokfold(&["compress"], input.as_bytes());
+            assert_eq!(updated.as_bytes(), &compressed.stdout[..]);
+        }
+    }
+}
+
+/// A build without `tiktoken` cannot count with `cl100k` or `o200k`. A running hook
+/// must never fail the tool call, so it leaves every result alone, silently, with exit
+/// `0` — even one the byte rule would replace. `--print-config` is a setup step, so it
+/// refuses with exit `2` and prints no fragment that would install such a hook.
+#[cfg(not(feature = "tiktoken"))]
+#[test]
+fn a_build_without_tiktoken_passes_through_but_refuses_to_print_the_config() {
+    let event = hook_event(std::str::from_utf8(COMPRESSIBLE_JSON).expect("utf-8 fixture"));
+    for name in ["cl100k", "o200k"] {
+        let out = run_tokfold(&["hook", "--tokenizer", name], &event);
+        assert_eq!(out.status.code(), Some(0), "{name}");
+        assert!(
+            out.stdout.is_empty(),
+            "{name}: {:?}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        assert!(
+            out.stderr.is_empty(),
+            "{name}: {:?}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let config = run_tokfold_without_stdin(&["hook", "--print-config", "--tokenizer", name]);
+        assert_eq!(config.status.code(), Some(2), "{name}");
+        assert!(config.stdout.is_empty(), "{name}");
+        assert_eq!(
+            String::from_utf8_lossy(&config.stderr),
+            format!(
+                "tokfold: --tokenizer {name} needs a tokfold built with the `tiktoken` feature; this build has only the heuristic estimate\n"
+            )
+        );
+    }
+}
+
+/// The command `--print-config` installs carries the flags it was given, so the
+/// installed hook runs the way the setup step was asked for, and omits the defaults.
+#[test]
+fn hook_print_config_carries_non_default_flags_into_the_command() {
+    let mut cases = vec![
+        (
+            vec!["--profile", "conservative"],
+            "tokfold hook --profile conservative",
+        ),
+        (
+            vec!["--profile", "balanced", "--tokenizer", "heuristic"],
+            "tokfold hook",
+        ),
+    ];
+    if cfg!(feature = "tiktoken") {
+        cases.push((
+            vec!["--profile", "aggressive", "--tokenizer", "o200k"],
+            "tokfold hook --profile aggressive --tokenizer o200k",
+        ));
+        cases.push((
+            vec!["--tokenizer", "cl100k"],
+            "tokfold hook --tokenizer cl100k",
+        ));
+    }
+    for (flags, command) in cases {
+        let mut args = vec!["hook", "--print-config"];
+        args.extend(&flags);
+        let out = run_tokfold_without_stdin(&args);
+        assert_eq!(out.status.code(), Some(0), "{flags:?}");
+        let text = String::from_utf8(out.stdout).expect("utf-8");
+        let settings = tokfold_mcp::json::parse(text.trim_end()).expect("the fragment is JSON");
+        let installed = settings
+            .get("hooks")
+            .and_then(|h| h.get("PostToolUse"))
+            .and_then(|a| a.as_array())
+            .and_then(|a| a.first())
+            .and_then(|e| e.get("hooks"))
+            .and_then(|h| h.as_array())
+            .and_then(|a| a.first())
+            .and_then(|h| h.get("command"))
+            .and_then(|c| c.as_str())
+            .map(str::to_owned);
+        assert_eq!(installed.as_deref(), Some(command), "{flags:?}");
+    }
+}
+
 /// A hook whose reply cannot be delivered must still not fail the tool call: a
 /// read-only standard output loses the reply and the exit code stays `0`, and so does
 /// an unreadable standard input. The setup command is not a hook run, so the same
@@ -5015,6 +5152,8 @@ fn hook_help_states_its_contract() {
         "prints nothing",
         "--print-config exits 2",
         "left alone",
+        "strictly fewer tokens",
+        "cannot count with its --tokenizer",
     ] {
         assert!(
             help.contains(phrase),

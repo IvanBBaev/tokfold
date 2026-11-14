@@ -270,7 +270,7 @@ cargo build --release -p tokfold-cli   # binary at target/release/tokfold
 
 It reads one hook event on standard input. An MCP tool's result reaches a hook as a
 string; when the engine accepts that string, an encoder other than passthrough wins,
-and the rendering is shorter in bytes than the string, the hook prints a
+and the rendering is cheaper than the string, the hook prints a
 `hookSpecificOutput` object whose `updatedToolOutput` is the rendering, and Claude
 Code shows the model the rendering instead of the result. In every other case it
 prints nothing and the model sees the original. A passthrough rendering is the input
@@ -282,18 +282,23 @@ unchanged — so it does not fail the tool call it sits in front of; a signal th
 kills the process is the one way around that, as for any process. It writes no
 recovery archive: what it replaces is what the model is shown.
 
-The rule compares bytes, not tokens, so a replacement can cost more tokens than the
-result it replaced. How often that happened on one workload, with the tokenizer it
-was counted in, is in the CLI README's
+"Cheaper" is what `--tokenizer` says. Under `heuristic`, the default, the rendering
+must be shorter in bytes, so a replacement can cost more tokens than the result it
+replaced. Under `cl100k` or `o200k` it must have strictly fewer tokens in that
+tokenizer — a GPT vocabulary, not Claude's — than the original. The encoder is chosen
+by the heuristic either way; `--tokenizer` only decides whether its rendering is
+forwarded. How often the two rules disagreed on one workload, with the tokenizer each
+figure was counted in, is in the CLI README's
 [*Using it as a Claude Code hook*](crates/tokfold-cli/README.md#using-it-as-a-claude-code-hook);
-measure your own with `tokfold bench`.
+measure your own with `tokfold bench`, which applies the default byte rule.
 
 ```sh
 tokfold hook --print-config
 ```
 
 prints the `settings.json` fragment that installs it for every MCP tool (event
-`PostToolUse`, matcher `mcp__.*`, command `tokfold hook`); merge it into
+`PostToolUse`, matcher `mcp__.*`, command `tokfold hook`, followed by `--profile` and
+`--tokenizer` when they were given values other than their defaults); merge it into
 `~/.claude/settings.json` or a project's `.claude/settings.json`. The command is
 looked up on `PATH`, so it must resolve to a build that has `hook`: the npm `0.0.1`
 binary exits `2` on it. `--profile` selects the encoders as it does for `compress`
@@ -304,7 +309,8 @@ binary exits `2` on it. `--profile` selects the encoders as it does for `compres
 `PATH` is a directory of Claude Code transcripts searched recursively for `*.jsonl`
 (such as `~/.claude/projects`), or one transcript. For each tool name, `bench`
 reports the main-chain tool results, their tokens before and after compression with
-`--profile`, the ratio and how many results the hook's rule would replace, with sums
+`--profile`, the ratio and how many results the hook's default byte rule would
+replace, with sums
 for all tools and for the hook's `mcp__.*` matcher. It then prices those results
 against the bill the transcripts record — each request's usage counted once — and
 reports the results' and the saving's share of it. The shares mix units (results in
@@ -351,7 +357,10 @@ cargo build --release -p tokfold-cli --features tiktoken
 
 A build without it — every default build, and the release workflow builds without
 it — refuses `cl100k` and `o200k` with exit `2` before reading any input, for
-`stats` and `bench` alike, and never falls back to the heuristic.
+`stats`, `bench` and `hook --print-config` alike, and never falls back to the
+heuristic. A running `hook --tokenizer cl100k|o200k` in such a build is the one
+exception, because a hook must not fail the tool call it sits in front of: it leaves
+every result alone, prints nothing and exits `0`.
 
 ---
 

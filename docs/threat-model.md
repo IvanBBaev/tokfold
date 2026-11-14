@@ -118,10 +118,12 @@ or a tool get back what was really there.
   hook (`crates/tokfold-cli/src/hook.rs`). It reads the whole hook event from
   standard input (`read_to_end`, with no size bound of its own), parses it with the
   MCP crate's JSON parser, and, when `tool_response` is a string the engine
-  compresses to a shorter non-passthrough rendering, writes one JSON line naming that
-  rendering as `updatedToolOutput`. Otherwise it writes nothing. It exits `0` in
-  every case but a signal death: a read error, a parse failure, a write error and a
-  panic (caught by `catch_unwind` in `run`) all end with nothing on standard output
+  compresses to a cheaper non-passthrough rendering — shorter in bytes under the
+  default `--tokenizer heuristic`, strictly fewer tokens under `cl100k` or `o200k` —
+  writes one JSON line naming that rendering as `updatedToolOutput`. Otherwise it
+  writes nothing. It exits `0` in every case but a signal death: a read error, a parse
+  failure, a write error, an exact tokenizer this build lacks (no `tiktoken` feature)
+  and a panic (caught by `catch_unwind` in `run`) all end with nothing on standard output
   (a panic still prints Rust's default panic message on standard error). It writes no
   archive.
 - **Trust boundary.** Claude Code writes the event and is trusted for its envelope;
@@ -152,9 +154,10 @@ or a tool get back what was really there.
   directory nor a regular file is refused before it is opened. One window is left: a
   regular file replaced by a FIFO between the type check and the open blocks that open.
   The rustdoc of `bench.rs` names it; nothing closes it.
-- **What it decides.** Nothing. The replacement rule it counts is `hook`'s, the
-  do-no-harm gate prices with the heuristic whichever `--tokenizer` is named, and the
-  encoders, the gate and the archive format are those of every other subcommand.
+- **What it decides.** Nothing. The replacement rule it counts is `hook`'s default
+  byte rule, the do-no-harm gate prices with the heuristic whichever `--tokenizer` is
+  named, and the encoders, the gate and the archive format are those of every other
+  subcommand.
 
 ## Assets
 

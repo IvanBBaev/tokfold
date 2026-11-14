@@ -51,9 +51,10 @@
 //!   ignored, and an empty text is not a result. Its tool is the `name` of the
 //!   `tool_use` block in the same file whose `id` is its `tool_use_id`, or
 //!   [`UNKNOWN_TOOL`].
-//! * **The replacement rule** is `tokfold hook`'s: a result is replaced only when the
-//!   engine accepts it and an encoder other than passthrough wins with a rendering
-//!   shorter in bytes than the result. A replaced result's tokens after are the
+//! * **The replacement rule** is `tokfold hook`'s under its default `--tokenizer
+//!   heuristic`, whatever `--tokenizer` this report counts with: a result is replaced
+//!   only when the engine accepts it and an encoder other than passthrough wins with a
+//!   rendering shorter in bytes than the result. A replaced result's tokens after are the
 //!   rendering's; every other result's tokens after are its tokens before. So a ratio
 //!   below `1` is a saving the hook would deliver, and a ratio above `1` is possible
 //!   only under an exact tokenizer that disagrees with the heuristic the gate prices
@@ -853,7 +854,7 @@ impl Report<'_> {
         writeln!(
             out,
             "replaced:  only when an encoder other than passthrough wins with a rendering \
-             shorter in bytes (the tokfold hook rule); otherwise tokens after = tokens before"
+             shorter in bytes (the default tokfold hook rule); otherwise tokens after = tokens before"
         )?;
         writeln!(
             out,

@@ -725,6 +725,24 @@ released says so, and names what `0.0.1` does in the same case.
 
 ### Added
 
+- **`tokfold hook --tokenizer heuristic|cl100k|o200k`.** Chooses what a rendering
+  must be cheaper in before the hook forwards it. `heuristic`, the default, keeps the
+  byte comparison unchanged. `cl100k` and `o200k` forward a rendering only when it has
+  strictly fewer tokens in that tokenizer than the original `tool_response` — a tie
+  leaves the result alone — instead of comparing bytes. The engine still chooses the
+  encoder with its heuristic estimate, so this only withholds or forwards what it
+  produced; the tokenizer is loaded only once there is a rendering to price. The
+  exact tokenizers need the `tiktoken` feature (the `stats` plumbing). Without it the
+  setup step and the hook part ways on purpose: `--print-config --tokenizer cl100k`
+  refuses with exit `2`, as `stats` and `bench` do, while a running hook with that
+  flag never fails the tool call — it leaves every result alone, prints nothing and
+  exits `0`. `--print-config` now writes `--profile` and `--tokenizer` into the
+  printed command when they differ from their defaults. Measured with a `tiktoken`
+  release build, `--profile balanced`, on 2 180 whole-JSON results (246 MCP) from one
+  user's transcripts on 2026-11-14, in `o200k_base` tokens over the original:
+  `heuristic` 0.9718 with 43 of 165 replacements costing more tokens, `o200k` 0.9709
+  with none of 122; the full table, `cl100k_base` included, is in the CLI README.
+  `tokfold bench` keeps the default byte rule. No format change.
 - **Runnable `tokfold-core` examples.** `crates/tokfold-core/examples/` holds three
   programs over the public library API: `roundtrip` (compress a tool result, print the
   rendering and the stats, recover the original from the archive), `profiles`
@@ -739,8 +757,8 @@ released says so, and names what `0.0.1` does in the same case.
 - **`tokfold bench <PATH>`.** Reads the Claude Code transcripts under `PATH` (every
   regular `*.jsonl`, recursively, or one file) and reports what tokfold would save on
   them: per tool name, the main-chain results, tokens before and after, the ratio and
-  how many results the hook's rule would replace (a non-passthrough rendering shorter
-  in bytes), with sums for all tools and for the hook's `mcp__.*` matcher; then the
+  how many results the hook's default rule would replace (a non-passthrough rendering
+  shorter in bytes), with sums for all tools and for the hook's `mcp__.*` matcher; then the
   bill the transcripts record (usage once per request id, in base-input units:
   input 1, 5-minute write 1.25, 1-hour write 2, cache read 0.10, output 5), the mean
   number of later requests a result is re-read on before the next compaction, and the
@@ -778,7 +796,7 @@ released says so, and names what `0.0.1` does in the same case.
 - **`tokfold hook`, a Claude Code `PostToolUse` hook.** It reads one hook event on
   standard input and, when `tool_response` is a non-empty string (how an MCP tool's
   result arrives), the engine accepts it, an encoder other than passthrough wins, and
-  the rendering is shorter in bytes, prints
+  the rendering is shorter in bytes (by default; see `--tokenizer` above), prints
   `{"hookSpecificOutput":{"hookEventName":"PostToolUse","updatedToolOutput":…}}` so
   the model is shown the rendering instead of the result. Otherwise it prints nothing.
   A passthrough is never forwarded: its `⟦tkfd:v1:raw⟧` line only adds tokens. A

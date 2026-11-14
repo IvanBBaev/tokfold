@@ -27,7 +27,24 @@
 //!   passthrough rendering is the input behind an 18-byte `⟦tkfd:v1:raw⟧` line, which
 //!   only adds tokens. Skipping it is what turns the hook from a net loss into a net
 //!   saving on real input (see the CLI README);
-//! * the rendering is shorter in bytes than the string it replaces.
+//! * the rendering is cheaper than the string it replaces, by the measure
+//!   `--tokenizer` names ([`Price`]): with `heuristic`, the default, it is shorter in
+//!   bytes; with `cl100k` or `o200k` it has strictly fewer tokens in that exact
+//!   tokenizer. Bytes and tokens disagree often enough to matter (measured in the
+//!   CLI README, *Using it as a Claude Code hook*). The engine's own choice of encoder
+//!   is not affected — the do-no-harm gate prices with the heuristic whichever
+//!   tokenizer is named — so `--tokenizer` decides only whether the rendering the
+//!   engine produced is printed. The token rule replaces the byte rule rather than
+//!   adding to it, so it could also print a rendering longer in bytes that has fewer
+//!   tokens; no real input doing so was found (2 660 tried on 2026-11-14: 480
+//!   synthetic arrays and the 2 180 results of the CLI README's corpus), so that branch
+//!   is pinned only with a stand-in tokenizer in the unit tests.
+//!
+//! An exact tokenizer is loaded only once a non-passthrough rendering exists to be
+//! priced, and a hook that cannot load one — a build without the `tiktoken` feature,
+//! or tables that fail to build — leaves the result alone like every other refusal.
+//! `--print-config` is where a build that lacks the tokenizer says so (exit `2`):
+//! it is a setup step a person types, so failing there costs no tool call.
 //!
 //! [`respond`] is that policy as a pure function, so the unit tests below reach every
 //! branch without a process; `tests/cli.rs` drives the binary end to end.
@@ -35,42 +52,60 @@
 use std::io::{self, Read as _};
 use std::panic::{self, AssertUnwindSafe};
 
-use tokfold_core::{Compressor, Config, EncoderId, Profile};
+use tokfold_core::{Compressor, Config, EncoderId, Profile, TokenEstimator};
 use tokfold_mcp::json::{self, Object, Value};
 
 /// The only hook event whose output this module knows how to shape.
 pub const EVENT: &str = "PostToolUse";
 
-/// The `settings.json` fragment `tokfold hook --print-config` prints.
+/// The `settings.json` fragment `tokfold hook --print-config` prints, installing
+/// `command` (`tokfold hook` followed by any flag the caller gave a value other than
+/// its default).
 ///
 /// The matcher is a regular expression over the tool name, and `mcp__.*` selects
 /// every MCP tool and nothing else: Claude Code names MCP tools
 /// `mcp__<server>__<tool>`, and a matcher of letters, digits, `_` and `|` alone is
 /// compared exactly rather than as a pattern, so `mcp__` by itself would match no
 /// tool. Narrow it to one server with `mcp__<server>__.*`.
-pub const SETTINGS_SNIPPET: &str = r#"{
-  "hooks": {
+pub fn settings_snippet(command: &str) -> String {
+    let command = Value::string(command);
+    format!(
+        r#"{{
+  "hooks": {{
     "PostToolUse": [
-      {
+      {{
         "matcher": "mcp__.*",
         "hooks": [
-          {
+          {{
             "type": "command",
-            "command": "tokfold hook"
-          }
+            "command": {command}
+          }}
         ]
-      }
+      }}
     ]
-  }
+  }}
+}}
+"#
+    )
 }
-"#;
+
+/// What a rendering must be cheaper in before it replaces the tool's result.
+pub enum Price {
+    /// Fewer bytes than the original: `--tokenizer heuristic`, the default.
+    Bytes,
+    /// Strictly fewer tokens than the original in the tokenizer `load` returns:
+    /// `--tokenizer cl100k|o200k`. `load` runs only when there is a rendering to
+    /// price, and at most once; `None` from it leaves the result alone.
+    Tokens(Box<dyn FnOnce() -> Option<Box<dyn TokenEstimator>>>),
+}
 
 /// Apply the hook policy to the bytes Claude Code wrote on standard input.
 ///
 /// Returns the line to print — the hook output object followed by a newline — or
 /// `None` when the original result should stand. It never fails: every reason to
-/// leave the result alone is a `None`.
-pub fn respond(stdin: &[u8], profile: Profile) -> Option<String> {
+/// leave the result alone is a `None`, an exact tokenizer that cannot be loaded
+/// among them.
+pub fn respond(stdin: &[u8], profile: Profile, price: Price) -> Option<String> {
     let text = std::str::from_utf8(stdin).ok()?;
     let event = json::parse(text).ok()?;
     if event
@@ -85,9 +120,17 @@ pub fn respond(stdin: &[u8], profile: Profile) -> Option<String> {
     }
     let compressor = Compressor::new(Config::builder().profile(profile).build());
     let artifact = compressor.compress(original.as_bytes()).ok()?;
-    if artifact.stats.encoder == EncoderId::PASSTHROUGH
-        || artifact.rendering.len() >= original.len()
-    {
+    if artifact.stats.encoder == EncoderId::PASSTHROUGH {
+        return None;
+    }
+    let cheaper = match price {
+        Price::Bytes => artifact.rendering.len() < original.len(),
+        Price::Tokens(load) => {
+            let counter = load()?;
+            counter.estimate(&artifact.rendering) < counter.estimate(original)
+        }
+    };
+    if !cheaper {
         return None;
     }
     let output = Object::new()
@@ -105,17 +148,17 @@ pub fn respond(stdin: &[u8], profile: Profile) -> Option<String> {
 /// Run the hook: read standard input, apply [`respond`], print what it returns.
 ///
 /// Nothing here can fail the process. A read error, a panic anywhere in the engine
-/// (none is known — the bulkhead is there because a hook that aborts a tool call is
-/// the one outcome this subcommand exists to rule out) and a failed write all end in
-/// the same place as "nothing to replace": exit `0`. A write that fails part-way can
+/// or the tokenizer (none is known — the bulkhead is there because a hook that aborts
+/// a tool call is the one outcome this subcommand exists to rule out) and a failed
+/// write all end in the same place as "nothing to replace": exit `0`. A write that fails part-way can
 /// leave a truncated object on standard output; Claude Code cannot parse it as hook
 /// output and shows the original result.
-pub fn run(profile: Profile) {
+pub fn run(profile: Profile, price: Price) {
     let mut stdin = Vec::new();
     if io::stdin().lock().read_to_end(&mut stdin).is_err() {
         return;
     }
-    let reply = panic::catch_unwind(AssertUnwindSafe(|| respond(&stdin, profile)));
+    let reply = panic::catch_unwind(AssertUnwindSafe(|| respond(&stdin, profile, price)));
     if let Ok(Some(line)) = reply {
         let _ = crate::write_stdout(line.as_bytes());
     }
@@ -125,8 +168,10 @@ pub fn run(profile: Profile) {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-    use super::{EVENT, SETTINGS_SNIPPET, respond};
-    use tokfold_core::{Compressor, Config, Profile};
+    use super::{EVENT, Price, respond, settings_snippet};
+    use std::cell::Cell;
+    use std::rc::Rc;
+    use tokfold_core::{Compressor, Config, Profile, TokenEstimator};
     use tokfold_mcp::json::{self, Object, Value};
 
     /// A homogeneous array the tabular encoder wins on.
@@ -162,8 +207,12 @@ mod tests {
 
     #[test]
     fn a_compressible_string_result_is_replaced_by_its_rendering() {
-        let line = respond(event(Value::string(TABULAR)).as_bytes(), Profile::Balanced)
-            .expect("a tabular win is replaced");
+        let line = respond(
+            event(Value::string(TABULAR)).as_bytes(),
+            Profile::Balanced,
+            Price::Bytes,
+        )
+        .expect("a tabular win is replaced");
         let expected = Compressor::new(Config::default())
             .compress(TABULAR.as_bytes())
             .unwrap()
@@ -182,7 +231,8 @@ mod tests {
         assert!(
             respond(
                 event(Value::string(TABULAR)).as_bytes(),
-                Profile::Conservative
+                Profile::Conservative,
+                Price::Bytes,
             )
             .is_none()
         );
@@ -200,7 +250,14 @@ mod tests {
                 .rendering
                 .starts_with("\u{27E6}tkfd:v1:raw\u{27E7}")
         );
-        assert!(respond(event(Value::string(response)).as_bytes(), Profile::Balanced).is_none());
+        assert!(
+            respond(
+                event(Value::string(response)).as_bytes(),
+                Profile::Balanced,
+                Price::Bytes
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -208,11 +265,19 @@ mod tests {
         assert!(
             respond(
                 event(Value::string("plain text, not JSON")).as_bytes(),
-                Profile::Balanced
+                Profile::Balanced,
+                Price::Bytes,
             )
             .is_none()
         );
-        assert!(respond(event(Value::string("")).as_bytes(), Profile::Balanced).is_none());
+        assert!(
+            respond(
+                event(Value::string("")).as_bytes(),
+                Profile::Balanced,
+                Price::Bytes
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -225,8 +290,15 @@ mod tests {
             .set("interrupted", Value::Bool(false))
             .set("isImage", Value::Bool(false))
             .build();
-        assert!(respond(event(bash).as_bytes(), Profile::Balanced).is_none());
-        assert!(respond(event(Value::Null).as_bytes(), Profile::Balanced).is_none());
+        assert!(respond(event(bash).as_bytes(), Profile::Balanced, Price::Bytes).is_none());
+        assert!(
+            respond(
+                event(Value::Null).as_bytes(),
+                Profile::Balanced,
+                Price::Bytes
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -239,10 +311,13 @@ mod tests {
             b"\xff\xfe",
             br#"{"tool_name":"x"}"#,
         ] {
-            assert!(respond(stdin, Profile::Balanced).is_none(), "{stdin:?}");
+            assert!(
+                respond(stdin, Profile::Balanced, Price::Bytes).is_none(),
+                "{stdin:?}"
+            );
         }
         let pre = event(Value::string(TABULAR)).replace(EVENT, "PreToolUse");
-        assert!(respond(pre.as_bytes(), Profile::Balanced).is_none());
+        assert!(respond(pre.as_bytes(), Profile::Balanced, Price::Bytes).is_none());
     }
 
     #[test]
@@ -251,12 +326,120 @@ mod tests {
             .set("tool_response", Value::string(TABULAR))
             .build()
             .to_string();
-        assert!(respond(bare.as_bytes(), Profile::Balanced).is_some());
+        assert!(respond(bare.as_bytes(), Profile::Balanced, Price::Bytes).is_some());
+    }
+
+    /// A tabular array whose rendering is *longer* in bytes (65 against 58) although
+    /// the engine's heuristic still picks the tabular encoder for it.
+    const LONGER_IN_BYTES: &str = r#"[{"id":10,"v":"aa"},{"id":20,"v":"aa"},{"id":30,"v":"aa"}]"#;
+
+    /// A stand-in tokenizer: every rendering (it opens with the sentinel) costs
+    /// `rendering`, every other text costs `original`.
+    struct Fake {
+        rendering: usize,
+        original: usize,
+    }
+
+    impl TokenEstimator for Fake {
+        fn estimate(&self, text: &str) -> usize {
+            if text.starts_with('\u{27E6}') {
+                self.rendering
+            } else {
+                self.original
+            }
+        }
+        fn tokenizer_id(&self) -> u16 {
+            u16::MAX
+        }
+    }
+
+    /// A `Price::Tokens` whose loader records that it ran and returns `Fake`.
+    fn priced(rendering: usize, original: usize) -> (Price, Rc<Cell<u32>>) {
+        let calls = Rc::new(Cell::new(0));
+        let seen = Rc::clone(&calls);
+        let price = Price::Tokens(Box::new(move || {
+            seen.set(seen.get() + 1);
+            Some(Box::new(Fake {
+                rendering,
+                original,
+            }) as Box<dyn TokenEstimator>)
+        }));
+        (price, calls)
+    }
+
+    #[test]
+    fn a_token_price_replaces_only_on_strictly_fewer_tokens() {
+        let stdin = event(Value::string(TABULAR));
+        let by_bytes = respond(stdin.as_bytes(), Profile::Balanced, Price::Bytes).unwrap();
+
+        let (cheaper, calls) = priced(9, 10);
+        let line = respond(stdin.as_bytes(), Profile::Balanced, cheaper).unwrap();
+        assert_eq!(line, by_bytes, "the same reply, priced another way");
+        assert_eq!(calls.get(), 1);
+
+        for (rendering, original) in [(10, 10), (11, 10)] {
+            let (price, calls) = priced(rendering, original);
+            assert!(
+                respond(stdin.as_bytes(), Profile::Balanced, price).is_none(),
+                "{rendering} against {original} tokens"
+            );
+            assert_eq!(calls.get(), 1);
+        }
+    }
+
+    /// The token rule replaces the byte rule rather than adding to it: a rendering
+    /// longer in bytes but cheaper in tokens is forwarded, and the byte rule refuses it.
+    /// `Fake` stands in for the tokenizer because neither exact one is known to price
+    /// a byte-longer rendering cheaper (`cl100k` counts this one 27 -> 33).
+    #[test]
+    fn a_token_price_does_not_also_compare_bytes() {
+        let stdin = event(Value::string(LONGER_IN_BYTES));
+        assert!(respond(stdin.as_bytes(), Profile::Balanced, Price::Bytes).is_none());
+        let (price, _) = priced(1, 2);
+        let rendering =
+            updated_output(&respond(stdin.as_bytes(), Profile::Balanced, price).unwrap());
+        assert!(rendering.len() > LONGER_IN_BYTES.len(), "{rendering:?}");
+    }
+
+    #[test]
+    fn a_tokenizer_that_cannot_load_leaves_the_result_alone() {
+        let price = Price::Tokens(Box::new(|| None));
+        assert!(
+            respond(
+                event(Value::string(TABULAR)).as_bytes(),
+                Profile::Balanced,
+                price
+            )
+            .is_none()
+        );
+    }
+
+    /// The tokenizer is loaded only once there is a rendering to price: every other
+    /// reason to leave a result alone returns before the loader runs.
+    #[test]
+    fn the_tokenizer_is_not_loaded_without_a_rendering_to_price() {
+        let other_event = event(Value::string(TABULAR)).replace(EVENT, "PreToolUse");
+        let cases = [
+            event(Value::string("\"a short string\"")),
+            event(Value::string("plain text, not JSON")),
+            event(Value::string("")),
+            event(Value::Null),
+            other_event,
+            "not json".to_owned(),
+        ];
+        for stdin in cases {
+            let (price, calls) = priced(1, 2);
+            assert!(
+                respond(stdin.as_bytes(), Profile::Balanced, price).is_none(),
+                "{stdin}"
+            );
+            assert_eq!(calls.get(), 0, "{stdin}");
+        }
     }
 
     #[test]
     fn the_settings_snippet_is_json_with_the_documented_matcher() {
-        let settings = json::parse(SETTINGS_SNIPPET).expect("the snippet is JSON");
+        let settings = json::parse(&settings_snippet("tokfold hook")).expect("the snippet is JSON");
         let entry = &settings
             .get("hooks")
             .and_then(|h| h.get(EVENT))

@@ -183,8 +183,8 @@ sits in front of. `hook --print-config` is a setup step, not a hook run, and exi
 
 `tokfold hook` reads one Claude Code hook event on standard input. When the event is
 `PostToolUse`, its `tool_response` is a non-empty string, the engine accepts that
-string, an encoder other than passthrough wins, and the rendering is shorter in bytes
-than the string, it prints one line —
+string, an encoder other than passthrough wins, and the rendering is cheaper than the
+string, it prints one line —
 
 ```json
 {"hookSpecificOutput":{"hookEventName":"PostToolUse","updatedToolOutput":"<rendering>"}}
@@ -209,17 +209,43 @@ one server with `mcp__<server>__.*`. A matcher made only of letters, digits, `_`
 `|` is compared exactly, so `mcp__` alone matches no tool. `--profile` selects the
 encoders as it does for `compress` (default `balanced`).
 
+`--tokenizer` decides what "cheaper" means. Under `heuristic`, the default, the
+rendering must be shorter in bytes. Under `cl100k` or `o200k` it must have strictly
+fewer tokens in that tokenizer than the original string; a tie leaves the result
+alone. The encoder is still chosen by the engine's heuristic estimate either way, so
+`--tokenizer` only withholds or forwards what the engine produced. Counting in
+`cl100k` or `o200k` needs a build with the `tiktoken` feature, which the release and
+npm binaries do not have. In a build without it, `--print-config --tokenizer cl100k`
+refuses with exit `2` — installing a hook that cannot count is a setup mistake — while
+a hook already running with that flag never fails the tool call: it leaves every
+result alone, prints nothing and exits `0`. `--print-config` writes `--profile` and
+`--tokenizer` into the command it prints whenever they differ from their defaults.
+
 Skipping the passthrough is the point. A passthrough rendering is the input behind an
 18-byte `⟦tkfd:v1:raw⟧` line, so a hook that forwarded every `compress` output would
 make most results longer. Measured on one user's Claude Code transcripts (2 194
 results that are one whole JSON document, 246 of them from a single MCP server), in
 `o200k_base` tokens — a GPT vocabulary, not Claude's — over the original: forwarding
-every `compress` output gives 1.047 on all of them and 0.949 on the MCP ones; this
-hook's policy gives 0.970 and 0.939 (measured through this binary: 165 results
-replaced, 141 of them MCP). The policy compares bytes, not tokens, so 43 of those 165
-replacements, 42 of them MCP, cost more `o200k_base` tokens than the result they
-replaced. That is one workload and one server; measure your own before relying on a
-figure.
+every `compress` output gives 1.047 on all of them and 0.949 on the MCP ones.
+
+What `--tokenizer` changes, measured with a release build with `tiktoken` from the
+working tree of 2026-11-14, `--profile balanced`, over the same kind of corpus taken
+again that day (2 180 whole-JSON results of at least 200 bytes from the 40 largest
+transcripts, 246 of them MCP), counted with Python `tiktoken` 0.14.0. Tokens the model
+is shown over the original, all results / MCP only:
+
+| `--tokenizer` | replaced (MCP) | `o200k_base` | worse in `o200k_base` | `cl100k_base` | worse in `cl100k_base` |
+|---|---|---|---|---|---|
+| `heuristic` | 165 (141) | 0.9718 / 0.9394 | 43 (42 MCP) | 0.9751 / 0.9476 | 44 (43 MCP) |
+| `o200k` | 122 (99) | 0.9709 / 0.9371 | 0 | 0.9739 / 0.9447 | 2 (2 MCP) |
+| `cl100k` | 120 (97) | 0.9709 / 0.9372 | 0 | 0.9739 / 0.9447 | 0 |
+
+So comparing bytes forwards about a quarter of its replacements at a loss, and an
+exact tokenizer removes those losses in its own vocabulary — but the saving moves by
+less than a point, because each of those losses is small. On this corpus the exact
+tokenizers only withheld: neither forwarded a result the byte rule left alone.
+Neither vocabulary is Claude's. That is one workload and one server; measure your own
+before relying on a figure.
 
 The hook writes no recovery archive: what it replaces is what the model is shown.
 Claude Code's hooks documentation states that its telemetry still records the
