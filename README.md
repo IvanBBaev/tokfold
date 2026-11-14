@@ -31,6 +31,9 @@ for the command line.
   published at `0.0.1` with npm provenance attestations. See `npm/README.md` for
   why the launcher is published last, and for why the Windows package is
   `tokfold-windows-x64` rather than the `win32` name Node itself uses.
+  The `0.0.1` packages predate `tokfold hook`, `tokfold bench`, `stats --json` and
+  `stats --tokenizer`: those are on `main` and unreleased — see
+  [Command line](#command-line).
 - The one badge above is the CI badge, and it is narrower than it looks. The
   workflow in `.github/workflows/ci.yml` really does run on every pull request and
   on every push to `main`, and pushes to other branches run nothing — open a pull
@@ -241,6 +244,114 @@ figure would be a number nobody could reproduce — which is exactly the marketi
 dishonesty this project positions itself against. So there are zero performance
 numbers in this README, and that is deliberate. When numbers arrive, they will
 arrive with the corpus and the code to regenerate them.
+
+---
+
+## Command line
+
+The `tokfold` binary has six subcommands: `compress`, `expand`, `stats`, `mcp`,
+`hook` and `bench`. `tokfold --help` and each subcommand's `--help` are the
+reference; [`crates/tokfold-cli/README.md`](crates/tokfold-cli/README.md) documents
+every subcommand with its exit codes. This section covers the subcommands and flags
+added since `0.0.1`. JSON Lines input, which `compress` and `stats` also accept since
+then, is described under [Shape of the API](#shape-of-the-api-current-unstable).
+
+**Unreleased.** `tokfold hook`, `tokfold bench`, `stats --json` and
+`stats --tokenizer` are on `main` and in no published package. The `0.0.1` binary on
+npm refuses each of them as a usage error and exits `2` (`unrecognized subcommand` /
+`unexpected argument`) — measured on the registry's `tokfold-darwin-arm64` build. To
+use them, build the CLI from this repository:
+
+```sh
+cargo build --release -p tokfold-cli   # binary at target/release/tokfold
+```
+
+### `tokfold hook` — a Claude Code `PostToolUse` hook
+
+It reads one hook event on standard input. An MCP tool's result reaches a hook as a
+string; when the engine accepts that string, an encoder other than passthrough wins,
+and the rendering is shorter in bytes than the string, the hook prints a
+`hookSpecificOutput` object whose `updatedToolOutput` is the rendering, and Claude
+Code shows the model the rendering instead of the result. In every other case it
+prints nothing and the model sees the original. A passthrough rendering is the input
+behind an 18-byte `⟦tkfd:v1:raw⟧` line, so it is never forwarded. A built-in tool's
+result arrives as an object and is left alone, so in practice the hook acts on MCP
+tools only. As a hook it exits `0` whatever it is given — a malformed event, an
+unreadable standard input or an unwritable standard output leaves the result
+unchanged — so it does not fail the tool call it sits in front of; a signal that
+kills the process is the one way around that, as for any process. It writes no
+recovery archive: what it replaces is what the model is shown.
+
+The rule compares bytes, not tokens, so a replacement can cost more tokens than the
+result it replaced. How often that happened on one workload, with the tokenizer it
+was counted in, is in the CLI README's
+[*Using it as a Claude Code hook*](crates/tokfold-cli/README.md#using-it-as-a-claude-code-hook);
+measure your own with `tokfold bench`.
+
+```sh
+tokfold hook --print-config
+```
+
+prints the `settings.json` fragment that installs it for every MCP tool (event
+`PostToolUse`, matcher `mcp__.*`, command `tokfold hook`); merge it into
+`~/.claude/settings.json` or a project's `.claude/settings.json`. The command is
+looked up on `PATH`, so it must resolve to a build that has `hook`: the npm `0.0.1`
+binary exits `2` on it. `--profile` selects the encoders as it does for `compress`
+(default `balanced`).
+
+### `tokfold bench <PATH>` — what the hook would save, on your transcripts
+
+`PATH` is a directory of Claude Code transcripts searched recursively for `*.jsonl`
+(such as `~/.claude/projects`), or one transcript. For each tool name, `bench`
+reports the main-chain tool results, their tokens before and after compression with
+`--profile`, the ratio and how many results the hook's rule would replace, with sums
+for all tools and for the hook's `mcp__.*` matcher. It then prices those results
+against the bill the transcripts record — each request's usage counted once — and
+reports the results' and the saving's share of it. The shares mix units (results in
+the chosen tokenizer's tokens, the bill in the tokens Claude reported), and the
+report says so. Every number is printed beside the tokenizer and the profile it was
+measured with; the pricing model is in the CLI README.
+
+It reads only: no standard input, no network, no file written. Symbolic links and
+special files inside the tree are skipped and counted, never opened. It prints
+aggregates and tool names, never a result, a message or a path inside the tree.
+`--tokenizer` takes the values `stats` does, and `--json` prints the report as one
+line. This README quotes none of its output (see [Benchmarks](#benchmarks)): a
+transcript corpus is one person's workload, and `bench` exists so you can measure
+yours.
+
+### `tokfold stats --json` and `stats --tokenizer`
+
+`--json` prints the pass as one line of JSON instead of the aligned text report,
+which stays the default. The line is the `stats` object every MCP tool reply
+carries — `bytesBefore`, `bytesAfter`, `estTokensBefore`, `estTokensAfter`,
+`byteRatio`, `tokenRatio`, `encoder`, `encoderId`, `tokenizerId`, `minSavingBps`,
+`fidelity` — with the MCP encoder names (`minify`, `tabular`, `jsonl`,
+`passthrough`) and unrounded ratios. A rejected input still exits `2` with nothing on
+standard output.
+
+`--tokenizer cl100k` or `--tokenizer o200k` also counts the input and the rendering
+with an exact GPT tokenizer — a GPT vocabulary, not Claude's — and adds four
+rows to the text report (`real tokens before`, `real tokens after`, `real token
+ratio`, `real tokenizer`) and four keys to the JSON line (`realTokensBefore`,
+`realTokensAfter`, `realTokenRatio`, `realTokenizerId`); `heuristic`, the default,
+adds nothing. It is reporting only: the do-no-harm gate still prices with the
+heuristic estimate, so the encoder, every other row and the archive are the ones the
+heuristic chose, and an exact ratio above `1.0000` is a rendering the heuristic
+priced as a win. On the passthrough path `real tokens after` is set equal to `real
+tokens before`, as the estimated `after` figures are (see
+[Shape of the API](#shape-of-the-api-current-unstable)).
+
+The exact tokenizers need the CLI's non-default `tiktoken` feature, which embeds
+megabytes of BPE tables:
+
+```sh
+cargo build --release -p tokfold-cli --features tiktoken
+```
+
+A build without it — every default build, and the release workflow builds without
+it — refuses `cl100k` and `o200k` with exit `2` before reading any input, for
+`stats` and `bench` alike, and never falls back to the heuristic.
 
 ---
 

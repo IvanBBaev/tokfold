@@ -931,6 +931,15 @@ released says so, and names what `0.0.1` does in the same case.
   second source of truth.
 
 ### Documentation
+- **The root README documents `tokfold hook`, `tokfold bench`, `stats --json` and
+  `stats --tokenizer`.** A new *Command line* section covers what each does, how the
+  hook is installed, what `bench` reads and never prints, and that the exact
+  tokenizers need the non-default `tiktoken` feature. It states that all four are
+  unreleased: the `0.0.1` binary on npm refuses each as a usage error with exit `2`
+  (measured on the registry's `tokfold-darwin-arm64` build, `bin/tokfold` SHA-1
+  `8e2ed283…`), so the hook's `settings.json` command must resolve to a build from this
+  repository. The *Status* section's npm bullet points there. The new section quotes
+  no figure from `bench` or from the hook's measurement, which stays in the CLI README.
 - **An `include` list was offered as proof of what git tracks.**
   `docs/threat-model.md`'s F2 entry supported "no benchmark corpus is committed" with
   `tokfold-core`'s `include` list, which "names local benchmark corpora among what it
