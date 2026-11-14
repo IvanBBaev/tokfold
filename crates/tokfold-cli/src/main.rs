@@ -1186,19 +1186,18 @@ fn cmd_stats(args: &StatsArgs) -> Result<ExitCode> {
 
     match compressor.compress(&input) {
         Ok(artifact) => {
-            let mut report = format_stats(&artifact.stats)?;
-            if let Some(counter) = counter.as_deref() {
-                // `compress` accepted the input, so it is valid UTF-8 and this borrows
-                // it unchanged; the lossy form only spares an error branch no input
-                // reaches.
-                let text = String::from_utf8_lossy(&input);
-                report.push_str(&format_exact_counts(
-                    &artifact.stats,
-                    &text,
-                    &artifact.rendering,
-                    counter,
-                )?);
-            }
+            let exact = counter
+                .as_deref()
+                .map(|counter| exact_counts(&artifact.stats, &input, &artifact.rendering, counter));
+            let report = if args.json {
+                format_stats_json(&artifact.stats, exact.as_ref())
+            } else {
+                let mut report = format_stats(&artifact.stats)?;
+                if let Some(exact) = &exact {
+                    report.push_str(&format_exact_counts(exact)?);
+                }
+                report
+            };
             write_stdout(report.as_bytes())?;
             Ok(ExitCode::SUCCESS)
         }
@@ -1465,10 +1464,10 @@ fn format_stats(stats: &Stats) -> Result<String> {
     Ok(out)
 }
 
-/// The four rows `stats --tokenizer cl100k|o200k` appends: the input and the rendering
-/// counted by an exact tokenizer, beside the estimate the pass was priced with.
+/// An exact tokenizer's count of the input and of the rendering, beside the estimate
+/// the pass was priced with: what `stats --tokenizer cl100k|o200k` adds.
 ///
-/// Reporting only. `counter` never reaches the compressor, so the encoder the report
+/// Reporting only. The counter never reaches the compressor, so the encoder the report
 /// names, the rows above these and the archive `compress` would write are the ones the
 /// heuristic chose. The `after` count follows the convention of [`Stats`]: when a
 /// non-passthrough encoder won it is the exact count of the framed rendering
@@ -1477,13 +1476,23 @@ fn format_stats(stats: &Stats) -> Result<String> {
 /// there either. A winning rendering can therefore count *more* tokens than the input
 /// (a ratio above `1.0000`): the heuristic priced it as a win and the exact tokenizer
 /// does not agree.
-fn format_exact_counts(
+struct ExactCounts {
+    before: usize,
+    after: usize,
+    ratio: f64,
+    tokenizer_id: u16,
+}
+
+/// Count `input` and `rendering` with `counter` (see [`ExactCounts`]).
+fn exact_counts(
     stats: &Stats,
-    input: &str,
+    input: &[u8],
     rendering: &str,
     counter: &dyn TokenEstimator,
-) -> Result<String> {
-    let before = counter.estimate(input);
+) -> ExactCounts {
+    // `compress` accepted the input, so it is valid UTF-8 and this borrows it
+    // unchanged; the lossy form only spares an error branch no input reaches.
+    let before = counter.estimate(&String::from_utf8_lossy(input));
     let after = if stats.encoder == EncoderId::PASSTHROUGH {
         before
     } else {
@@ -1495,17 +1504,27 @@ fn format_exact_counts(
     } else {
         after as f64 / before as f64
     };
+    ExactCounts {
+        before,
+        after,
+        ratio,
+        tokenizer_id: counter.tokenizer_id(),
+    }
+}
+
+/// The four rows `stats --tokenizer cl100k|o200k` appends to the text report.
+fn format_exact_counts(exact: &ExactCounts) -> Result<String> {
     let mut out = String::new();
     let w = STATS_LABEL_WIDTH;
-    writeln!(out, "{:<w$}{}", "real tokens before:", before)?;
-    writeln!(out, "{:<w$}{}", "real tokens after:", after)?;
-    writeln!(out, "{:<w$}{:.4}", "real token ratio:", ratio)?;
+    writeln!(out, "{:<w$}{}", "real tokens before:", exact.before)?;
+    writeln!(out, "{:<w$}{}", "real tokens after:", exact.after)?;
+    writeln!(out, "{:<w$}{:.4}", "real token ratio:", exact.ratio)?;
     writeln!(
         out,
         "{:<w$}{} (id {})",
         "real tokenizer:",
-        tokenizer_name(counter.tokenizer_id()),
-        counter.tokenizer_id()
+        tokenizer_name(exact.tokenizer_id),
+        exact.tokenizer_id
     )?;
     Ok(out)
 }
@@ -1536,6 +1555,37 @@ fn exact_tokenizer(arg: TokenizerArg) -> Result<Option<Box<dyn TokenEstimator>>>
         "--tokenizer {name} needs a tokfold built with the `tiktoken` feature; \
          this build has only the heuristic estimate"
     )
+}
+
+/// Render [`Stats`] as one line of JSON: the same object, with the same keys and the
+/// same encoder names, that every MCP tool reply carries as `stats`
+/// ([`tokfold_mcp::tools::stats_value`]), followed by a newline.
+///
+/// The encoder names there are `passthrough`, `minify`, `tabular` and `jsonl`, not the
+/// text report's `e1-minify` spelling; the ids agree. The ratios are full-precision
+/// floats rather than the text report's four decimals, and the object adds the two
+/// fields the text report leaves out, `minSavingBps` and `fidelity`. With
+/// `--tokenizer cl100k|o200k` the four exact counts follow as `realTokensBefore`,
+/// `realTokensAfter`, `realTokenRatio` and `realTokenizerId`, the JSON form of the
+/// four rows the text report appends; without it the line is the MCP object exactly.
+fn format_stats_json(stats: &Stats, exact: Option<&ExactCounts>) -> String {
+    use tokfold_mcp::json::Value;
+    let mut value = tokfold_mcp::tools::stats_value(stats);
+    if let (Some(exact), Value::Object(fields)) = (exact, &mut value) {
+        // A count of an input `compress` accepted fits an `i64` on every target this
+        // crate builds for; saturating only spares a branch no input reaches.
+        let count = |n: usize| Value::Int(i64::try_from(n).unwrap_or(i64::MAX));
+        fields.push(("realTokensBefore".to_owned(), count(exact.before)));
+        fields.push(("realTokensAfter".to_owned(), count(exact.after)));
+        fields.push(("realTokenRatio".to_owned(), Value::Float(exact.ratio)));
+        fields.push((
+            "realTokenizerId".to_owned(),
+            Value::Int(i64::from(exact.tokenizer_id)),
+        ));
+    }
+    let mut out = value.to_string();
+    out.push('\n');
+    out
 }
 
 /// Human-readable name for a frozen encoder id, or `unknown` for a value this build
@@ -1703,6 +1753,12 @@ struct StatsArgs {
     /// with the `tiktoken` feature; a build without it refuses them with exit 2.
     #[arg(long, value_enum, default_value = "heuristic")]
     tokenizer: TokenizerArg,
+
+    /// Print the report as one line of JSON (the `stats` object of the MCP tools, plus
+    /// the four exact counts when `--tokenizer` names an exact tokenizer) instead of
+    /// the aligned text.
+    #[arg(long)]
+    json: bool,
 }
 
 /// The tokenizer `stats --tokenizer` counts with.
@@ -1767,7 +1823,7 @@ mod tests {
 
     use super::{
         Cli, Command, EXIT_BAD_INPUT, EXIT_CORRUPT, Parser, Profile, TokenizerArg, encoder_name,
-        format_exact_counts, tokenizer_name,
+        exact_counts, format_exact_counts, tokenizer_name,
     };
     use tokfold_core::estimator::ids;
     use tokfold_core::{ByteLenEstimator, Compressor, Config, EncoderId};
@@ -1834,8 +1890,13 @@ mod tests {
             let artifact = Compressor::new(Config::builder().profile(profile).build())
                 .compress(input.as_bytes())
                 .map_err(|e| e.to_string())?;
-            let rows = format_exact_counts(&artifact.stats, input, &artifact.rendering, &counter)
-                .map_err(|e| e.to_string())?;
+            let rows = format_exact_counts(&exact_counts(
+                &artifact.stats,
+                input.as_bytes(),
+                &artifact.rendering,
+                &counter,
+            ))
+            .map_err(|e| e.to_string())?;
             Ok((artifact.stats.encoder, artifact.rendering.len(), rows))
         };
 

@@ -421,7 +421,13 @@ fn compress_error_reason(error: &CompressError) -> String {
 }
 
 /// Renders [`Stats`] with camel-cased keys, matching MCP's JSON conventions.
-fn stats_value(stats: &Stats) -> Value {
+///
+/// This is the `stats` object of every tool reply, and `tokfold stats --json` prints
+/// it as well, so the two surfaces share one schema: `bytesBefore`, `bytesAfter`,
+/// `estTokensBefore`, `estTokensAfter`, `byteRatio`, `tokenRatio`, `encoder`,
+/// `encoderId`, `tokenizerId`, `minSavingBps` and `fidelity`, in that order.
+#[must_use]
+pub fn stats_value(stats: &Stats) -> Value {
     Object::new()
         .set("bytesBefore", usize_value(stats.bytes_before))
         .set("bytesAfter", usize_value(stats.bytes_after))

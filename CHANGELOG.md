@@ -738,6 +738,14 @@ released says so, and names what `0.0.1` does in the same case.
   binaries among them — refuses those two spellings with exit `2`, before reading the
   input, and never falls back to the heuristic. `heuristic` is the default and adds
   no rows. No format change.
+- **`tokfold stats --json`.** Prints the pass as one line of JSON — the same
+  `stats` object, with the same keys and encoder names, that every MCP tool reply
+  carries (`tokfold_mcp::tools::stats_value`, now public) — instead of the aligned
+  text report, so a script no longer has to parse padded columns. The text report is
+  unchanged and stays the default. With `--tokenizer cl100k|o200k` the four exact
+  counts follow the object as `realTokensBefore`, `realTokensAfter`,
+  `realTokenRatio` and `realTokenizerId`; without it the line is the MCP object
+  exactly. A rejected input still exits `2` with nothing on stdout.
 - **`tokfold hook`, a Claude Code `PostToolUse` hook.** It reads one hook event on
   standard input and, when `tool_response` is a non-empty string (how an MCP tool's
   result arrives), the engine accepts it, an encoder other than passthrough wins, and

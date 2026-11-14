@@ -69,6 +69,16 @@ cargo build --release -p tokfold-cli   # binary at target/release/tokfold
   tiktoken` from a checkout). The npm binaries and every default build do not have
   it and refuse those two spellings with exit `2` before reading the input;
   `--tokenizer heuristic`, the default, adds no rows.
+  `--json` prints the same pass as one line of JSON instead: the `stats` object
+  every MCP tool reply carries (`bytesBefore`, `bytesAfter`, `estTokensBefore`,
+  `estTokensAfter`, `byteRatio`, `tokenRatio`, `encoder`, `encoderId`,
+  `tokenizerId`, `minSavingBps`, `fidelity`). Its encoder names are the MCP ones
+  (`minify`, `tabular`, `jsonl`, `passthrough`), not the text report's `e1-minify`
+  spelling, and its ratios are not rounded. With `--tokenizer cl100k|o200k` the
+  four exact counts follow as `realTokensBefore`, `realTokensAfter`,
+  `realTokenRatio` and `realTokenizerId` (`2` for `cl100k`, `3` for `o200k`);
+  without it the line is the MCP object exactly. A rejected input still exits `2`
+  with nothing on stdout.
 - `tokfold mcp` — EXPERIMENTAL. Serves the engine as Model Context Protocol tools
   (`tokfold_compress`, `tokfold_decompress`, `tokfold_estimate`) over stdio, one
   JSON-RPC message per line, until the client closes the stream. A warning goes to

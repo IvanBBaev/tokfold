@@ -924,6 +924,105 @@ fn stats_reports_an_exact_loss_the_heuristic_priced_as_a_win() {
     assert_eq!(value("real token ratio"), "1.2222");
 }
 
+/// `stats --json --tokenizer cl100k` is the MCP object followed by the four exact
+/// counts, under the keys the help names, and the same numbers the text rows print for
+/// the same pass (the exact-loss array above: 27 -> 33). Without an exact tokenizer the
+/// line is the MCP object alone, pinned by the test below.
+#[cfg(feature = "tiktoken")]
+#[test]
+fn stats_json_appends_the_exact_counts_after_the_mcp_object() {
+    let input = br#"[{"id":10,"v":"aa"},{"id":11,"v":"bb"},{"id":12,"v":"cc"}]"#;
+    let out = run_tokfold(
+        &[
+            "stats",
+            "--json",
+            "--profile",
+            "balanced",
+            "--tokenizer",
+            "cl100k",
+        ],
+        input,
+    );
+    assert!(out.status.success(), "{out:?}");
+    let line = String::from_utf8(out.stdout).expect("utf-8");
+    let plain = run_tokfold(&["stats", "--json", "--profile", "balanced"], input);
+    assert!(plain.status.success(), "{plain:?}");
+    let plain = String::from_utf8(plain.stdout).expect("utf-8");
+    let object = plain.strip_suffix("}\n").expect("one object, one newline");
+    assert_eq!(
+        line,
+        format!(
+            "{object},\"realTokensBefore\":27,\"realTokensAfter\":33,\
+             \"realTokenRatio\":1.2222222222222223,\"realTokenizerId\":2}}\n"
+        )
+    );
+}
+
+/// `stats --json` prints the MCP tools' `stats` object as one line. Every value is
+/// pinned, for both the encoder that wins and the passthrough path, so a field that
+/// moved, changed its name or lost its precision fails here. The numbers are the same
+/// measurements the text report prints for the same input and profile (pinned against
+/// it below), not a second computation.
+#[test]
+fn stats_json_prints_the_mcp_stats_object_as_one_line() {
+    let run = |profile: &str| -> String {
+        let out = run_tokfold(
+            &["stats", "--json", "--profile", profile],
+            COMPRESSIBLE_JSON,
+        );
+        assert!(
+            out.status.success(),
+            "stats --json --profile {profile} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).expect("stats --json is utf-8")
+    };
+
+    assert_eq!(
+        run("balanced"),
+        "{\"bytesBefore\":153,\"bytesAfter\":116,\"estTokensBefore\":105,\
+         \"estTokensAfter\":76,\"byteRatio\":0.7581699346405228,\
+         \"tokenRatio\":0.7238095238095238,\"encoder\":\"tabular\",\"encoderId\":2,\
+         \"tokenizerId\":0,\"minSavingBps\":0,\"fidelity\":\"lossless\"}\n"
+    );
+    assert_eq!(
+        run("conservative"),
+        "{\"bytesBefore\":153,\"bytesAfter\":153,\"estTokensBefore\":105,\
+         \"estTokensAfter\":105,\"byteRatio\":1.0,\"tokenRatio\":1.0,\
+         \"encoder\":\"passthrough\",\"encoderId\":0,\"tokenizerId\":0,\
+         \"minSavingBps\":0,\"fidelity\":\"lossless\"}\n"
+    );
+
+    // The same pass, in the text report: the counts agree with the JSON above.
+    let text = stats_report("balanced", COMPRESSIBLE_JSON);
+    for row in [
+        "bytes before:       153",
+        "bytes after:        116",
+        "est tokens before:  105",
+        "est tokens after:   76",
+        "encoder:            e2-tabular (id 2)",
+    ] {
+        assert!(
+            text.lines().any(|line| line == row),
+            "{row:?} not in {text}"
+        );
+    }
+}
+
+/// A rejected input is still a hard error under `--json`: exit `2`, the same stderr
+/// line as the text report, and nothing on stdout -- not an object with an error in it.
+#[test]
+fn stats_json_rejects_invalid_json_with_exit_2_and_no_output() {
+    let out = run_tokfold(&["stats", "--json"], b"not json");
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stdout.is_empty(), "no report on error");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).starts_with("tokfold: cannot compute stats: "),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 /// Split a `stats` report into its `label -> value` pairs, in the order printed.
 fn stats_fields(report: &str) -> Vec<(String, String)> {
     report
