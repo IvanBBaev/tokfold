@@ -723,9 +723,9 @@ fn stats_names_the_minifier_when_it_wins() {
 }
 
 /// The tokenizer line carries the id recorded in every archive, so its name/id pairing
-/// is a wire contract. The CLI has no estimator flag, so the heuristic default is the
-/// only pairing reachable end to end; the rest are pinned by the unit tests in
-/// `src/main.rs`.
+/// is a wire contract. The CLI has no flag that selects the estimator -- `--tokenizer`
+/// only counts beside it -- so the heuristic default is the only pairing this row
+/// can print end to end; the rest are pinned by the unit tests in `src/main.rs`.
 #[test]
 fn stats_names_the_default_tokenizer() {
     let report = stats_report("balanced", COMPRESSIBLE_JSON);
@@ -733,6 +733,195 @@ fn stats_names_the_default_tokenizer() {
         report.contains("heuristic (id 0)"),
         "the default estimator is the heuristic one, id 0: {report}"
     );
+}
+
+/// `--tokenizer heuristic` is the default spelled out: it adds no rows, because the
+/// report's own token rows are already the heuristic estimate.
+#[test]
+fn stats_tokenizer_heuristic_prints_the_plain_report() {
+    for profile in ["conservative", "balanced"] {
+        let out = run_tokfold(
+            &["stats", "--profile", profile, "--tokenizer", "heuristic"],
+            COMPRESSIBLE_JSON,
+        );
+        assert!(out.status.success(), "{out:?}");
+        assert_eq!(
+            String::from_utf8(out.stdout).expect("utf-8"),
+            stats_report(profile, COMPRESSIBLE_JSON),
+            "{profile}"
+        );
+    }
+}
+
+/// A build without the `tiktoken` feature -- the npm binaries among them -- has no
+/// exact tokenizer. Asking for one must be refused, not answered with the heuristic
+/// under another name: exit 2, nothing on stdout, and the refusal names the flag
+/// value and the missing feature. It comes before the input is read, so an input
+/// that does not exist is refused for the tokenizer, not reported as unreadable.
+#[cfg(not(feature = "tiktoken"))]
+#[test]
+fn stats_refuses_an_exact_tokenizer_this_build_lacks() {
+    for name in ["cl100k", "o200k"] {
+        let refusal = format!(
+            "tokfold: --tokenizer {name} needs a tokfold built with the `tiktoken` \
+             feature; this build has only the heuristic estimate\n"
+        );
+        let piped = run_tokfold(&["stats", "--tokenizer", name], COMPRESSIBLE_JSON);
+        let missing = run_tokfold_without_stdin(&[
+            "stats",
+            "--input",
+            "/nonexistent/tokfold-q1-input.json",
+            "--tokenizer",
+            name,
+        ]);
+        for out in [piped, missing] {
+            assert_eq!(out.status.code(), Some(2), "{name}: {out:?}");
+            assert!(out.stdout.is_empty(), "{name}: stdout must stay empty");
+            assert_eq!(String::from_utf8_lossy(&out.stderr), refusal);
+        }
+    }
+}
+
+/// With the `tiktoken` feature, `--tokenizer cl100k|o200k` appends four rows and
+/// changes nothing above them: the first eight rows are the plain report byte for
+/// byte, so the gate's estimate, the encoder it chose and therefore the archive are
+/// untouched. `real tokens before` counts the input, `real tokens after` counts what
+/// `compress` prints for the same profile -- checked against the core estimator, not
+/// only against the pinned literals -- and on the passthrough path `after` is set to
+/// `before`, the convention of the `est tokens` rows. Every row keeps column 21.
+#[cfg(feature = "tiktoken")]
+#[test]
+fn stats_appends_exact_counts_without_changing_the_report() {
+    use tokfold_core::{Cl100kEstimator, O200kEstimator, TokenEstimator};
+
+    /// (spelling, counter, profile, before, after, ratio, tokenizer row)
+    type Case<'a> = (
+        &'a str,
+        &'a dyn TokenEstimator,
+        &'a str,
+        usize,
+        usize,
+        &'a str,
+        &'a str,
+    );
+
+    let cl100k = Cl100kEstimator::new().expect("cl100k loads");
+    let o200k = O200kEstimator::new().expect("o200k loads");
+    let input = std::str::from_utf8(COMPRESSIBLE_JSON).expect("utf-8");
+    let cases: [Case<'_>; 4] = [
+        (
+            "cl100k",
+            &cl100k,
+            "balanced",
+            54,
+            52,
+            "0.9630",
+            "cl100k-base (id 2)",
+        ),
+        (
+            "cl100k",
+            &cl100k,
+            "conservative",
+            54,
+            54,
+            "1.0000",
+            "cl100k-base (id 2)",
+        ),
+        (
+            "o200k",
+            &o200k,
+            "balanced",
+            54,
+            54,
+            "1.0000",
+            "o200k-base (id 3)",
+        ),
+        (
+            "o200k",
+            &o200k,
+            "conservative",
+            54,
+            54,
+            "1.0000",
+            "o200k-base (id 3)",
+        ),
+    ];
+    for (name, counter, profile, before, after, ratio, tokenizer) in cases {
+        let out = run_tokfold(
+            &["stats", "--profile", profile, "--tokenizer", name],
+            COMPRESSIBLE_JSON,
+        );
+        assert!(out.status.success(), "{name} {profile}: {out:?}");
+        let report = String::from_utf8(out.stdout).expect("utf-8");
+        let plain = stats_report(profile, COMPRESSIBLE_JSON);
+        let (head, tail) = report.split_at(plain.len());
+        assert_eq!(
+            head, plain,
+            "{name} {profile}: the eight plain rows changed"
+        );
+        assert_eq!(
+            tail,
+            format!(
+                "real tokens before: {before}\nreal tokens after:  {after}\n\
+                 real token ratio:   {ratio}\nreal tokenizer:     {tokenizer}\n"
+            ),
+            "{name} {profile}"
+        );
+        assert_eq!(report.lines().count(), 12);
+
+        assert_eq!(counter.estimate(input), before, "{name}: input count");
+        let compressed = run_tokfold(&["compress", "--profile", profile], COMPRESSIBLE_JSON);
+        assert!(compressed.status.success(), "{compressed:?}");
+        let rendering = String::from_utf8(compressed.stdout).expect("utf-8");
+        let passthrough = plain.contains("passthrough (id 0)");
+        if passthrough {
+            assert!(
+                counter.estimate(&rendering) > before,
+                "{name} {profile}: the raw frame costs tokens the row does not charge"
+            );
+        } else {
+            assert_eq!(
+                counter.estimate(&rendering),
+                after,
+                "{name} {profile}: rendering"
+            );
+        }
+        for line in report.lines() {
+            let (label, value) = line.split_at(20);
+            assert!(
+                label.trim_end().ends_with(':') && label.ends_with(' ') && !value.starts_with(' '),
+                "{line:?}"
+            );
+        }
+    }
+}
+
+/// The exact rows report; they do not vote. On this array the heuristic prices the
+/// tabular rendering as a win (49 -> 46 estimated tokens) while `cl100k` counts it as
+/// a loss (27 -> 33), and the encoder stays the one the heuristic chose -- the gate's
+/// estimator is unchanged, which is what makes a ratio above `1.0000` possible.
+#[cfg(feature = "tiktoken")]
+#[test]
+fn stats_reports_an_exact_loss_the_heuristic_priced_as_a_win() {
+    let input = br#"[{"id":10,"v":"aa"},{"id":11,"v":"bb"},{"id":12,"v":"cc"}]"#;
+    let out = run_tokfold(
+        &["stats", "--profile", "balanced", "--tokenizer", "cl100k"],
+        input,
+    );
+    assert!(out.status.success(), "{out:?}");
+    let report = String::from_utf8(out.stdout).expect("utf-8");
+    let fields = stats_fields(&report);
+    let value = |label: &str| {
+        fields
+            .iter()
+            .find(|(l, _)| l == label)
+            .map_or_else(|| panic!("no {label} row: {report}"), |(_, v)| v.as_str())
+    };
+    assert_eq!(value("token ratio"), "0.9388");
+    assert_eq!(value("encoder"), "e2-tabular (id 2)");
+    assert_eq!(value("real tokens before"), "27");
+    assert_eq!(value("real tokens after"), "33");
+    assert_eq!(value("real token ratio"), "1.2222");
 }
 
 /// Split a `stats` report into its `label -> value` pairs, in the order printed.

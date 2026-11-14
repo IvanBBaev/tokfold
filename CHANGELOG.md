@@ -725,6 +725,19 @@ released says so, and names what `0.0.1` does in the same case.
 
 ### Added
 
+- **`tokfold stats --tokenizer heuristic|cl100k|o200k`.** `cl100k` and `o200k`
+  append four rows (`real tokens before`, `real tokens after`, `real token ratio`,
+  `real tokenizer`) counting the input and the rendering with an exact GPT tokenizer.
+  Reporting only: the do-no-harm gate still prices with the heuristic, so the eight
+  existing rows, the encoder and the archive are unchanged, and the exact ratio can
+  exceed `1.0000` where the heuristic priced a loss as a win (`cl100k` 27 → 33 on a
+  three-row array whose estimate went 49 → 46). On the passthrough path `real tokens
+  after` is set equal to `real tokens before`, the convention of the existing rows.
+  The exact tokenizers come from a new, non-default `tiktoken` feature of
+  `tokfold-cli` that forwards to `tokfold-core`'s; a build without it — the npm
+  binaries among them — refuses those two spellings with exit `2`, before reading the
+  input, and never falls back to the heuristic. `heuristic` is the default and adds
+  no rows. No format change.
 - **`tokfold hook`, a Claude Code `PostToolUse` hook.** It reads one hook event on
   standard input and, when `tool_response` is a non-empty string (how an MCP tool's
   result arrives), the engine accepts it, an encoder other than passthrough wins, and

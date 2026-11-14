@@ -58,6 +58,17 @@ cargo build --release -p tokfold-cli   # binary at target/release/tokfold
   `before` figures rather than measured, so a reported ratio of `1.0000` is a floor,
   not a measurement: the rendering still carries the 18-byte `raw` sentinel. Measure
   the rendering itself if you need to account for every token.
+  `--tokenizer cl100k|o200k` appends four rows — `real tokens before`, `real tokens
+  after`, `real token ratio`, `real tokenizer` — that count the input and the
+  rendering with an exact GPT tokenizer (a GPT vocabulary, not Claude's). It is
+  reporting only: the eight rows above them, the encoder and the archive are the
+  ones the heuristic chose, so an exact ratio above `1.0000` is a rendering the
+  heuristic priced as a win. On the passthrough path `real tokens after` is set
+  equal to `real tokens before`, as above. The exact tokenizers need a build with
+  this crate's `tiktoken` feature (`cargo build --release -p tokfold-cli --features
+  tiktoken` from a checkout). The npm binaries and every default build do not have
+  it and refuse those two spellings with exit `2` before reading the input;
+  `--tokenizer heuristic`, the default, adds no rows.
 - `tokfold mcp` — EXPERIMENTAL. Serves the engine as Model Context Protocol tools
   (`tokfold_compress`, `tokfold_decompress`, `tokfold_estimate`) over stdio, one
   JSON-RPC message per line, until the client closes the stream. A warning goes to

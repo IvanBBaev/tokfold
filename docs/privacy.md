@@ -130,8 +130,10 @@ stale-archive deletion and no same-file guards (see
   `637795cf…` at 1 262 112 bytes
   with default features, so widening the selection alone changes nothing;
   `-p tokfold-cli --all-features` also gives `637795cf…`, because `--all-features`
-  applies to the *selected* packages and `tokfold-cli` declares no `[features]` table
-  of its own; `-p tokfold-cli --features tokfold-core/tiktoken` gives `d8910026…` at
+  applies to the *selected* packages and `tokfold-cli` declared no `[features]` table
+  of its own at that commit (it declares `tiktoken` now, for `stats --tokenizer`, so
+  the same command today links the exact tokenizers — see *Token counting* below);
+  `-p tokfold-cli --features tokfold-core/tiktoken` gives `d8910026…` at
   1 263 776 without `tokfold-core` being selected at all; and `--workspace
   --all-features` gives `30e93939…`, the same 1 263 776 bytes by a different route,
   because the wider selection puts `tokfold-core` in reach of `--all-features` and so
@@ -209,15 +211,22 @@ stale-archive deletion and no same-file guards (see
   default, and not enabled in the release build — `release.yml` builds `--package
   tokfold-cli` with no feature flags) embeds its encoding tables at compile time
   through `tiktoken-rs`, which `include_str!`s them, so nothing is fetched at run
-  time. It does not follow that those tables reach *this* binary: nothing on the
-  CLI's command line selects an exact estimator, so the linker drops them. Measured
+  time. It does not follow that those tables reach *this* binary: unless the CLI's
+  own `tiktoken` feature is on, no CLI code constructs an exact estimator, so the
+  linker drops them. Measured
   2026-10-14 on commit `181ec00` with one variable moved — the same `-p tokfold-cli`
   selection, the feature off and then on — `cargo build --release -p tokfold-cli
   --features tokfold-core/tiktoken` grows the binary by 1 664 bytes (1 262 112
   → 1 263 776, SHA-1 `637795cf…` → `d8910026…`) — a thousandth of the 1 681 126
   bytes of `cl100k_base.tiktoken` alone. The same pair at `166873f` grows it by 1 680
   (1 261 712 → 1 263 392), which is what this sentence reported for "this tree".
-  Either way it downloads nothing.
+  The CLI's own `tiktoken` feature, added for `stats --tokenizer cl100k|o200k`,
+  forwards to core's and does construct both estimators, so it links the tables:
+  measured 2026-11-14 on the working tree that added it (parent `56ac228`, macOS
+  arm64), `cargo build --release -p tokfold-cli` gives 1 305 296 bytes (SHA-1
+  `34910d61…`), `--features tokfold-core/tiktoken` 1 306 832 (`da6e4245…`), and
+  `--features tiktoken` 8 769 232 (`5cc3b53b…`). Neither `release.yml` nor the npm
+  packages turn it on. Either way it downloads nothing.
 - **Installing through npm** uses the network, as any `npm install` does: npm fetches
   the launcher package and one platform package from the registry. That is npm's
   traffic, not tokfold's. See *The npm launcher*.

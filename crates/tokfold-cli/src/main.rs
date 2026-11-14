@@ -57,7 +57,7 @@ use std::process::ExitCode;
 use anyhow::{Context, Result, bail, ensure};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use tokfold_core::format::MAGIC as ARCHIVE_MAGIC;
-use tokfold_core::{Compressor, Config, Profile, Stats};
+use tokfold_core::{Compressor, Config, EncoderId, Profile, Stats, TokenEstimator};
 
 mod hook;
 
@@ -197,7 +197,9 @@ fn main() -> ExitCode {
 /// feature flag can reach — measured 2026-10-14 at `181ec00`, `--release --workspace`
 /// with default features is byte-identical to `637795cf`, and so is `-p tokfold-cli
 /// --all-features`, since `--all-features` applies to the selected packages and this
-/// crate declares no `[features]` table. Widening to `--workspace` puts `tokfold-core`
+/// crate declared no `[features]` table at that commit. It declares `tiktoken` now,
+/// forwarding to the core feature for `stats --tokenizer`, so the same command links
+/// the exact tokenizers today and is not a default-feature build. Widening to `--workspace` puts `tokfold-core`
 /// in reach of `--all-features`, which turns on both its `tiktoken` and its
 /// unimplemented `hf`; `tiktoken` alone, as `-p tokfold-cli --features
 /// tokfold-core/tiktoken`, gives `d8910026` at the same 1 263 776 bytes as `30e93939`
@@ -1172,14 +1174,31 @@ fn cmd_expand(args: &ExpandArgs) -> Result<ExitCode> {
 /// `stats`: report the pass without emitting the payload. Unlike `compress`, an input
 /// the compressor rejects is a hard error here (there is nothing to measure): report
 /// it and exit `EXIT_BAD_INPUT`.
+///
+/// `--tokenizer` is resolved first, before anything is read: a build without the
+/// `tiktoken` feature refuses `cl100k` and `o200k` there with exit `2`, rather than
+/// consuming the input and then reporting heuristic numbers under an exact name.
 fn cmd_stats(args: &StatsArgs) -> Result<ExitCode> {
+    let counter = exact_tokenizer(args.tokenizer)?;
     ensure_output_is_not_the_input(args.input.as_deref())?;
     let input = read_source(args.input.as_deref())?;
     let compressor = Compressor::new(config_for(args.profile));
 
     match compressor.compress(&input) {
         Ok(artifact) => {
-            let report = format_stats(&artifact.stats)?;
+            let mut report = format_stats(&artifact.stats)?;
+            if let Some(counter) = counter.as_deref() {
+                // `compress` accepted the input, so it is valid UTF-8 and this borrows
+                // it unchanged; the lossy form only spares an error branch no input
+                // reaches.
+                let text = String::from_utf8_lossy(&input);
+                report.push_str(&format_exact_counts(
+                    &artifact.stats,
+                    &text,
+                    &artifact.rendering,
+                    counter,
+                )?);
+            }
             write_stdout(report.as_bytes())?;
             Ok(ExitCode::SUCCESS)
         }
@@ -1446,6 +1465,79 @@ fn format_stats(stats: &Stats) -> Result<String> {
     Ok(out)
 }
 
+/// The four rows `stats --tokenizer cl100k|o200k` appends: the input and the rendering
+/// counted by an exact tokenizer, beside the estimate the pass was priced with.
+///
+/// Reporting only. `counter` never reaches the compressor, so the encoder the report
+/// names, the rows above these and the archive `compress` would write are the ones the
+/// heuristic chose. The `after` count follows the convention of [`Stats`]: when a
+/// non-passthrough encoder won it is the exact count of the framed rendering
+/// `compress` prints, and on the passthrough path it is *set* equal to the `before`
+/// count rather than measured, so the `raw` sentinel is not attributed to compression
+/// there either. A winning rendering can therefore count *more* tokens than the input
+/// (a ratio above `1.0000`): the heuristic priced it as a win and the exact tokenizer
+/// does not agree.
+fn format_exact_counts(
+    stats: &Stats,
+    input: &str,
+    rendering: &str,
+    counter: &dyn TokenEstimator,
+) -> Result<String> {
+    let before = counter.estimate(input);
+    let after = if stats.encoder == EncoderId::PASSTHROUGH {
+        before
+    } else {
+        counter.estimate(rendering)
+    };
+    #[allow(clippy::cast_precision_loss)]
+    let ratio = if before == 0 {
+        1.0
+    } else {
+        after as f64 / before as f64
+    };
+    let mut out = String::new();
+    let w = STATS_LABEL_WIDTH;
+    writeln!(out, "{:<w$}{}", "real tokens before:", before)?;
+    writeln!(out, "{:<w$}{}", "real tokens after:", after)?;
+    writeln!(out, "{:<w$}{:.4}", "real token ratio:", ratio)?;
+    writeln!(
+        out,
+        "{:<w$}{} (id {})",
+        "real tokenizer:",
+        tokenizer_name(counter.tokenizer_id()),
+        counter.tokenizer_id()
+    )?;
+    Ok(out)
+}
+
+/// The exact tokenizer `--tokenizer` names, or `None` for `heuristic`, which adds no
+/// rows: the report's own token rows are already the heuristic estimate.
+#[cfg(feature = "tiktoken")]
+fn exact_tokenizer(arg: TokenizerArg) -> Result<Option<Box<dyn TokenEstimator>>> {
+    use tokfold_core::{Cl100kEstimator, O200kEstimator};
+    Ok(match arg {
+        TokenizerArg::Heuristic => None,
+        TokenizerArg::Cl100k => Some(Box::new(Cl100kEstimator::new()?)),
+        TokenizerArg::O200k => Some(Box::new(O200kEstimator::new()?)),
+    })
+}
+
+/// The exact tokenizer `--tokenizer` names, which this build does not have: it was
+/// compiled without the `tiktoken` feature, so `cl100k` and `o200k` are refused rather
+/// than answered with heuristic numbers.
+#[cfg(not(feature = "tiktoken"))]
+fn exact_tokenizer(arg: TokenizerArg) -> Result<Option<Box<dyn TokenEstimator>>> {
+    let name = match arg {
+        TokenizerArg::Heuristic => return Ok(None),
+        TokenizerArg::Cl100k => "cl100k",
+        TokenizerArg::O200k => "o200k",
+    };
+    bail!(
+        "--tokenizer {name} needs a tokfold built with the `tiktoken` feature; \
+         this build has only the heuristic estimate"
+    )
+}
+
 /// Human-readable name for a frozen encoder id, or `unknown` for a value this build
 /// does not recognize.
 ///
@@ -1601,6 +1693,28 @@ struct StatsArgs {
     /// Which encoders may compete when measuring the pass.
     #[arg(long, value_enum, default_value = "balanced")]
     profile: ProfileArg,
+
+    /// Also count the input and the rendering with an exact tokenizer.
+    ///
+    /// Reporting only: the pass is priced and its encoder chosen by the heuristic
+    /// estimate whichever tokenizer is named, so every other row is unchanged. cl100k
+    /// and o200k add four `real ...` rows; on the passthrough path `real tokens after`
+    /// is set equal to `real tokens before`, as `est tokens after` is. They need a build
+    /// with the `tiktoken` feature; a build without it refuses them with exit 2.
+    #[arg(long, value_enum, default_value = "heuristic")]
+    tokenizer: TokenizerArg,
+}
+
+/// The tokenizer `stats --tokenizer` counts with.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]
+enum TokenizerArg {
+    /// The engine's own estimate, the one the do-no-harm gate prices with. Adds no
+    /// rows.
+    Heuristic,
+    /// Exact `cl100k_base` (GPT-3.5 / GPT-4).
+    Cl100k,
+    /// Exact `o200k_base` (GPT-4o).
+    O200k,
 }
 
 /// CLI mirror of [`Profile`], so the enum stays an implementation detail of the core
@@ -1634,23 +1748,29 @@ mod tests {
     //! are here and in `reader_gone_tests` and `archive_identity_tests` below. Three
     //! things live here. The two id→name tables translate *frozen wire ids*, and
     //! `stats` can only ever print the ids the shipped configuration produces.
-    //! Nothing on the command line selects a token estimator, so ids 1–4 have no
-    //! end-to-end path at all — yet an archive written by another build (or by a
+    //! Nothing on the command line selects a token estimator — `stats --tokenizer`
+    //! only counts beside it — so ids 1 and 4 have no end-to-end path at all, and ids
+    //! 2 and 3 have one only through `--tokenizer`'s `real tokenizer:` row in a build
+    //! with the `tiktoken` feature — yet an archive written by another build (or by a
     //! library caller that swapped the estimator) can carry them, which is precisely
     //! why the pairings must not drift. Testing them here is the only way to pin
-    //! them. The exit-code line every screen that claims the contract repeats — all
+    //! them in every build. The exit-code line every screen that claims the contract repeats — all
     //! but `mcp`, which is excluded on purpose — is the second: `exit_codes!()`
     //! spells its numbers inside a string literal, so `EXIT_BAD_INPUT` and
     //! `EXIT_CORRUPT` could change without a single screen following, and
     //! `tests/cli.rs` can only check the screen against the numbers the process
     //! returns one case at a time. The `--profile` spellings are the third: two of
     //! the three profiles are identical in v0.0.1, so nothing the process prints can
-    //! tell them apart.
+    //! tell them apart. The fourth is `stats --tokenizer`: a build without the
+    //! `tiktoken` feature refuses two of its three spellings, so in that build only
+    //! these tests reach their parse and the rows `format_exact_counts` prints.
 
     use super::{
-        Cli, Command, EXIT_BAD_INPUT, EXIT_CORRUPT, Parser, Profile, encoder_name, tokenizer_name,
+        Cli, Command, EXIT_BAD_INPUT, EXIT_CORRUPT, Parser, Profile, TokenizerArg, encoder_name,
+        format_exact_counts, tokenizer_name,
     };
     use tokfold_core::estimator::ids;
+    use tokfold_core::{ByteLenEstimator, Compressor, Config, EncoderId};
 
     #[test]
     fn the_help_spells_the_exit_codes_the_binary_returns() {
@@ -1662,6 +1782,83 @@ mod tests {
             "; {EXIT_CORRUPT} a corrupt, empty, or otherwise unrecoverable archive on `expand`."
         );
         assert!(help.ends_with(&corrupt), "{help}");
+    }
+
+    /// `stats --tokenizer` must parse each documented spelling to its own arm, and an
+    /// omitted flag must be `heuristic`, which adds no rows. A build without the
+    /// `tiktoken` feature refuses two of these arms only after they parsed, so the
+    /// spellings are pinned here for every build rather than end to end.
+    #[test]
+    fn each_tokenizer_spelling_reaches_its_own_arm() {
+        let parse = |args: &[&str]| -> Result<TokenizerArg, String> {
+            let mut argv = vec!["tokfold", "stats"];
+            argv.extend_from_slice(args);
+            match Cli::try_parse_from(&argv) {
+                Ok(Cli {
+                    command: Command::Stats(a),
+                }) => Ok(a.tokenizer),
+                other => Err(format!("{argv:?} did not parse to stats: {other:?}")),
+            }
+        };
+        assert_eq!(parse(&[]), Ok(TokenizerArg::Heuristic));
+        for (spelling, expected) in [
+            ("heuristic", TokenizerArg::Heuristic),
+            ("cl100k", TokenizerArg::Cl100k),
+            ("o200k", TokenizerArg::O200k),
+        ] {
+            assert_eq!(
+                parse(&["--tokenizer", spelling]),
+                Ok(expected),
+                "{spelling}"
+            );
+        }
+        assert!(
+            Cli::try_parse_from(["tokfold", "compress", "--tokenizer", "cl100k"]).is_err(),
+            "--tokenizer is a stats flag only"
+        );
+    }
+
+    /// The rows `--tokenizer` appends, counted here with [`ByteLenEstimator`] so they
+    /// are pinned in every build, not only one with the `tiktoken` feature. On a
+    /// winning encoder `real tokens after` counts the framed rendering; on the
+    /// passthrough path it is set equal to `real tokens before` -- the convention of
+    /// `Stats` -- although the `raw`-framed rendering is longer than the input, which
+    /// is what makes the two cases tell apart. The tokenizer row names the counter's
+    /// id, not the gate's.
+    #[test]
+    fn exact_counts_follow_the_stats_passthrough_convention() -> Result<(), String> {
+        let input = r#"[{"id":0,"name":"item0","active":true},{"id":1,"name":"item1","active":true},{"id":2,"name":"item2","active":true},{"id":3,"name":"item3","active":true}]"#;
+        assert_eq!(input.len(), 153);
+        let counter = ByteLenEstimator;
+        let report = |profile: Profile| -> Result<(EncoderId, usize, String), String> {
+            let artifact = Compressor::new(Config::builder().profile(profile).build())
+                .compress(input.as_bytes())
+                .map_err(|e| e.to_string())?;
+            let rows = format_exact_counts(&artifact.stats, input, &artifact.rendering, &counter)
+                .map_err(|e| e.to_string())?;
+            Ok((artifact.stats.encoder, artifact.rendering.len(), rows))
+        };
+
+        let (encoder, rendered, rows) = report(Profile::Balanced)?;
+        assert_ne!(
+            encoder,
+            EncoderId::PASSTHROUGH,
+            "balanced must let an encoder win"
+        );
+        assert_eq!(rendered, 116, "the tabular rendering this pins");
+        assert_eq!(
+            rows,
+            "real tokens before: 153\nreal tokens after:  116\nreal token ratio:   0.7582\nreal tokenizer:     byte-length (id 1)\n"
+        );
+
+        let (encoder, rendered, rows) = report(Profile::Conservative)?;
+        assert_eq!(encoder, EncoderId::PASSTHROUGH);
+        assert!(rendered > 153, "the raw frame lengthens the rendering");
+        assert_eq!(
+            rows,
+            "real tokens before: 153\nreal tokens after:  153\nreal token ratio:   1.0000\nreal tokenizer:     byte-length (id 1)\n"
+        );
+        Ok(())
     }
 
     /// `--profile` must reach the core [`Profile`] its spelling names, on both
