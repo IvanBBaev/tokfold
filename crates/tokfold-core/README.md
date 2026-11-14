@@ -77,6 +77,12 @@ store(&artifact.archive);                              // versioned recovery blo
 let original = engine.decompress(&artifact.archive)?;  // Result<Vec<u8>, DecompressError>
 ```
 
+Three runnable programs in
+[`examples/`](https://github.com/IvanBBaev/tokfold/tree/main/crates/tokfold-core/examples)
+cover the round trip, the configuration knobs and the failure paths — `cargo run -p
+tokfold-core --example roundtrip` (then `profiles`, `failure_paths`) from a checkout
+of the repository. They are not part of the packaged crate.
+
 `compress` is total on valid JSON within the configured limits — 16 MiB of input
 and 512 levels of nesting by default, both raised through `ConfigBuilder` (the input
 limit no further than 4 GiB less one byte, the most the parser's `u32` offsets can

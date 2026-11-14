@@ -725,6 +725,17 @@ released says so, and names what `0.0.1` does in the same case.
 
 ### Added
 
+- **Runnable `tokfold-core` examples.** `crates/tokfold-core/examples/` holds three
+  programs over the public library API: `roundtrip` (compress a tool result, print the
+  rendering and the stats, recover the original from the archive), `profiles`
+  (`Conservative` against `Balanced`, `ByteLenEstimator`, a `min_saving_bps` of 10 000
+  that no shipped estimator can clear, and `Cl100kEstimator` under `--features tiktoken`)
+  and `failure_paths` (passthrough as a statistic, `InvalidJson`, a damaged archive's
+  `ChecksumMismatch`, foreign bytes' `BadMagic`). Each asserts what it prints, and the
+  `test` job now runs all three on every leg, so a changed rendering or encoder choice
+  fails CI rather than leaving an example that describes another version. Run one with
+  `cargo run -p tokfold-core --example roundtrip`. They are not in the crate's
+  `include` list, so a packaged `tokfold-core` does not carry them. No library change.
 - **`tokfold bench <PATH>`.** Reads the Claude Code transcripts under `PATH` (every
   regular `*.jsonl`, recursively, or one file) and reports what tokfold would save on
   them: per tool name, the main-chain results, tokens before and after, the ratio and

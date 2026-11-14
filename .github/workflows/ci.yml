@@ -900,6 +900,18 @@ jobs:
           PROPTEST_CASES: "1024"
         run: cargo test --workspace ${{ matrix.features }} --locked
 
+      # `cargo test` compiles the `tokfold-core/examples/` targets but never runs
+      # them, and each one checks its own printed claims with `assert!`. Running
+      # them is the only thing that keeps those claims from rotting. With
+      # `--all-features` the `profiles` example also exercises `Cl100kEstimator`.
+      - name: Examples
+        shell: bash
+        run: |
+          set -euo pipefail
+          for example in roundtrip profiles failure_paths; do
+            cargo run -q -p tokfold-core ${{ matrix.features }} --locked --example "$example"
+          done
+
       # A proptest failure writes the failing seed to a `.proptest-regressions`
       # file next to the test, and that file is the whole value of the run: with
       # it the failure replays deterministically on any machine, without it a
