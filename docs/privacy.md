@@ -73,6 +73,11 @@ stale-archive deletion and no same-file guards (see
   read at all. The quoted phrase was this bullet's alone: the note that attributed it
   to all three was written by `7a005e3` itself, and only its last clause held of the
   other two. See *What the CLI reads*.
+- `tokfold bench <PATH>` is the one subcommand that opens files it was not given by
+  name: every regular `*.jsonl` file under the directory you name, which are Claude
+  Code transcripts and hold your conversations. It only reads them, writes no file,
+  reads no standard input, and prints aggregates and tool names, never a result, a
+  message or a path inside the tree. See *What the CLI reads*.
 - A redirect is the other way your data reaches disk: `tokfold expand > restored.json`
   writes your original bytes into `restored.json` verbatim. tokfold never names that
   file and never sets its mode; your shell does both.
@@ -381,19 +386,37 @@ stale-archive deletion and no same-file guards (see
   the path read-only", naming neither the write open that precedes it nor the branch
   that answers without reading — while *What the CLI writes* recorded that same write
   open. Both halves were written by one commit, `b5aad2a`.
+- **`bench` reads a tree of transcripts** (`collect` and `read_file` in
+  `crates/tokfold-cli/src/bench.rs`). Its `PATH` argument is followed if it is a
+  symlink and must be a directory or a regular file; anything else is refused before
+  it is opened. Under a directory it lists every subdirectory and opens every regular
+  file whose name ends in `.jsonl`, read-only, one at a time, line by line, up to the
+  length the file had when it was opened. Symbolic links and special files inside the
+  tree are counted and never opened, so a FIFO named `x.jsonl` cannot block it. It
+  keeps no line after it has been counted: what survives a file is per-tool token
+  sums, the usage figures Claude recorded for each request keyed by its request id, and
+  the tool names, all in memory and gone at exit. Those
+  names, which come from the transcripts, are the only text from them that reaches
+  standard output, and the text report prints them escaped. Between the type check
+  and the open a file can be replaced; the open is then checked again, so a swapped-in
+  special file is counted as unreadable, but a FIFO swapped in at that instant blocks
+  the open. That window is documented in the rustdoc of `bench.rs`, not closed.
 
 ### What the CLI writes
 
 - **Standard output:** the rendering (`compress`), the restored original (`expand`),
-  the measurement report (`stats`), the JSON-RPC replies (`mcp`), or `--help` and
-  `--version` text. The first three go through `write_stdout` in `main.rs`, the
+  the measurement report (`stats`), the JSON-RPC replies (`mcp`), the hook's reply or
+  its settings fragment (`hook`), the transcript report (`bench`), or `--help` and
+  `--version` text. Every subcommand output but the JSON-RPC replies goes through
+  `write_stdout` in `main.rs` (the hook's and `bench`'s from `hook.rs` and
+  `bench.rs`), the
   replies through `tokfold_mcp::stdio::serve_stdio`, and the help and version text
   through clap's own printer when standard output is a terminal and `write_stdout`
   otherwise — the two writers the rustdoc of the `--help`/`--version` branch in
   `main.rs` sets out against each other. That makes three writers in all, which is
   why a fix to one of them is not a fix to standard output. Until 2026-10-10 this
   bullet listed the four subcommand outputs only, which read as the whole of what
-  reaches standard output.
+  reaches standard output; until `bench` was added it still omitted `hook`'s.
 - **Standard error:** diagnostics, all through one function (`warn` in `main.rs`).
   These can include the paths you passed and sizes. The `mcp` subcommand also prints
   its experimental notice there on start-up.

@@ -1,6 +1,6 @@
 //! `tokfold` — the one shipped binary for the reversible context-compression engine.
 //!
-//! Five subcommands sit on top of [`tokfold_core`]:
+//! Six subcommands sit on top of [`tokfold_core`]:
 //!
 //! * `compress` — read input, emit the token-reduced rendering, optionally persist a
 //!   recovery archive. Compression is an optimization, never a gate: a
@@ -32,6 +32,10 @@
 //!   with its rendering when an encoder shrinks it, and otherwise print nothing. It
 //!   always exits `0`, because a hook that fails would fail the tool call it sits in
 //!   front of; see the `hook` module.
+//! * `bench` — measure what the engine would save on a directory of Claude Code
+//!   transcripts: per tool, and as a share of the bill those transcripts record. It
+//!   reads only, writes nothing but its report, and prints aggregates and tool names,
+//!   never content; see the `bench` module.
 //!
 //! Exit codes are normative: `0` success, `2` bad input (usage, I/O, or an input the
 //! compressor rejects on `stats`), `3` a corrupt, empty, or otherwise unrecoverable
@@ -59,6 +63,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use tokfold_core::format::MAGIC as ARCHIVE_MAGIC;
 use tokfold_core::{Compressor, Config, EncoderId, Profile, Stats, TokenEstimator};
 
+mod bench;
 mod hook;
 
 /// Bad usage, an I/O failure, or an input the compressor rejects on `stats`.
@@ -132,7 +137,9 @@ const ROOT_STREAM_AND_EXIT_HELP: &str = concat!(
      `expand` write their payload to standard output; `stats` writes a measurement \
      report there and no payload. `mcp` is outside this contract: it speaks a JSON-RPC \
      stream, takes no --input, and never exits 3. So is `hook`: it reads one Claude \
-     Code hook event and, as a hook, always exits 0.\n\n",
+     Code hook event and, as a hook, always exits 0. And so is `bench`: it reads the \
+     Claude Code transcripts under PATH, takes no --input and no standard input, and \
+     writes nothing but its report.\n\n",
     exit_codes!()
 );
 
@@ -148,6 +155,24 @@ const HOOK_HELP: &str = "Reads one Claude Code hook event (JSON) on standard inp
      --print-config exits 2 if it cannot write the snippet.\n\n\
      Install: tokfold hook --print-config, and merge the printed object into \
      ~/.claude/settings.json or a project's .claude/settings.json.";
+
+/// The contract for `bench`, which reads a tree of transcripts rather than one input.
+const BENCH_HELP: &str = "Reads the regular *.jsonl files under PATH (or PATH itself, when it \
+     is a regular file) as Claude Code transcripts, and nothing else: no standard input, no \
+     network, no file written. Symbolic links and special files inside the tree are skipped \
+     and counted, never opened, and each file is read only up to the length it had when it \
+     was opened. The report prints counts, token sums, ratios and shares, and the names of \
+     the tools whose results it measured; never a result, a message or a path inside the \
+     tree.\n\n\
+     Every main-chain tool result is compressed with --profile and replaced only when an \
+     encoder other than passthrough wins with a rendering shorter in bytes (the rule tokfold \
+     hook applies); --tokenizer only chooses what the texts are counted with. Each number is \
+     printed beside the tokenizer and the profile it was measured with. Shares of the bill \
+     mix units: tool results in the chosen tokenizer's tokens, the bill in the tokens Claude \
+     reported in each request's usage.\n\n\
+     Exit codes: 0 report printed; 2 a PATH that is missing, not a directory or regular \
+     file, or holds no .jsonl file, a --tokenizer this build cannot count with, or a report \
+     that cannot be written.";
 
 fn main() -> ExitCode {
     let cli = match Cli::try_parse() {
@@ -290,6 +315,7 @@ fn run(cli: &Cli) -> Result<ExitCode> {
         Command::Stats(args) => cmd_stats(args),
         Command::Mcp => cmd_mcp(),
         Command::Hook(args) => cmd_hook(args),
+        Command::Bench(args) => bench::run(args),
     }
 }
 
@@ -1654,6 +1680,37 @@ enum Command {
     /// result alone.
     #[command(after_help = HOOK_HELP)]
     Hook(HookArgs),
+    /// Measure what tokfold would save on the Claude Code transcripts under PATH, per tool
+    /// and as a share of their bill. Reads only; prints aggregates and tool names, never
+    /// content.
+    #[command(after_help = BENCH_HELP)]
+    Bench(BenchArgs),
+}
+
+/// Arguments for `bench`.
+#[derive(Debug, Args)]
+struct BenchArgs {
+    /// A directory of Claude Code transcripts (searched recursively for *.jsonl), or one
+    /// transcript file.
+    #[arg(value_name = "PATH")]
+    path: PathBuf,
+
+    /// Which encoders may compete for each tool result's rendering.
+    #[arg(long, value_enum, default_value = "balanced")]
+    profile: ProfileArg,
+
+    /// What the tool results and their renderings are counted with.
+    ///
+    /// Reporting only: whether a result is replaced is decided by the engine, which
+    /// prices with the heuristic estimate whichever tokenizer is named. cl100k and o200k
+    /// need a build with the `tiktoken` feature; a build without it refuses them with
+    /// exit 2.
+    #[arg(long, value_enum, default_value = "heuristic")]
+    tokenizer: TokenizerArg,
+
+    /// Print the report as one line of JSON instead of the aligned text.
+    #[arg(long)]
+    json: bool,
 }
 
 /// Arguments for `hook`.
@@ -1761,11 +1818,11 @@ struct StatsArgs {
     json: bool,
 }
 
-/// The tokenizer `stats --tokenizer` counts with.
+/// The tokenizer `stats --tokenizer` and `bench --tokenizer` count with.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]
 enum TokenizerArg {
     /// The engine's own estimate, the one the do-no-harm gate prices with. Adds no
-    /// rows.
+    /// rows to `stats`.
     Heuristic,
     /// Exact `cl100k_base` (GPT-3.5 / GPT-4).
     Cl100k,

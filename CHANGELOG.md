@@ -725,6 +725,24 @@ released says so, and names what `0.0.1` does in the same case.
 
 ### Added
 
+- **`tokfold bench <PATH>`.** Reads the Claude Code transcripts under `PATH` (every
+  regular `*.jsonl`, recursively, or one file) and reports what tokfold would save on
+  them: per tool name, the main-chain results, tokens before and after, the ratio and
+  how many results the hook's rule would replace (a non-passthrough rendering shorter
+  in bytes), with sums for all tools and for the hook's `mcp__.*` matcher; then the
+  bill the transcripts record (usage once per request id, in base-input units:
+  input 1, 5-minute write 1.25, 1-hour write 2, cache read 0.10, output 5), the mean
+  number of later requests a result is re-read on before the next compaction, and the
+  results' share and the saving's share of that bill. A result costs `W + 0.10 × (N −
+  1)` per token over the `N` requests that carry it, `W` the bill's blended write
+  multiplier: the request that writes a result does not also read it.
+  `--profile`, `--tokenizer heuristic|cl100k|o200k` (the `stats` plumbing, reporting
+  only, refused with exit `2` without the `tiktoken` feature) and `--json` (one line).
+  Every number is printed beside its tokenizer and profile, and the shares say they
+  mix units. Reporting only: the do-no-harm gate, encoder selection and archive
+  format are unchanged. It reads only — no standard input, no network, no file
+  written — never opens a symlink or special file inside the tree, and prints
+  aggregates and tool names, never content.
 - **`tokfold stats --tokenizer heuristic|cl100k|o200k`.** `cl100k` and `o200k`
   append four rows (`real tokens before`, `real tokens after`, `real token ratio`,
   `real tokenizer`) counting the input and the rendering with an exact GPT tokenizer.

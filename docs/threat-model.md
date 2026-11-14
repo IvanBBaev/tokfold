@@ -132,6 +132,30 @@ or a tool get back what was really there.
   Nothing in this process keeps the original, so the model cannot recover it through
   tokfold.
 
+### 5. Transcript benchmark (`tokfold bench`)
+
+- **Shape.** One process per invocation (`crates/tokfold-cli/src/bench.rs`). It takes
+  one `PATH`, a directory of Claude Code transcripts or one transcript, and reads every
+  regular `*.jsonl` file under it line by line, read-only, each up to the length it had
+  when it was opened. It reads no standard input, writes no file and opens no network
+  connection. It compresses each main-chain tool result in memory, prices it, and
+  prints one report: counts, token sums, ratios and shares beside the tokenizer and
+  profile they were measured with, and the name of each tool measured. It keeps no
+  result, no message and no path after the line is counted, and prints none of them.
+- **Trust boundary.** The invoking user is trusted for `PATH`. The transcripts'
+  *content* is not: it is tool output and conversation (A1), and a tool name is text a
+  transcript supplies, so the text report escapes it (`escape_debug`) before it reaches
+  a terminal. The JSON form escapes it as any JSON string.
+- **What it walks.** Directories are listed; symbolic links and special files inside
+  the tree are counted as skipped and never opened, and a file is checked again after
+  its open, so a FIFO named `*.jsonl` does not block the walk. A root that is neither a
+  directory nor a regular file is refused before it is opened. One window is left: a
+  regular file replaced by a FIFO between the type check and the open blocks that open.
+  The rustdoc of `bench.rs` names it; nothing closes it.
+- **What it decides.** Nothing. The replacement rule it counts is `hook`'s, the
+  do-no-harm gate prices with the heuristic whichever `--tokenizer` is named, and the
+  encoders, the gate and the archive format are those of every other subcommand.
+
 ## Assets
 
 | Asset | Why it matters |
@@ -141,7 +165,7 @@ or a tool get back what was really there.
 | **The rendering's meaning** | The model acts on the rendering. A rendering that reads differently from the original misleads the agent, even if the archive is intact. |
 | **Availability of the host** | tokfold runs inside, or next to, an agent. A crash, a hang or a runaway allocation takes the agent's tool path down with it. |
 | **Files at the `--archive` path** | `compress` overwrites that path, and can delete it (see *Archive path handling*). |
-| **The file standard output is redirected to** | All five subcommands write there: `expand` the original bytes verbatim, `compress` the rendering, `mcp` its JSON-RPC replies, `hook` one JSON line carrying the rendering of the tool result it replaced (or nothing, when it leaves the result alone), and `stats` a report whose eight lines carry six numbers and a name-with-id for the encoder and the tokenizer (`format_stats` in `crates/tokfold-cli/src/main.rs`) and, with `--tokenizer cl100k|o200k`, four more carrying three numbers and the exact tokenizer's name-with-id (`format_exact_counts`); or with `--json` one line holding the same numbers plus the minimum-saving bar and the fidelity (`format_stats_json`, the MCP `stats` object, followed by the four exact counts under `--tokenizer cl100k|o200k`) — the one of the five that puts nothing from the input there. `--help` and `--version` land there too, through clap's printer or `write_stdout` depending on the stream (`parse_failure` in the same file). The CLI does not name that file and does not set its mode (see *Archive path handling*). Until 2026-10-14 this row named three of the four subcommands, omitting the only one whose output is content-free. |
+| **The file standard output is redirected to** | All six subcommands write there: `expand` the original bytes verbatim, `compress` the rendering, `mcp` its JSON-RPC replies, `hook` one JSON line carrying the rendering of the tool result it replaced (or nothing, when it leaves the result alone), and `stats` a report whose eight lines carry six numbers and a name-with-id for the encoder and the tokenizer (`format_stats` in `crates/tokfold-cli/src/main.rs`) and, with `--tokenizer cl100k|o200k`, four more carrying three numbers and the exact tokenizer's name-with-id (`format_exact_counts`); or with `--json` one line holding the same numbers plus the minimum-saving bar and the fidelity (`format_stats_json`, the MCP `stats` object, followed by the four exact counts under `--tokenizer cl100k|o200k`) — the one of the six that puts nothing from the input there; and `bench` counts, token sums, ratios and shares beside their tokenizer and profile, in aligned text or with `--json` in one line (`Report` in `crates/tokfold-cli/src/bench.rs`), whose only text from its input is the name of each tool it measured, escaped in the text form. `--help` and `--version` land there too, through clap's printer or `write_stdout` depending on the stream (`parse_failure` in the same file). The CLI does not name that file and does not set its mode (see *Archive path handling*). Until 2026-10-14 this row named three of the four subcommands, omitting the only one whose output is content-free. |
 
 ## Attacker capabilities considered
 
@@ -287,7 +311,10 @@ here.
 It is not the only file the CLI *opens* by name. The `--input` path is opened
 read-only, through `fs::read` in `read_source`, by each of the three subcommands that
 take the flag — `compress`, `expand` and `stats`, while `mcp` takes no arguments — and
-a symlink there is followed exactly as one at the archive path is. Until 2026-10-14
+a symlink there is followed exactly as one at the archive path is. `bench` opens
+files it was not given by name: every regular `*.jsonl` file under its `PATH`,
+read-only, never a symlink or special file inside the tree (`collect` in
+`crates/tokfold-cli/src/bench.rs`). Until 2026-10-14
 the sentence this section opens with said "opens by name", and that wording was itself
 a fix: it replaced "the only file the CLI writes", which the redirected standard output
 falsifies and which the paragraph below answers. The input read falsifies the

@@ -89,6 +89,28 @@ cargo build --release -p tokfold-cli   # binary at target/release/tokfold
   description, not a plan.
 - `tokfold hook` — a Claude Code `PostToolUse` hook; see *Using it as a Claude Code
   hook* below. It always exits `0`.
+- `tokfold bench <PATH>` — measures what tokfold would save on real Claude Code
+  transcripts before you install the hook. `PATH` is a directory searched recursively
+  for `*.jsonl` (such as `~/.claude/projects`) or one transcript. Every main-chain tool
+  result is compressed with `--profile` and counted as replaced under the hook's rule
+  (an encoder other than passthrough wins and the rendering is shorter in bytes); the
+  report gives, per tool name, the results, tokens before and after, the ratio and the
+  replacements, with sums for all tools and for the hook's `mcp__.*` matcher. It then
+  prices the results against the bill the transcripts record: each request's usage is
+  taken once (`requestId`, else `message.id`), cache writes, reads, input and output
+  are weighted 1.25 / 2 / 0.10 / 1 / 5 in base-input units, and a result written once
+  and re-read on each later request until the next compaction costs `W + 0.10 × (N −
+  1)` per token, where `W` is the bill's blended write multiplier and `N` the number
+  of requests that carry it. The shares mix units — results in the `--tokenizer`'s
+  tokens, the bill in Claude's — and the report says so. `--tokenizer` takes the same
+  values as for `stats` and is reporting only; `cl100k`/`o200k` need the `tiktoken`
+  feature and are refused with exit `2` otherwise, before `PATH` is read. Every number
+  is printed beside its tokenizer and profile. `--json` prints the report as one line.
+  It reads only: no standard input, no network, no file written. Symbolic links and
+  special files inside the tree are skipped and counted, never opened. It prints
+  aggregates and tool names, never a result, a message or a path inside the tree.
+  Exit `0` with a report, `2` for a missing `PATH`, one that is neither a directory
+  nor a regular file, a tree without a `.jsonl` file, or a report it cannot write.
 
 Exit codes are normative: `0` success, `2` bad input (usage, I/O, or an input the
 compressor rejects on `stats`), `3` a corrupt, empty, or otherwise unrecoverable

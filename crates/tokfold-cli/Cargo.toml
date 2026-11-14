@@ -43,8 +43,8 @@ anyhow.workspace = true
 
 [features]
 default = []
-# `tiktoken` lets `tokfold stats --tokenizer cl100k|o200k` count with the exact GPT
-# tokenizers in tokfold-core. Reporting only: the gate still prices with the
-# heuristic. It embeds megabytes of BPE data, so it is off by default and the
+# `tiktoken` lets `tokfold stats --tokenizer cl100k|o200k` and `tokfold bench
+# --tokenizer cl100k|o200k` count with the exact GPT tokenizers in tokfold-core.
+# Reporting only: the gate still prices with the heuristic. It embeds megabytes of BPE data, so it is off by default and the
 # release binaries are built without it; such a build refuses those two spellings.
 tiktoken = ["tokfold-core/tiktoken"]

@@ -5025,3 +5025,416 @@ fn hook_help_states_its_contract() {
     assert!(root.contains("hook"), "{root}");
     assert!(root.contains("So is `hook`"), "{root}");
 }
+
+/// One synthetic Claude Code transcript for the `bench` tests: three requests on the
+/// main chain, an MCP tool whose result the tabular encoder shrinks, a built-in tool
+/// whose result is a list of text parts, a sidechain record that must not be billed,
+/// and a line that is not JSON.
+///
+/// Request usage is the same for all three: 10 input, 2 output, 100 cache reads and 40
+/// one-hour cache writes. So the bill is 30 + 6 × 5 + 300 × 0.1 + 120 × 2 = 330 units
+/// and the write multiplier is (30 + 240) / 150 = 1.8. The MCP result is followed by
+/// two requests (written once, read once), the `Bash` result by one (written once).
+fn bench_transcript() -> String {
+    use tokfold_mcp::json::Value;
+    let assistant = |request: &str, tool: Option<(&str, &str)>| {
+        let content = tool.map_or_else(String::new, |(id, name)| {
+            format!(r#"{{"type":"tool_use","id":"{id}","name":"{name}","input":{{}}}}"#)
+        });
+        format!(
+            r#"{{"type":"assistant","requestId":"{request}","message":{{"usage":{{"input_tokens":10,"output_tokens":2,"cache_read_input_tokens":100,"cache_creation":{{"ephemeral_1h_input_tokens":40,"ephemeral_5m_input_tokens":0}}}},"content":[{content}]}}}}"#
+        )
+    };
+    let json = Value::string(std::str::from_utf8(COMPRESSIBLE_JSON).expect("utf-8"));
+    [
+        assistant("r1", Some(("t1", "mcp__srv__list"))),
+        format!(
+            r#"{{"type":"user","message":{{"content":[{{"type":"tool_result","tool_use_id":"t1","content":{json}}}]}}}}"#
+        ),
+        assistant("r2", Some(("t2", "Bash"))),
+        r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t2","content":[{"type":"text","text":"secret-listing.txt"}]}]}}"#.to_owned(),
+        assistant("r3", None),
+        r#"{"isSidechain":true,"type":"assistant","requestId":"side","message":{"usage":{"input_tokens":999},"content":[]}}"#.to_owned(),
+        "not json".to_owned(),
+    ]
+    .join("\n")
+        + "\n"
+}
+
+/// A directory holding [`bench_transcript`] as `session.jsonl`, plus a file `bench`
+/// must ignore because of its extension.
+fn bench_dir(name: &str) -> PathBuf {
+    let dir = scratch_dir(name);
+    fs::create_dir_all(dir.join("project")).expect("create the project directory");
+    fs::write(
+        dir.join("project").join("session.jsonl"),
+        bench_transcript(),
+    )
+    .expect("write the transcript");
+    fs::write(dir.join("notes.txt"), "{\"not\":\"a transcript\"}\n").expect("write notes");
+    dir
+}
+
+/// Run `bench` with `args` and no standard input, bounded, and return its output.
+fn run_bench(args: &[&str]) -> Output {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tokfold"))
+        .arg("bench")
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn tokfold");
+    // Both pipes are tiny here, so polling before draining cannot deadlock.
+    assert!(
+        finished_within_ten_seconds(&mut child),
+        "bench {args:?} did not finish within ten seconds"
+    );
+    child.wait_with_output().expect("collect bench's output")
+}
+
+/// `bench --json` reports every number the model defines, each derived here from the
+/// core crate rather than only pinned: the MCP result is replaced by its rendering, the
+/// `Bash` list result is not, the sidechain request is not billed, and the shares follow
+/// `W + r × (N − 1)` per token.
+#[test]
+#[allow(clippy::too_many_lines)] // one fixture, every field of the report
+fn bench_json_reports_the_model_on_a_synthetic_transcript() {
+    use tokfold_core::{Compressor, Config, HeuristicEstimator, Profile, TokenEstimator};
+    use tokfold_mcp::json::{self, Value};
+
+    let dir = bench_dir("bench_json");
+    let out = run_bench(&["--json", path_str(&dir)]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert!(out.stderr.is_empty(), "{out:?}");
+    let stdout = String::from_utf8(out.stdout).expect("utf-8 report");
+    assert!(
+        stdout.ends_with("}\n") && stdout.lines().count() == 1,
+        "{stdout}"
+    );
+    let report = json::parse(stdout.trim_end()).expect("the report is JSON");
+    let int = |value: &Value, key: &str| value.get(key).and_then(Value::as_i64);
+    let float = |value: &Value, key: &str| match value.get(key) {
+        Some(Value::Float(x)) => *x,
+        #[allow(clippy::cast_precision_loss)]
+        Some(Value::Int(n)) => *n as f64,
+        other => panic!("{key} is not a number: {other:?}"),
+    };
+
+    let input = std::str::from_utf8(COMPRESSIBLE_JSON).expect("utf-8");
+    let rendering = Compressor::new(Config::builder().profile(Profile::Balanced).build())
+        .compress(COMPRESSIBLE_JSON)
+        .expect("the fixture compresses")
+        .rendering;
+    let est = |text: &str| i64::try_from(HeuristicEstimator.estimate(text)).expect("fits");
+    let (mcp_before, mcp_after) = (est(input), est(&rendering));
+    let bash = est("secret-listing.txt");
+    assert!(mcp_after < mcp_before, "the fixture must be a real saving");
+    assert_eq!(
+        (mcp_before, mcp_after, bash),
+        (105, 76, 7),
+        "pinned derivation"
+    );
+
+    assert_eq!(
+        report.get("tokenizer").and_then(Value::as_str),
+        Some("heuristic")
+    );
+    assert_eq!(int(&report, "tokenizerId"), Some(0));
+    assert_eq!(
+        report.get("profile").and_then(Value::as_str),
+        Some("balanced")
+    );
+    for (key, want) in [
+        ("files", 1),
+        ("skippedEntries", 0),
+        ("unreadable", 0),
+        ("records", 5),
+        ("sidechainRecordsSkipped", 1),
+        ("unparsedLines", 1),
+        ("compactions", 0),
+    ] {
+        assert_eq!(int(&report, key), Some(want), "{key}");
+    }
+
+    let tools = report
+        .get("tools")
+        .and_then(Value::as_array)
+        .expect("tools");
+    let names: Vec<_> = tools
+        .iter()
+        .map(|tool| tool.get("tool").and_then(Value::as_str))
+        .collect();
+    assert_eq!(
+        names,
+        [Some("mcp__srv__list"), Some("Bash")],
+        "most tokens first"
+    );
+    let mcp = tools.first().expect("the mcp row");
+    assert_eq!(mcp.get("hookMatcher").and_then(Value::as_bool), Some(true));
+    assert_eq!(int(mcp, "tokensBefore"), Some(mcp_before));
+    assert_eq!(int(mcp, "tokensAfter"), Some(mcp_after));
+    assert_eq!(int(mcp, "replaced"), Some(1));
+    let bash_row = tools.get(1).expect("the Bash row");
+    assert_eq!(
+        bash_row.get("hookMatcher").and_then(Value::as_bool),
+        Some(false)
+    );
+    assert_eq!(int(bash_row, "tokensAfter"), Some(bash));
+    assert_eq!(int(bash_row, "replaced"), Some(0));
+    let total = report.get("total").expect("total");
+    assert_eq!(int(total, "tokensBefore"), Some(mcp_before + bash));
+    assert_eq!(int(total, "tokensAfter"), Some(mcp_after + bash));
+    let hooked = report.get("hookMatched").expect("hookMatched");
+    assert_eq!(int(hooked, "tokensBefore"), Some(mcp_before));
+
+    let bill = report.get("bill").expect("bill");
+    for (key, want) in [
+        ("requests", 3),
+        ("inputTokens", 30),
+        ("cacheWrite5mTokens", 0),
+        ("cacheWrite1hTokens", 120),
+        ("cacheReadTokens", 300),
+        ("outputTokens", 6),
+    ] {
+        assert_eq!(int(bill, key), Some(want), "bill.{key}");
+    }
+    let close = |got: f64, want: f64, what: &str| {
+        assert!((got - want).abs() < 1e-9, "{what}: {got} != {want}");
+    };
+    close(float(bill, "units"), 330.0, "units");
+    close(float(bill, "writeMultiplier"), 1.8, "writeMultiplier");
+    #[allow(clippy::cast_precision_loss)]
+    let (mb, ma, b) = (mcp_before as f64, mcp_after as f64, bash as f64);
+    close(
+        float(bill, "meanLaterRequests"),
+        mb.mul_add(2.0, b) / (mb + b),
+        "meanLaterRequests",
+    );
+    close(
+        float(bill, "toolResultShare"),
+        mb.mul_add(1.9, b * 1.8) / 330.0,
+        "toolResultShare",
+    );
+    close(
+        float(bill, "savingShare"),
+        (mb - ma) * 1.9 / 330.0,
+        "savingShare",
+    );
+    close(
+        float(bill, "hookMatchedSavingShare"),
+        (mb - ma) * 1.9 / 330.0,
+        "hookMatchedSavingShare",
+    );
+}
+
+/// The text report states its tokenizer and profile beside the numbers, names the
+/// tools, and prints no tool result, no message and no path inside the tree. Nothing is
+/// written into the tree.
+#[test]
+fn bench_text_states_its_configuration_and_prints_no_content() {
+    let dir = bench_dir("bench_text");
+    let listing = |dir: &Path| {
+        let mut names: Vec<_> = fs::read_dir(dir)
+            .expect("list the tree")
+            .map(|entry| entry.expect("entry").file_name())
+            .collect();
+        names.sort();
+        names
+    };
+    let before = listing(&dir);
+    let out = run_bench(&["--profile", "conservative", path_str(&dir)]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert_eq!(
+        listing(&dir),
+        before,
+        "bench must write nothing into the tree"
+    );
+    let stdout = String::from_utf8(out.stdout).expect("utf-8 report");
+    assert!(stdout.contains(
+        "tokenizer: heuristic (id 0) -- the engine's own estimate, not a real tokenizer\n"
+    ));
+    assert!(stdout.contains("profile:   conservative\n"));
+    assert!(stdout.contains("tool results, counted with heuristic, profile conservative:\n"));
+    assert!(stdout.contains(
+        "shares of the bill mix units: tool results in heuristic tokens (profile \
+         conservative), the bill in Claude tokens\n"
+    ));
+    assert!(stdout.contains("mcp__srv__list"), "{stdout}");
+    assert!(stdout.contains("Bash"), "{stdout}");
+    // `conservative` has only the minifier, and the fixture has no whitespace to strip.
+    assert!(
+        stdout.contains(
+            "all tools                      2            112            112   1.0000         0\n"
+        ),
+        "{stdout}"
+    );
+    for content in [
+        "item0",
+        "secret-listing",
+        "session.jsonl",
+        "project",
+        "notes",
+    ] {
+        assert!(!stdout.contains(content), "{content} leaked: {stdout}");
+    }
+    assert!(
+        stdout.lines().all(|line| line == line.trim_end()),
+        "{stdout:?}"
+    );
+}
+
+/// A tool name is untrusted text from the transcript: the text report escapes it, so
+/// an escape sequence in a name cannot reach the terminal.
+#[test]
+fn bench_escapes_a_tool_name_in_the_text_report() {
+    let dir = scratch_dir("bench_escape");
+    fs::write(
+        dir.join("a.jsonl"),
+        concat!(
+            r#"{"type":"assistant","requestId":"r1","message":{"usage":{"input_tokens":1},"content":[{"type":"tool_use","id":"t1","name":"mcp__x\u001b[31m"}]}}"#,
+            "\n",
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}"#,
+            "\n"
+        ),
+    )
+    .expect("write the transcript");
+    let out = run_bench(&[path_str(&dir)]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let stdout = String::from_utf8(out.stdout).expect("utf-8 report");
+    assert!(!stdout.contains('\u{1b}'), "{stdout:?}");
+    assert!(stdout.contains("mcp__x\\u{1b}[31m"), "{stdout}");
+}
+
+/// Inside the tree, a FIFO named like a transcript and a link to a real transcript are
+/// both skipped and counted, never opened: opening the FIFO would block forever with no
+/// writer, and following the link would count the transcript twice. The root, by
+/// contrast, is refused when it is a FIFO, before it is opened.
+#[cfg(unix)]
+#[test]
+fn bench_never_opens_a_fifo_or_follows_a_link() {
+    use tokfold_mcp::json::{self, Value};
+
+    let dir = bench_dir("bench_fifo");
+    let fifo = dir.join("pipe.jsonl");
+    let made = Command::new("mkfifo")
+        .arg(path_str(&fifo))
+        .status()
+        .is_ok_and(|status| status.success());
+    if !made {
+        return; // no `mkfifo` on this box; nothing to assert about
+    }
+    std::os::unix::fs::symlink(
+        dir.join("project").join("session.jsonl"),
+        dir.join("link.jsonl"),
+    )
+    .expect("link to the transcript");
+
+    let out = run_bench(&["--json", path_str(&dir)]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let report = json::parse(String::from_utf8_lossy(&out.stdout).trim_end()).expect("JSON");
+    assert_eq!(report.get("files").and_then(Value::as_i64), Some(1));
+    assert_eq!(
+        report.get("skippedEntries").and_then(Value::as_i64),
+        Some(2)
+    );
+    assert_eq!(report.get("unreadable").and_then(Value::as_i64), Some(0));
+
+    let out = run_bench(&[path_str(&fifo)]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(out.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        format!(
+            "tokfold: {} is neither a directory nor a regular file\n",
+            fifo.display()
+        )
+    );
+}
+
+/// A tree without a transcript, and a path that does not exist, are bad input: exit 2,
+/// nothing on standard output.
+#[test]
+fn bench_refuses_a_tree_without_transcripts() {
+    let dir = scratch_dir("bench_empty");
+    fs::write(dir.join("notes.txt"), "x").expect("write notes");
+    let out = run_bench(&[path_str(&dir)]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(out.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        format!("tokfold: no .jsonl transcript under {}\n", dir.display())
+    );
+
+    let out = run_bench(&["/nonexistent/tokfold-bench-tree"]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(out.stdout.is_empty());
+}
+
+/// A build without the `tiktoken` feature refuses an exact tokenizer on `bench` with
+/// the same message as on `stats`, before the path is looked at.
+#[cfg(not(feature = "tiktoken"))]
+#[test]
+fn bench_refuses_an_exact_tokenizer_this_build_lacks() {
+    for name in ["cl100k", "o200k"] {
+        let out = run_bench(&["--tokenizer", name, "/nonexistent/tokfold-bench-tree"]);
+        assert_eq!(out.status.code(), Some(2), "{name}: {out:?}");
+        assert!(out.stdout.is_empty(), "{name}: stdout must stay empty");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stderr),
+            format!(
+                "tokfold: --tokenizer {name} needs a tokfold built with the `tiktoken` \
+                 feature; this build has only the heuristic estimate\n"
+            )
+        );
+    }
+}
+
+/// With the `tiktoken` feature, `--tokenizer` changes what is counted and nothing that
+/// is decided: the same result is replaced, and both sides are the exact tokenizer's
+/// counts of the result and of its rendering.
+#[cfg(feature = "tiktoken")]
+#[test]
+fn bench_counts_with_an_exact_tokenizer() {
+    use tokfold_core::{
+        Cl100kEstimator, Compressor, Config, O200kEstimator, Profile, TokenEstimator,
+    };
+    use tokfold_mcp::json::{self, Value};
+
+    let dir = bench_dir("bench_exact");
+    let input = std::str::from_utf8(COMPRESSIBLE_JSON).expect("utf-8");
+    let rendering = Compressor::new(Config::builder().profile(Profile::Balanced).build())
+        .compress(COMPRESSIBLE_JSON)
+        .expect("the fixture compresses")
+        .rendering;
+    let cl100k = Cl100kEstimator::new().expect("cl100k loads");
+    let o200k = O200kEstimator::new().expect("o200k loads");
+    let cases: [(&str, &dyn TokenEstimator, &str, i64); 2] = [
+        ("cl100k", &cl100k, "cl100k-base", 2),
+        ("o200k", &o200k, "o200k-base", 3),
+    ];
+    for (name, counter, label, id) in cases {
+        let out = run_bench(&["--json", "--tokenizer", name, path_str(&dir)]);
+        assert_eq!(out.status.code(), Some(0), "{name}: {out:?}");
+        let report = json::parse(String::from_utf8_lossy(&out.stdout).trim_end()).expect("JSON");
+        assert_eq!(report.get("tokenizer").and_then(Value::as_str), Some(label));
+        assert_eq!(report.get("tokenizerId").and_then(Value::as_i64), Some(id));
+        let hooked = report.get("hookMatched").expect("hookMatched");
+        let count = |text: &str| i64::try_from(counter.estimate(text)).expect("fits");
+        assert_eq!(
+            hooked.get("tokensBefore").and_then(Value::as_i64),
+            Some(count(input)),
+            "{name}"
+        );
+        assert_eq!(
+            hooked.get("tokensAfter").and_then(Value::as_i64),
+            Some(count(&rendering)),
+            "{name}"
+        );
+        assert_eq!(
+            hooked.get("replaced").and_then(Value::as_i64),
+            Some(1),
+            "{name}"
+        );
+    }
+}
