@@ -49,7 +49,7 @@
 //! same rendering" until it was measured, and the measurement refutes it. Collapse is
 //! something the *tape-re-emitting* encoders do. `PASSTHROUGH`'s body is the input
 //! bytes verbatim, so under it a whitespace-only difference survives into the
-//! rendering; `{ "a" : 1 }` renders as `⟦tkfd:v1:raw⟧` plus those exact bytes.
+//! rendering; `{ "a" : 1 }` renders as those exact bytes and nothing else.
 //! Measured over the 1 500 pairs in
 //! [`generators_reach_the_regions_the_properties_need`]: of 487 byte-distinct pairs
 //! the oracle calls equal, 22 collapsed — every one of them with both sides on
@@ -92,17 +92,18 @@ fn compressor() -> Compressor {
     Compressor::new(Config::default())
 }
 
-/// The sentinel line every passthrough rendering carries. 18 bytes.
-const RAW_SENTINEL_LINE: &str = "\u{27E6}tkfd:v1:raw\u{27E7}\n";
-
-/// What [`HeuristicEstimator`] charges for [`RAW_SENTINEL_LINE`] alone:
-/// 2 (`\u{27E6}`) + 2 (`tkfd`) + 1 (`:`) + 1 (`v1`) + 1 (`:`) + 1 (`raw`) +
-/// 2 (`\u{27E7}`) + 0 (the trailing newline, a one-character whitespace run) = 10.
-///
-/// Pinned as a literal on purpose: if the sentinel text or the estimator's cost
-/// constants move, the tokens a passthrough result silently spends move with them,
-/// and [`prop04_do_no_harm`] must say so out loud.
-const RAW_FRAME_TOKENS: usize = 10;
+/// The rendering minus its sentinel line: the body that stands for the input. A
+/// passthrough rendering has no sentinel line -- it is the input itself -- so its
+/// body is the whole rendering.
+fn rendering_body(art: &tokfold_core::Artifact) -> &str {
+    if art.stats.encoder == EncoderId::PASSTHROUGH {
+        return &art.rendering;
+    }
+    art.rendering
+        .split_once('\n')
+        .expect("a framed rendering always carries a sentinel line")
+        .1
+}
 
 // ===========================================================================
 // JSON generators
@@ -707,10 +708,7 @@ proptest! {
     fn prop01b_rendering_semantic_fidelity(x in arb_valid_json()) {
         let c = compressor();
         let art = c.compress(x.as_bytes()).unwrap();
-        let body = art.rendering
-            .split_once('\n')
-            .expect("a framed rendering always carries a sentinel line")
-            .1;
+        let body = rendering_body(&art);
         // Field access is allowed on the non_exhaustive id even from a test crate.
         match art.stats.encoder.0 {
             0 => prop_assert_eq!(
@@ -778,12 +776,12 @@ proptest! {
     ///
     /// * a winning encoder must report exactly what its own rendering estimates, and
     ///   that must be a strict win over the input — sentinel line included;
-    /// * passthrough reports a clean no-op (`token_ratio() == 1.0`), but the text
-    ///   handed to the model is the input *plus* [`RAW_SENTINEL_LINE`], which costs
-    ///   [`RAW_FRAME_TOKENS`] every time. The gap between the reported `1.0` and the
-    ///   tokens actually spent is pinned here as a measurement. Whether the reporting
-    ///   should change is an open product question this test deliberately does not
-    ///   answer — it fails if the *size* of the gap moves, not because the gap exists.
+    /// * passthrough reports a clean no-op (`token_ratio() == 1.0`), and the text
+    ///   handed to the model is the input itself, unframed, so the report is exactly
+    ///   what is spent. Until the sentinel became `#tkfd1 <tag>` the passthrough
+    ///   rendering carried a `raw` sentinel line costing 10 estimated tokens that the
+    ///   report did not show; this property pinned that gap as a measurement and now
+    ///   pins its absence.
     #[test]
     fn prop04_do_no_harm(x in arb_valid_json()) {
         let c = compressor();
@@ -800,19 +798,12 @@ proptest! {
             prop_assert_eq!(art.stats.est_tokens_after, art.stats.est_tokens_before);
             prop_assert_eq!(art.stats.token_ratio(), 1.0);
             prop_assert_eq!(art.stats.byte_ratio(), 1.0);
-            prop_assert_eq!(&art.rendering, &format!("{RAW_SENTINEL_LINE}{x}"));
-
-            // ...but strictly more expensive than the input, by the sentinel line.
-            // The `+ 1` applies only when `x` opens with exactly one ASCII whitespace
-            // character: the sentinel's trailing newline then joins it into a
-            // two-character run, which the heuristic charges where a one-character
-            // run is free. (No generator here emits leading whitespace today, so that
-            // arm is a correctness hedge; `compressor::tests` covers it directly.)
-            let leading_ws = x.chars().take_while(char::is_ascii_whitespace).count();
-            let expected = measured_input + RAW_FRAME_TOKENS + usize::from(leading_ws == 1);
+            // ...and a no-op in fact: the rendering is the input, so it costs what
+            // the input costs.
+            prop_assert_eq!(&art.rendering, &x);
             prop_assert_eq!(
-                measured_rendering, expected,
-                "passthrough framing cost moved: {} -> {} on {:?}",
+                measured_rendering, measured_input,
+                "a passthrough rendering costs other than its input: {} -> {} on {:?}",
                 measured_input, measured_rendering, x
             );
         } else {
@@ -1019,7 +1010,7 @@ fn json_lines_records_are_rendered_as_one_table() {
         .expect("JSON Lines is accepted");
     assert_eq!(a.stats.encoder, EncoderId::E4_JSONL);
     assert!(
-        a.rendering.starts_with("\u{27E6}tkfd:v1:jsonl\u{27E7}\n"),
+        a.rendering.starts_with("#tkfd1 jsonl\n"),
         "{:?}",
         a.rendering
     );
@@ -1040,14 +1031,8 @@ fn json_lines_body_is_the_e2_body_of_the_records_array() {
     let lines = c.compress(input.as_bytes()).unwrap();
     let doc = c.compress(array.as_bytes()).unwrap();
     assert_eq!(doc.stats.encoder, EncoderId::E2_TABULAR);
-    let lines_body = lines
-        .rendering
-        .strip_prefix("\u{27E6}tkfd:v1:jsonl\u{27E7}\n")
-        .unwrap();
-    let doc_body = doc
-        .rendering
-        .strip_prefix("\u{27E6}tkfd:v1:tbl\u{27E7}\n")
-        .unwrap();
+    let lines_body = lines.rendering.strip_prefix("#tkfd1 jsonl\n").unwrap();
+    let doc_body = doc.rendering.strip_prefix("#tkfd1 tbl\n").unwrap();
     assert_eq!(lines_body, doc_body);
 }
 
@@ -1059,7 +1044,7 @@ fn json_lines_without_a_shared_shape_pass_through() {
     let input = "{\"a\":1}\n{\"b\":2}\n[3]\n";
     let a = c.compress(input.as_bytes()).unwrap();
     assert_eq!(a.stats.encoder, EncoderId::PASSTHROUGH);
-    assert_eq!(a.rendering, format!("{RAW_SENTINEL_LINE}{input}"));
+    assert_eq!(a.rendering, input);
     assert!(!a.stats.gate_rejected_candidate);
     assert_eq!(a.stats.bytes_after, input.len());
     assert_eq!(
@@ -1082,7 +1067,7 @@ fn json_lines_pass_through_under_conservative() {
     let a = c.compress(input.as_bytes()).unwrap();
     assert_eq!(a.stats.encoder, EncoderId::PASSTHROUGH);
     assert!(!a.stats.gate_rejected_candidate);
-    assert_eq!(a.rendering, format!("{RAW_SENTINEL_LINE}{input}"));
+    assert_eq!(a.rendering, input);
 }
 
 /// When recognition fails, the error is the whole-input parse error, offset and all:
@@ -1379,11 +1364,7 @@ fn every_insignificant_whitespace_byte_is_canonicalized_away() {
         let restored = c.decompress(&art.archive).unwrap();
         let restored = std::str::from_utf8(&restored).unwrap();
         assert!(json_semantically_eq(bare, restored), "archive lost {ws:?}");
-        let body = art
-            .rendering
-            .split_once('\n')
-            .expect("a framed rendering always carries a sentinel line")
-            .1;
+        let body = rendering_body(&art);
         match art.stats.encoder {
             // Passthrough keeps the layout; E1 strips it. Either way the body must
             // still stand for `bare`, which is the whole point of "insignificant".

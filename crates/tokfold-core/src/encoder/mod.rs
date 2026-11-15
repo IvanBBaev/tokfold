@@ -37,8 +37,8 @@
 //!   recognises is treated the same way.
 //!
 //! A JSON Lines input goes through `select_records` instead of `select`: the record
-//! encoder renders the records as one array, and the gate prices that rendering, and
-//! frames the passthrough fallback, against the input as given.
+//! encoder renders the records as one array, the gate prices that rendering against
+//! the input as given, and the passthrough fallback is the input as given.
 //! * **Do-no-harm** — the chosen rendering's estimated tokens never exceed the
 //!   input's, or the result is passthrough.
 
@@ -51,11 +51,11 @@ mod e2_tabular;
 /// The sealed set of encoders. See the module docs for why this is an enum and not
 /// a public trait. Ids are frozen once released and must never be renumbered; they
 /// identify the winning encoder out-of-band via `Stats.encoder` and the rendering's
-/// sentinel tag, not on the wire — v0.0.1 always records `encoder_id = 0`
+/// sentinel tag, not on the wire — the compressor always records `encoder_id = 0`
 /// (passthrough) in the archive header.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Encoder {
-    /// No transformation; the input is emitted verbatim behind a `raw` sentinel. id 0.
+    /// No transformation; the input is emitted verbatim, with no sentinel line. id 0.
     Passthrough,
     /// Token-aware JSON minification. id 1.
     E1Minify,
@@ -81,39 +81,50 @@ impl Encoder {
         }
     }
 
-    /// The sentinel tag opening this encoder's rendering: `raw`, `min`, `tbl` or
-    /// `jsonl`.
-    const fn tag(self) -> &'static str {
+    /// The sentinel tag opening this encoder's rendering: `min`, `tbl` or `jsonl`.
+    /// `None` for [`Encoder::Passthrough`], whose rendering is the input itself with
+    /// no sentinel line at all.
+    const fn tag(self) -> Option<&'static str> {
         match self {
-            Self::Passthrough => "raw",
-            Self::E1Minify => "min",
-            Self::E2Tabular => "tbl",
-            Self::E4Jsonl => "jsonl",
+            Self::Passthrough => None,
+            Self::E1Minify => Some("min"),
+            Self::E2Tabular => Some("tbl"),
+            Self::E4Jsonl => Some("jsonl"),
         }
     }
 }
 
-/// Fixed opening of every rendering's sentinel line, before the encoder tag.
-const SENTINEL_OPEN: &str = "\u{27E6}tkfd:v1:";
+/// Fixed opening of every framed rendering's sentinel line, before the encoder tag.
+///
+/// Plain ASCII on purpose. The `v1` frame it replaces, `⟦tkfd:v1:<tag>⟧`, opened and
+/// closed with two mathematical brackets that the `cl100k` and `o200k` tokenizers
+/// split into three tokens each, so the frame alone cost 10 to 14 real tokens. This
+/// line costs 5 to 7 (pinned per tag and tokenizer by
+/// `the_sentinel_costs_what_the_docs_say_it_costs` in `estimator`). A JSON or JSON
+/// Lines document can never open with `#`, so a rendering that opens with this text is
+/// framed and one that does not is the input itself.
+pub(crate) const SENTINEL_OPEN: &str = "#tkfd1 ";
 
-/// Closing bracket of the sentinel line.
-const SENTINEL_CLOSE: char = '\u{27E7}';
+/// Upper bound on the sentinel line's byte length (`#tkfd1 jsonl` plus its
+/// newline is 13), used only as a capacity hint.
+const SENTINEL_MAX_BYTES: usize = 16;
 
-/// Upper bound on the sentinel line's byte length, used only as a capacity hint.
-const SENTINEL_MAX_BYTES: usize = 24;
-
-/// Write the sentinel line `⟦tkfd:v1:<tag>⟧` plus a trailing newline into `out`.
-fn write_sentinel(enc: Encoder, out: &mut String) {
+/// Write the sentinel line `#tkfd1 <tag>` plus a trailing newline into `out`.
+fn write_sentinel(tag: &str, out: &mut String) {
     out.push_str(SENTINEL_OPEN);
-    out.push_str(enc.tag());
-    out.push(SENTINEL_CLOSE);
+    out.push_str(tag);
     out.push('\n');
 }
 
-/// Frame `body` as a full rendering: the sentinel line followed by the body.
+/// Turn `body` into `enc`'s full rendering: the sentinel line followed by the body,
+/// or the body alone for [`Encoder::Passthrough`], which has no tag and is never
+/// framed — its rendering is the input, byte for byte.
 fn framed(enc: Encoder, body: &str) -> String {
+    let Some(tag) = enc.tag() else {
+        return body.to_owned();
+    };
     let mut out = String::with_capacity(body.len().saturating_add(SENTINEL_MAX_BYTES));
-    write_sentinel(enc, &mut out);
+    write_sentinel(tag, &mut out);
     out.push_str(body);
     out
 }
@@ -122,7 +133,7 @@ fn framed(enc: Encoder, body: &str) -> String {
 ///
 /// The returned string is the full rendering the model reads: the sentinel line
 /// followed by the encoder body. [`Encoder::Passthrough`] always applies and
-/// returns the input verbatim behind a `raw` sentinel; the other encoders decline with
+/// returns the input verbatim, with no sentinel line; the other encoders decline with
 /// `None` when the input does not fit their shape — E1 when a span cannot be resolved,
 /// E2 when no array qualifies. E2 additionally propagates `None` from several
 /// defensive guards inside its render walk (span resolution, index arithmetic, an
@@ -153,13 +164,14 @@ pub(crate) fn render(enc: Encoder, tape: &Tape, input: &str) -> Option<String> {
 pub(crate) struct Selection {
     /// The winning encoder ([`Encoder::Passthrough`] when nothing beat the input).
     pub encoder: Encoder,
-    /// The full rendering, sentinel line included, ready for model context.
+    /// The full rendering, ready for model context: the sentinel line and the body
+    /// for a winning encoder, the input byte for byte for passthrough.
     pub rendering: String,
     /// Estimated tokens of the original input.
     pub est_tokens_before: usize,
     /// Estimated tokens of `rendering`; equals `est_tokens_before` for passthrough,
-    /// so `token_ratio` is exactly 1.0 there. The `raw` sentinel is framing
-    /// overhead, not counted as compression harm.
+    /// so `token_ratio` is exactly 1.0 there — and that is a measurement, not a
+    /// convention, because the passthrough rendering is the input itself.
     pub est_tokens_after: usize,
     /// Whether at least one encoder produced a rendering that [`clears_margin`]
     /// refused, for either of the two reasons that function refuses for: the
@@ -201,7 +213,7 @@ pub(crate) fn select(
 
 /// [`select`] for a JSON Lines input: candidates render `array` — the records as one
 /// JSON array, with `tape` its tape — while the gate prices them against `original`,
-/// the input as given, and the passthrough fallback frames `original`.
+/// the input as given, and the passthrough fallback is `original` itself.
 ///
 /// `enabled` should hold only [`Encoder::E4Jsonl`]: E1 and E2 describe the document
 /// they render, and `array` is not the input.
@@ -355,12 +367,59 @@ mod tests {
         assert_eq!(Encoder::E4Jsonl.id(), 4);
     }
 
+    /// The body grammars of ids 1, 2 and 4 are frozen: a released id never changes
+    /// meaning, so only the sentinel line in front of a body may change. The golden
+    /// renderings in `tests/golden/` were written at commit `a21a26a` under the `v1`
+    /// frame `⟦tkfd:v1:<tag>⟧`; behind that line, each body must still be exactly what
+    /// the encoder renders today.
     #[test]
-    fn passthrough_rendering_carries_the_raw_sentinel() {
-        let input = "{\"a\":1}";
-        let t = tape_of(input);
-        let r = render(Encoder::Passthrough, &t, input).unwrap();
-        assert_eq!(r, format!("\u{27E6}tkfd:v1:raw\u{27E7}\n{input}"));
+    fn the_bodies_of_ids_1_2_and_4_match_the_golden_renderings() {
+        fn legacy_body<'a>(rendering: &'a str, tag: &str) -> &'a str {
+            let line = format!("\u{27E6}tkfd:v1:{tag}\u{27E7}\n");
+            rendering.strip_prefix(line.as_str()).expect("a v1 frame")
+        }
+        let cases: [(Encoder, &str, &str, &str); 3] = [
+            (
+                Encoder::E1Minify,
+                "min",
+                include_str!("../../tests/golden/minify.json"),
+                include_str!("../../tests/golden/minify.json.rendering"),
+            ),
+            (
+                Encoder::E2Tabular,
+                "tbl",
+                include_str!("../../tests/golden/table.json"),
+                include_str!("../../tests/golden/table.json.rendering"),
+            ),
+            (
+                Encoder::E2Tabular,
+                "tbl",
+                include_str!("../../tests/golden/unicode-table.json"),
+                include_str!("../../tests/golden/unicode-table.json.rendering"),
+            ),
+        ];
+        for (enc, tag, input, golden) in cases {
+            let r = render(enc, &tape_of(input), input).unwrap();
+            let body = r.strip_prefix(&format!("#tkfd1 {tag}\n")).unwrap();
+            assert_eq!(body, legacy_body(golden, tag), "{enc:?} body changed");
+        }
+
+        let input = include_str!("../../tests/golden/records.jsonl");
+        let golden = include_str!("../../tests/golden/records.jsonl.rendering");
+        let records = crate::ndjson::records(input, 512).unwrap();
+        let r = render(Encoder::E4Jsonl, &records.tape, &records.array).unwrap();
+        let body = r.strip_prefix("#tkfd1 jsonl\n").unwrap();
+        assert_eq!(body, legacy_body(golden, "jsonl"), "E4Jsonl body changed");
+    }
+
+    #[test]
+    fn passthrough_rendering_is_the_input_unframed() {
+        for input in ["{\"a\":1}", " [1, 2]\n", "\"#tkfd1 min\""] {
+            let t = tape_of(input);
+            let r = render(Encoder::Passthrough, &t, input).unwrap();
+            assert_eq!(r, input);
+            assert!(!r.starts_with(SENTINEL_OPEN), "got {r:?}");
+        }
     }
 
     #[test]
@@ -368,8 +427,7 @@ mod tests {
         let input = "{ \"a\" : 1 }";
         let t = tape_of(input);
         let r = render(Encoder::E1Minify, &t, input).unwrap();
-        assert!(r.starts_with("\u{27E6}tkfd:v1:min\u{27E7}\n"), "got {r:?}");
-        assert!(r.ends_with("{\"a\":1}"), "got {r:?}");
+        assert_eq!(r, "#tkfd1 min\n{\"a\":1}");
     }
 
     #[test]
@@ -386,7 +444,7 @@ mod tests {
         );
         assert_eq!(sel.encoder, Encoder::Passthrough);
         assert_eq!(sel.est_tokens_after, sel.est_tokens_before);
-        assert!(sel.rendering.starts_with("\u{27E6}tkfd:v1:raw\u{27E7}\n"));
+        assert_eq!(sel.rendering, input);
     }
 
     #[test]
@@ -545,11 +603,7 @@ mod tests {
         );
         assert_eq!(refused.encoder, Encoder::Passthrough);
         assert_eq!(refused.est_tokens_after, refused.est_tokens_before);
-        assert!(
-            refused
-                .rendering
-                .starts_with("\u{27E6}tkfd:v1:raw\u{27E7}\n")
-        );
+        assert_eq!(refused.rendering, input);
     }
 
     #[test]
@@ -602,7 +656,7 @@ mod tests {
         );
         assert_eq!(sel.encoder, Encoder::E1Minify);
         assert!(sel.est_tokens_after < sel.est_tokens_before);
-        assert!(sel.rendering.starts_with("\u{27E6}tkfd:v1:min\u{27E7}\n"));
+        assert!(sel.rendering.starts_with("#tkfd1 min\n"));
     }
 
     #[test]
@@ -621,6 +675,7 @@ mod tests {
         );
         assert_eq!(sel.encoder, Encoder::Passthrough);
         assert_eq!(sel.est_tokens_after, sel.est_tokens_before);
+        assert_eq!(sel.rendering, input);
     }
 
     #[test]

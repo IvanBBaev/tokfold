@@ -54,10 +54,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     run("Balanced, ByteLenEstimator", byte_len)?;
 
     // A minimum saving, in basis points of the input estimate (clamped to 10 000).
-    // Every estimator this crate ships rates the sentinel line above zero, so none
-    // can save 100 % of the input: at 10 000 bps every candidate is refused and the
-    // input passes through. (A custom estimator that rates a framed rendering at zero
-    // tokens can clear that bar.)
+    // Every estimator this crate ships rates the sentinel line above zero, so no
+    // encoder can save 100 % of the input: at 10 000 bps every candidate is refused
+    // and the input passes through. (A custom estimator that rates a rendering with a
+    // sentinel at zero tokens can clear that bar.)
     let unreachable = run(
         "Balanced, min_saving_bps 10000",
         Config::builder().min_saving_bps(10_000).build(),

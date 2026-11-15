@@ -4,4 +4,4 @@ import fs from "node:fs";
 
 const argv = process.argv.slice(2);
 const file = argv[argv.indexOf("-i") + 1];
-process.stdout.write("⟦tkfd:v1:tbl⟧\n" + fs.readFileSync(file, "utf8"));
+process.stdout.write("#tkfd1 tbl\n" + fs.readFileSync(file, "utf8"));

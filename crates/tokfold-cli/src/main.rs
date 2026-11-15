@@ -1537,10 +1537,11 @@ fn format_stats(stats: &Stats) -> Result<String> {
 /// heuristic chose. The `after` count follows the convention of [`Stats`]: when a
 /// non-passthrough encoder won it is the exact count of the framed rendering
 /// `compress` prints, and on the passthrough path it is *set* equal to the `before`
-/// count rather than measured, so the `raw` sentinel is not attributed to compression
-/// there either. A winning rendering can therefore count *more* tokens than the input
-/// (a ratio above `1.0000`): the heuristic priced it as a win and the exact tokenizer
-/// does not agree.
+/// count rather than measured. The passthrough rendering is the input itself, so the
+/// two would agree anyway; setting it keeps the convention independent of that. A
+/// winning rendering can count *more* tokens than the input (a ratio above
+/// `1.0000`): the heuristic priced it as a win and the exact tokenizer does not
+/// agree.
 struct ExactCounts {
     before: usize,
     after: usize,
@@ -1986,9 +1987,9 @@ mod tests {
     /// are pinned in every build, not only one with the `tiktoken` feature. On a
     /// winning encoder `real tokens after` counts the framed rendering; on the
     /// passthrough path it is set equal to `real tokens before` -- the convention of
-    /// `Stats` -- although the `raw`-framed rendering is longer than the input, which
-    /// is what makes the two cases tell apart. The tokenizer row names the counter's
-    /// id, not the gate's.
+    /// `Stats` -- and the passthrough rendering is the input byte for byte, so a
+    /// measured count would agree. The tokenizer row names the counter's id, not the
+    /// gate's.
     #[test]
     fn exact_counts_follow_the_stats_passthrough_convention() -> Result<(), String> {
         let input = r#"[{"id":0,"name":"item0","active":true},{"id":1,"name":"item1","active":true},{"id":2,"name":"item2","active":true},{"id":3,"name":"item3","active":true}]"#;
@@ -2014,15 +2015,15 @@ mod tests {
             EncoderId::PASSTHROUGH,
             "balanced must let an encoder win"
         );
-        assert_eq!(rendered, 116, "the tabular rendering this pins");
+        assert_eq!(rendered, 109, "the tabular rendering this pins");
         assert_eq!(
             rows,
-            "real tokens before: 153\nreal tokens after:  116\nreal token ratio:   0.7582\nreal tokenizer:     byte-length (id 1)\n"
+            "real tokens before: 153\nreal tokens after:  109\nreal token ratio:   0.7124\nreal tokenizer:     byte-length (id 1)\n"
         );
 
         let (encoder, rendered, rows) = report(Profile::Conservative)?;
         assert_eq!(encoder, EncoderId::PASSTHROUGH);
-        assert!(rendered > 153, "the raw frame lengthens the rendering");
+        assert_eq!(rendered, 153, "the passthrough rendering is the input");
         assert_eq!(
             rows,
             "real tokens before: 153\nreal tokens after:  153\nreal token ratio:   1.0000\nreal tokenizer:     byte-length (id 1)\n"

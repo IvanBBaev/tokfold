@@ -49,8 +49,8 @@ and whitespace dominate. Embed the returned `rendering` in context and keep the 
 `tokfold_estimate` first to tell whether compressing is worth it. \
 Input that reaches the engine is never dropped silently: input it declines (not JSON or JSON Lines, nested too \
 deep) comes back unchanged with `compressed: false` and a `reasonCode`, \
-JSON with nothing to save comes back verbatim after a \
-`⟦tkfd:v1:raw⟧` marker line, and a reply too large for the message limit (32 MiB by \
+JSON with nothing to save comes back verbatim as the `rendering` of a \
+`compressed: true` result whose encoder is `passthrough`, and a reply too large for the message limit (32 MiB by \
 default) is an error rather than a truncated answer. That last case is the one to \
 expect from `tokfold_compress` for JSON text from roughly 10 MiB upwards, because \
 the reply carries the rendering twice plus a base64 archive, and for declined text \

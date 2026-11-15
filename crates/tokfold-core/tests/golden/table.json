@@ -1,0 +1,122 @@
+[
+  {
+    "id": 0,
+    "name": "item-0",
+    "price": 0.0,
+    "tags": [
+      "a",
+      "b"
+    ],
+    "ok": true
+  },
+  {
+    "id": 1,
+    "name": "item-1",
+    "price": 1.5,
+    "tags": [
+      "a",
+      "b"
+    ],
+    "ok": false
+  },
+  {
+    "id": 2,
+    "name": "item-2",
+    "price": 3.0,
+    "tags": [
+      "a",
+      "b"
+    ],
+    "ok": true
+  },
+  {
+    "id": 3,
+    "name": "item-3",
+    "price": 4.5,
+    "tags": [
+      "a",
+      "b"
+    ],
+    "ok": false
+  },
+  {
+    "id": 4,
+    "name": "item-4",
+    "price": 6.0,
+    "tags": [
+      "a",
+      "b"
+    ],
+    "ok": true
+  },
+  {
+    "id": 5,
+    "name": "item-5",
+    "price": 7.5,
+    "tags": [
+      "a",
+      "b"
+    ],
+    "ok": false
+  },
+  {
+    "id": 6,
+    "name": "item-6",
+    "price": 9.0,
+    "tags": [
+      "a",
+      "b"
+    ],
+    "ok": true
+  },
+  {
+    "id": 7,
+    "name": "item-7",
+    "price": 10.5,
+    "tags": [
+      "a",
+      "b"
+    ],
+    "ok": false
+  },
+  {
+    "id": 8,
+    "name": "item-8",
+    "price": 12.0,
+    "tags": [
+      "a",
+      "b"
+    ],
+    "ok": true
+  },
+  {
+    "id": 9,
+    "name": "item-9",
+    "price": 13.5,
+    "tags": [
+      "a",
+      "b"
+    ],
+    "ok": false
+  },
+  {
+    "id": 10,
+    "name": "item-10",
+    "price": 15.0,
+    "tags": [
+      "a",
+      "b"
+    ],
+    "ok": true
+  },
+  {
+    "id": 11,
+    "name": "item-11",
+    "price": 16.5,
+    "tags": [
+      "a",
+      "b"
+    ],
+    "ok": false
+  }
+]

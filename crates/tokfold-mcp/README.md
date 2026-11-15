@@ -149,20 +149,20 @@ they read:
 ```text
 {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"tokfold","version":"0.0.1"},"instructions":"…","resultType":"complete","_meta":…}}
 {"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"tokfold_compress",…},{"name":"tokfold_decompress",…},{"name":"tokfold_estimate",…}],"ttlMs":3600000,"cacheScope":"public","resultType":"complete","_meta":…}}
-{"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"encoder=tabular bytes 290->233 tokens(est) 174->136"}],"structuredContent":{"compressed":true,"stats":{"bytesBefore":290,"bytesAfter":233,"estTokensBefore":174,"estTokensAfter":136,"byteRatio":0.803448275862069,"tokenRatio":0.7816091954022989,"encoder":"tabular","encoderId":2,"tokenizerId":0,"minSavingBps":0,"fidelity":"lossless"}},"isError":false,"resultType":"complete","_meta":…}}
-{"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"⟦tkfd:v1:tbl⟧\n{\"issues\":\n#3[…]\n}"}],"structuredContent":{"compressed":true,"stats":{…},"rendering":"⟦tkfd:v1:tbl⟧\n{\"issues\":\n#3[…]\n}","archive":"VEtGRAEAAAAAAKIC…fQ=="},"isError":false,"resultType":"complete","_meta":…}}
+{"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"encoder=tabular bytes 290->226 tokens(est) 174->130"}],"structuredContent":{"compressed":true,"stats":{"bytesBefore":290,"bytesAfter":226,"estTokensBefore":174,"estTokensAfter":130,"byteRatio":0.7793103448275862,"tokenRatio":0.7471264367816092,"encoder":"tabular","encoderId":2,"tokenizerId":0,"minSavingBps":0,"fidelity":"lossless"}},"isError":false,"resultType":"complete","_meta":…}}
+{"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"#tkfd1 tbl\n{\"issues\":\n#3[…]\n}"}],"structuredContent":{"compressed":true,"stats":{…},"rendering":"#tkfd1 tbl\n{\"issues\":\n#3[…]\n}","archive":"VEtGRAEAAAAAAKIC…fQ=="},"isError":false,"resultType":"complete","_meta":…}}
 {"jsonrpc":"2.0","id":5,"result":{"content":[{"type":"text","text":"{\"issues\":[{\"id\":101,…}]}"}],"structuredContent":{"text":"{\"issues\":[{\"id\":101,…}]}"},"isError":false,"resultType":"complete","_meta":…}}
 {"jsonrpc":"2.0","id":6,"result":{"content":[{"type":"text","text":"plain log line, not JSON"}],"structuredContent":{"compressed":false,"reason":"invalid JSON at byte 0: expected a JSON value","reasonCode":"invalid_json","rendering":"plain log line, not JSON"},"isError":false,"resultType":"complete","_meta":…}}
 ```
 
 The rendering of the fourth reply, unescaped, is what an agent puts in its context
-instead of the 290-byte original — 233 bytes, and 136 tokens against 174 by the
+instead of the 290-byte original — 226 bytes, and 130 tokens against 174 by the
 built-in estimator (`tokenizerId` `0`, an arithmetic approximation rather than a
 real model tokenizer):
 
 <!-- quickstart-rendering -->
 ```text
-⟦tkfd:v1:tbl⟧
+#tkfd1 tbl
 {"issues":
 #3["id","state","title","labels","assignee"]
 +[101,"open","Crash on empty config",["bug","p1"],null]
@@ -172,18 +172,24 @@ real model tokenizer):
 ```
 
 The archive in that reply is the one the fifth request sends back, and the text the
-fifth reply returns is byte-for-byte the original input. The tool results of this
-session (replies 3 to 6) are byte-identical between this repository and the published
-`0.0.1` binary; replies 1 and 2 differ only in the `instructions` text, the
-`tokfold_compress` description and the `profile` argument's description (which both
-`tokfold_compress` and `tokfold_estimate` carry), all reworded since that release. The
-first reply's line is 853 bytes longer (761 → 1 614) and the second 110 (2 411 →
-2 521); the `profile` rewording is the same 75 bytes wide as the text it replaced, so
-it changes the second line's bytes without changing its width.
+fifth reply returns is byte-for-byte the original input. Replies 5 and 6 of this session
+are byte-identical between this repository and the published `0.0.1` binary. Replies 3
+and 4 are not, since the rendering sentinel changed from `⟦tkfd:v1:<tag>⟧` to
+`#tkfd1 <tag>` (unreleased): reply 4's rendering opens with the new sentinel line, in
+`content` and in `structuredContent.rendering` alike, and both replies report the 7
+bytes and 6 estimated tokens the shorter sentinel saves (`bytesAfter` 233 → 226,
+`estTokensAfter` 136 → 130, and the `byteRatio` and `tokenRatio` derived from them), so
+reply 3 grows from 527 to 528 bytes and reply 4 shrinks from 1 502 to 1 489. Replies 1
+and 2 differ only in the `instructions` text, the `tokfold_compress` description and the
+`profile` argument's description (which both `tokfold_compress` and `tokfold_estimate`
+carry), all reworded since that release. The first reply's line is 894 bytes longer
+(761 → 1 655) and the second 110 (2 411 → 2 521); the `profile` rewording is the same
+75 bytes wide as the text it replaced, so it changes the second line's bytes without
+changing its width.
 
-That pair of runs is the evidence for the replies-3-to-6 byte-identity and for the two
-strings reworded by then being the whole of replies 1 and 2's difference — not for a
-byte-identity across all six, which replies 1 and 2 refute. It is also one platform's. On
+The runs below are the evidence for those differences being the whole of them — not
+for a byte-identity across all six replies, which replies 1 to 4 refute. They are also
+one platform's. On
 2026-10-03 the seven lines this session sends were replayed through the `bin/tokfold` of
 the published `tokfold-darwin-arm64` package (SHA-1
 `8e2ed283eb205aca9cf34051a7b3ede6f4f70508`) and through a release build of this
@@ -198,7 +204,14 @@ predates the third reworded string and the first line's growth to 1 614 bytes. O
 2026-11-09 the same seven lines were replayed through the same registry binary and a
 `cargo build --release -p tokfold-cli` of the working tree that adds them, on macOS
 arm64: replies 3 to 6 byte-identical at the same widths, and the decoded replies
-differing in exactly the three strings named above and nowhere else. The
+differing in exactly the three strings named above and nowhere else — true of that
+working tree, and no longer of this one for replies 3 and 4. On 2026-11-15 the same
+seven lines were replayed through the same registry binary and a
+`cargo build --release -p tokfold-cli` of the working tree that changes the sentinel,
+on macOS arm64: replies 5 and 6 byte-identical at 921 and 386 bytes, the six lines
+1 655, 2 521, 528, 1 489, 921 and 386 bytes wide, and the decoded replies 1 and 2
+differing in the same three strings and replies 3 and 4 in exactly the sentinel and
+the four `stats` fields named above, and nowhere else. The
 other four platform packages were not run, and for them this is reasoning rather than
 measurement. No reply text here is platform-conditional:
 `tokfold-core` carries no `cfg(unix)`, `cfg(windows)` or `cfg(target_os)` in its source
@@ -237,8 +250,8 @@ newest handshake-era version it serves.
   reply carries such text twice, so it stops fitting a little *under* 16 MiB, and a
   larger call is answered with the JSON-RPC error `-32602` rather than a
   `compressed: false` result. JSON with nothing to save comes back with
-  `compressed: true`, encoder `passthrough`, and the input verbatim behind a
-  `⟦tkfd:v1:raw⟧` marker line.
+  `compressed: true`, encoder `passthrough`, and the input verbatim as its
+  `rendering`, with no sentinel line.
 - **`tokfold_decompress`** — argument `archive`, the base64 string from
   `tokfold_compress`. Returns the original text in both `content` and
   `structuredContent.text`. A failure is a tool error (`isError: true`) carrying
@@ -356,8 +369,8 @@ two copies of a rendering nearly the input's size, plus a base64 archive a third
 than the bytes it carries (at v0.0.1 the archive never shrinks: it is the input behind a
 header). Those are limits approached from above, not ceilings: the reply's fixed
 envelope is several times the call's, so a small call measures more — counting each
-line's newline, `{"k":"z"}` answers a 121-byte call with 608 bytes, 5.02x, and the same
-shape measures 3.53x at a 1,000-byte value and 3.35x at 10,000; a one-byte passthrough
+line's newline, `{"k":"z"}` answers a 121-byte call with 570 bytes, 4.71x, and the same
+shape measures 3.49x at a 1,000-byte value and 3.35x at 10,000; a one-byte passthrough
 measures 3.13x. What the
 limit does bound is the part of the reply that grows with the payload, and escaping
 can only pull that part *down*, because it inflates the call and both copies in the
@@ -369,7 +382,7 @@ strings, `["a","b",…]`, measured 4.34x its payload and 2.89x its call.
 
 The threshold is measured rather than derived from those ratios, and it belongs to a
 shape, not to the server: for the escape-free `{"k":"z"×n}` that nears 3.33x, the
-largest call whose answer still fits is **10,066,259 bytes** — a 10,066,148-byte
+largest call whose answer still fits is **10,066,270 bytes** — a 10,066,159-byte
 payload, under a third of what this same reader admits as input — and it comes back as 33,554,431 bytes against a
 33,554,432-byte cap (both messages, newline left out, as the cap counts them). One more
 byte of payload is refused, and what the client gets is a JSON-RPC error (`-32602`)
@@ -392,10 +405,10 @@ twice, so on the no-archive path the ratio tends to 2*w*/6 — 2/3 for Cyrillic 
 surrogate pair, 1 for a three-byte script, and **1/3 for ASCII spelled `\u00XX`**, which
 nothing stops a client from sending: `\u0041` × 100 000 measured here answered a
 600,107-byte call with a 200,338-byte reply, 0.3338x (the byte counts in this paragraph,
-unlike the 5.02x above, leave each line's newline out). When an archive is returned it
+unlike the 4.71x above, leave each line's newline out). When an archive is returned it
 holds the raw bytes at 4/3 in base64, so a rendering that shrinks toward nothing pushes
 the ratio toward (4/3)*w*/6, which is 2/9 for ASCII; a million `\u0020` spread over ten
-thousand rows measured 0.2703x (a 6,128,998-byte call, a 1,656,953-byte reply). All of
+thousand rows measured 0.2703x (a 6,128,998-byte call, a 1,656,938-byte reply). All of
 it is harmless; it is only the other direction that meets the cap.
 
 The limit belongs to `Server::handle_line`, not to the stdio loop, so an embedder that

@@ -24,9 +24,8 @@
 //!   is `{stdout, stderr, interrupted, isImage}` — and Claude Code ignores a
 //!   replacement that does not match that shape, so an object is left alone;
 //! * the engine accepts the string and an encoder other than passthrough wins. A
-//!   passthrough rendering is the input behind an 18-byte `⟦tkfd:v1:raw⟧` line, which
-//!   only adds tokens. Skipping it is what turns the hook from a net loss into a net
-//!   saving on real input (see the CLI README);
+//!   passthrough rendering is the string itself, so printing it would change nothing
+//!   and cost a replacement;
 //! * the rendering is cheaper than the string it replaces, by the measure
 //!   `--tokenizer` names ([`Price`]): with `heuristic`, the default, it is shorter in
 //!   bytes; with `cl100k` or `o200k` it has strictly fewer tokens in that exact
@@ -217,10 +216,7 @@ mod tests {
             .compress(TABULAR.as_bytes())
             .unwrap()
             .rendering;
-        assert!(
-            expected.starts_with("\u{27E6}tkfd:v1:tbl\u{27E7}"),
-            "{expected}"
-        );
+        assert!(expected.starts_with("#tkfd1 tbl\n"), "{expected}");
         assert_eq!(updated_output(&line), expected);
     }
 
@@ -245,11 +241,8 @@ mod tests {
         let artifact = Compressor::new(Config::default())
             .compress(response.as_bytes())
             .unwrap();
-        assert!(
-            artifact
-                .rendering
-                .starts_with("\u{27E6}tkfd:v1:raw\u{27E7}")
-        );
+        assert_eq!(artifact.stats.encoder, tokfold_core::EncoderId::PASSTHROUGH);
+        assert_eq!(artifact.rendering, response);
         assert!(
             respond(
                 event(Value::string(response)).as_bytes(),
@@ -329,9 +322,9 @@ mod tests {
         assert!(respond(bare.as_bytes(), Profile::Balanced, Price::Bytes).is_some());
     }
 
-    /// A tabular array whose rendering is *longer* in bytes (65 against 58) although
+    /// A tabular array whose rendering is *longer* in bytes (47 against 39) although
     /// the engine's heuristic still picks the tabular encoder for it.
-    const LONGER_IN_BYTES: &str = r#"[{"id":10,"v":"aa"},{"id":20,"v":"aa"},{"id":30,"v":"aa"}]"#;
+    const LONGER_IN_BYTES: &str = r#"[{"id":10,"v":"aa"},{"id":20,"v":"aa"}]"#;
 
     /// A stand-in tokenizer: every rendering (it opens with the sentinel) costs
     /// `rendering`, every other text costs `original`.
@@ -342,7 +335,7 @@ mod tests {
 
     impl TokenEstimator for Fake {
         fn estimate(&self, text: &str) -> usize {
-            if text.starts_with('\u{27E6}') {
+            if text.starts_with("#tkfd1 ") {
                 self.rendering
             } else {
                 self.original
@@ -390,7 +383,7 @@ mod tests {
     /// The token rule replaces the byte rule rather than adding to it: a rendering
     /// longer in bytes but cheaper in tokens is forwarded, and the byte rule refuses it.
     /// `Fake` stands in for the tokenizer because neither exact one is known to price
-    /// a byte-longer rendering cheaper (`cl100k` counts this one 27 -> 33).
+    /// a byte-longer rendering cheaper (`cl100k` and `o200k` both count this one 19 -> 23).
     #[test]
     fn a_token_price_does_not_also_compare_bytes() {
         let stdin = event(Value::string(LONGER_IN_BYTES));

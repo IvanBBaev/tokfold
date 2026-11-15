@@ -1,0 +1,15 @@
+⟦tkfd:v1:tbl⟧
+
+#12["id","name","price","tags","ok"]
++[0,"item-0",0.0,["a","b"],true]
++[1,"item-1",1.5,["a","b"],false]
++[2,"item-2",3.0,["a","b"],true]
++[3,"item-3",4.5,["a","b"],false]
++[4,"item-4",6.0,["a","b"],true]
++[5,"item-5",7.5,["a","b"],false]
++[6,"item-6",9.0,["a","b"],true]
++[7,"item-7",10.5,["a","b"],false]
++[8,"item-8",12.0,["a","b"],true]
++[9,"item-9",13.5,["a","b"],false]
++[10,"item-10",15.0,["a","b"],true]
++[11,"item-11",16.5,["a","b"],false]

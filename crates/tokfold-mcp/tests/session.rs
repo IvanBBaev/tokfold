@@ -279,7 +279,7 @@ fn a_reply_outgrows_its_request_by_a_bounded_multiple_on_both_tool_paths() {
     // compresses but the rendering barely shrinks -- at v0.0.1 the archive is always the
     // input behind a header, so it never shrinks at all. Those are limits approached from
     // above, not ceilings: the reply's fixed envelope outweighs the call's, so a small
-    // call measures more (5.02x framed for `{"k":"z"}`, 3.13x for a one-byte
+    // call measures more (4.71x framed for `{"k":"z"}`, 3.13x for a one-byte
     // passthrough). The bounds below sit above those two large-call figures, on fixtures
     // wide enough that the envelope cannot lift them. They are a ratchet:
     // a change that adds a third echo of the payload, or that grows the archive beyond
@@ -287,7 +287,7 @@ fn a_reply_outgrows_its_request_by_a_bounded_multiple_on_both_tool_paths() {
     //
     // Kilobytes are deliberate. The envelope is a few hundred fixed bytes, so from this
     // size up the ratio of *these two fixtures* is flat in the input size — scaled from
-    // 120 to 1,920 repetitions (16x), framed, the compress fixture measured 2.055x to
+    // 120 to 1,920 repetitions (16x), framed, the compress fixture measured 2.054x to
     // 2.075x and the passthrough one 2.022x to 2.001x — and a multi-megabyte case would
     // only make the suite slow to say the same thing. Below kilobytes it is not flat:
     // the envelope dominates, as the small-call figures above show.
@@ -377,7 +377,7 @@ fn the_documented_large_call_reply_limit_is_reached_by_the_fixture_the_docs_name
     // bounds two ordinary shapes loosely. This one pins the number the documentation gives
     // for a large call, with the fixture the documentation names.
     // That number is a limit approached from above, not a ceiling: the fixed envelope
-    // lifts a small call's ratio (5.02x framed for `{"k":"z"}`, 3.53x at a 1,000-byte
+    // lifts a small call's ratio (4.71x framed for `{"k":"z"}`, 3.49x at a 1,000-byte
     // value, 3.35x at 10,000), so the fixture has to be large for the figure to hold. The
     // previous attempt at that number was wrong in both directions: it published 3.2x as
     // the ceiling against the call — under the real large-call figure, so the frame limit
@@ -393,9 +393,9 @@ fn the_documented_large_call_reply_limit_is_reached_by_the_fixture_the_docs_name
     // `{"k":"zzz…"}` is the shortest thing that is all three.
     //
     // The size is chosen so the fixed envelope — a few hundred bytes — cannot move the
-    // integer percent (400,000 `z` measures 3.3339x). The same fixture, measured on the
+    // integer percent (400,000 `z` measures 3.3338x). The same fixture, measured on the
     // message with the newline left out as the frame limit is, gives a largest call that
-    // still fits of 10,066,259 bytes (a 10,066,148-byte payload), answered with
+    // still fits of 10,066,270 bytes (a 10,066,159-byte payload), answered with
     // 33,554,431; one more `z` is refused. That boundary is not re-measured here because
     // a 33 MB reply in a unit test buys nothing the ratio does not already say.
     let frame = measure(&call_line(
@@ -424,20 +424,20 @@ fn the_documented_large_call_reply_limit_is_reached_by_the_fixture_the_docs_name
 
 #[test]
 fn the_small_call_figure_the_docs_quote_carries_its_counting_convention() {
-    // `5.02x for {"k":"z"}` is the one documented ratio whose value changes with how the
+    // `4.71x for {"k":"z"}` is the one documented ratio whose value changes with how the
     // two lines are counted, and it is quoted in `src/lib.rs`, `src/tools.rs`,
     // `tests/contract.rs`, twice in `crates/tokfold-mcp/README.md` (the second referring
-    // back to the first) and twice in this file. `grep -rn 5.02 crates/` re-derives that
+    // back to the first) and twice in this file. `grep -rn 4.71 crates/` re-derives that
     // list rather than a count here, which would rot as sites are added; when this test
     // was written every site but `tests/contract.rs` named its convention.
     //
     // Each of those sites names its convention: the README counts "each line's newline",
     // `src/lib.rs` says the same in words, and the comments here and in `src/tools.rs`
     // say "framed", which is what `measure` does. The frame limit counts a message the
-    // other way, without its terminator, and the same exchange measured that way is 607
-    // reply bytes over 120 request bytes -- 5.0583x, which `src/lib.rs` renders as 5.06x.
-    // Framed it is 608 over 121, 5.0248x, rendered 5.02x. `percent_of_request` truncates
-    // rather than rounds, so the two asserts below read 502 and 505 for those same two
+    // other way, without its terminator, and the same exchange measured that way is 569
+    // reply bytes over 120 request bytes -- 4.7417x, which `src/lib.rs` renders as 4.74x.
+    // Framed it is 570 over 121, 4.7107x, rendered 4.71x. `percent_of_request` truncates
+    // rather than rounds, so the two asserts below read 471 and 474 for those same two
     // measurements; the prose figure and the integer percent differ in the last place by
     // that truncation alone, not by measuring different things.
     //
@@ -448,21 +448,21 @@ fn the_small_call_figure_the_docs_quote_carries_its_counting_convention() {
 
     assert_eq!(
         (frame.request_bytes, frame.reply_bytes),
-        (121, 608),
-        "the framed small-call exchange moved; the 5.02x in this file, in \
+        (121, 570),
+        "the framed small-call exchange moved; the 4.71x in this file, in \
          `tests/contract.rs` and in `crates/tokfold-mcp/README.md` is derived from these \
          two byte counts"
     );
     assert_eq!(
         frame.percent_of_request(),
-        502,
-        "5.02x is the framed figure, terminators counted on both sides"
+        471,
+        "4.71x is the framed figure, terminators counted on both sides"
     );
     assert_eq!(
         (frame.reply_bytes - 1) * 100 / (frame.request_bytes - 1),
-        505,
-        "and 505 is the same exchange counted the way the frame limit counts a message, \
-         the 5.06x of `src/lib.rs` truncated; a site that quotes either must say which"
+        474,
+        "and 474 is the same exchange counted the way the frame limit counts a message, \
+         the 4.74x of `src/lib.rs` truncated; a site that quotes either must say which"
     );
 }
 

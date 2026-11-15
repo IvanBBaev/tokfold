@@ -1,0 +1,13 @@
+⟦tkfd:v1:jsonl⟧
+
+#10["id","level","msg"]
++[0,"info","event number 0"]
++[1,"info","event number 1"]
++[2,"info","event number 2"]
++[3,"info","event number 3"]
++[4,"info","event number 4"]
++[5,"info","event number 5"]
++[6,"info","event number 6"]
++[7,"info","event number 7"]
++[8,"info","event number 8"]
++[9,"info","event number 9"]

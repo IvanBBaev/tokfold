@@ -26,9 +26,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let artifact = engine.compress(TOOL_RESULT.as_bytes())?;
     let stats = &artifact.stats;
 
-    // The rendering is what goes into the model's context. Its first line is the
-    // sentinel naming the encoder; a consumer that splits renderings apart must cut
-    // at the first newline, never search for the sentinel.
+    // The rendering is what goes into the model's context. When an encoder wins, its
+    // first line is the `#tkfd1 <tag>` sentinel naming the encoder; a consumer that
+    // splits renderings apart must cut at the first newline, never search for the
+    // sentinel. A passthrough rendering has no sentinel: it is the input itself.
     println!("--- rendering (what the model reads) ---");
     println!("{}", artifact.rendering);
     println!("--- stats ---");

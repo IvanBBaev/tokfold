@@ -106,7 +106,8 @@ or a tool get back what was really there.
   the reply's `structuredContent` held `compressed`, `stats`, `rendering` and
   `archive`, the `rendering` was the `⟦tkfd:v1:raw⟧` marker plus the input and equal to
   `content[0].text`, and the base64 `archive` decoded to 50 bytes opening `TKFD` and
-  ending in `{"a":1}`).
+  ending in `{"a":1}`). Since the sentinel became `#tkfd1 <tag>` (unreleased), a
+  passthrough rendering is the input itself with no marker; the archive is unchanged.
 - **Not implemented here.** The *proxy* shape — an upstream connection, a
   content-addressed archive store and a `retrieve` tool — is out of scope by design
   and needs a threat model of its own before any of it is written
@@ -560,7 +561,8 @@ listed so that nobody mistakes any of them for an undiscovered defect.
   and a test would entrench the answer.
 - **A valid-JSON input that saves nothing is reported as compressed.**
   `tokfold_compress` on `{"a":1}` returned `"compressed": true` with encoder
-  `passthrough` and a rendering behind a `⟦tkfd:v1:raw⟧` marker (measured).
+  `passthrough` and, as its rendering, the input itself (in `0.0.1`, the input behind a
+  `⟦tkfd:v1:raw⟧` marker line; both measured).
 - **No `outputSchema`** is declared for the tools. **`serverInfo` is duplicated**:
   every result carries it in `_meta` (measured on the `ping` replies).
 - **`initialize` never answers `params.protocolVersion` with `-32022`, and it does
@@ -584,27 +586,16 @@ listed so that nobody mistakes any of them for an undiscovered defect.
 
 ### Engine and output
 
-- **F2.** The do-no-harm gate prices a framed candidate against an *unframed* baseline.
-  In `select` in `crates/tokfold-core/src/encoder/mod.rs` the gate is `clears_margin`,
-  and the two numbers handed to it are `estimate(&candidate)` — the rendering with its
-  `⟦tkfd:v1:…⟧` framing — and `est_before`, which is `estimate(input)` on the raw input.
-  Measured: 6.67% of compressions are strictly worse in real `cl100k` tokens, about two
-  thirds of that from framing. Nothing in the repository records how that was reached:
-  no test carries the figure, no crate declares a bench target and there is no `benches`
-  directory, and no benchmark corpus is tracked. That last one is checked by filtering
-  `git ls-files` on the path, and it is the one check of this kind whose answer
-  recording it cannot change: `git ls-files` lists paths, not contents, so the sentence
-  you are reading adds no match to it. An earlier note here tried to pin the absence of
-  the figure the other way, by quoting what a repository-wide search for it returns;
-  writing the note down added occurrences to the search it quoted, which is why the
-  check on the figure is stated as what it is about instead. What the tree does hold is
-  fuzzing inputs rather than benchmarks — `fuzz/seeds/<target>` is committed,
-  `fuzz/corpus/` is ignored by `fuzz/.gitignore` — and neither can re-derive a
-  token-saving percentage. `crates/tokfold-core/Cargo.toml` reads like the evidence and
-  is not it: the comment above its `include` list does name "local benchmark corpora"
-  among what the list excludes by omission, but an `include` list governs the `.crate`
-  tarball and says nothing about what git tracks. So re-reading the gate will not
-  re-derive the number, and re-measuring or hedging it is owner-gated.
+- **F2 (moot since the sentinel change, unreleased).** The do-no-harm gate prices a
+  framed candidate against an *unframed* baseline: in `select` in
+  `crates/tokfold-core/src/encoder/mod.rs` the two numbers handed to `clears_margin`
+  are `estimate(&candidate)` — the rendering with its `#tkfd1 <tag>` line — and
+  `est_before`, which is `estimate(input)`. While a passthrough rendering carried a
+  `⟦tkfd:v1:raw⟧` line, that baseline was not what the fallback emitted. It is now: a
+  passthrough rendering is the input itself, so the gate compares the two texts the
+  model could actually be given. What remains is the estimator's own error against a
+  real tokenizer, which no change to the frame addresses; `tokfold stats --tokenizer`
+  and `tokfold hook --tokenizer` measure it.
 - **F6.** E2 can hoist a `never_compress`-protected key (see *Semantic integrity*).
 - **E2 shape interning by hash** (see *Semantic integrity*).
 - **Forged archives** decode successfully (see *Integrity of reconstruction*).

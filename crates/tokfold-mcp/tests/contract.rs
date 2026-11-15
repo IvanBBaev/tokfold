@@ -895,10 +895,10 @@ fn the_transport_line_limit_is_the_one_the_documentation_promises() {
     // compressed but does not shrink: the same two copies plus a base64 archive, which
     // is a third larger than the bytes it carries. Both are approached from above: the
     // reply's fixed envelope outweighs the call's, so a small call measures more:
-    // `{"k":"z"}` is answered at 5.02x with each line's terminator counted and 5.06x
+    // `{"k":"z"}` is answered at 4.71x with each line's terminator counted and 4.74x
     // without them, both byte counts pinned by `tests/session.rs`. Which convention a
     // ratio is quoted under moves its second decimal, and the other numbers in this
-    // comment — the 10,066,259-byte call and the 16,777,324-byte one — leave the
+    // comment — the 10,066,270-byte call and the 16,777,324-byte one — leave the
     // terminator out, because the frame limit does. Escaping inflates the call and both
     // copies in the reply together, so it can only pull the payload's share of the ratio
     // down. The fixture that nears
@@ -910,7 +910,7 @@ fn the_transport_line_limit_is_the_one_the_documentation_promises() {
     // `text` is one byte past core's ceiling is a 16,777,324-byte request; it passes
     // through, and the reply would be 33,554,773 bytes — 341 over the limit. The compress
     // path is nowhere near that size: with the fixture above, the largest call that still
-    // fits is 10,066,259 bytes — under a third of what this reader admits — answered with
+    // fits is 10,066,270 bytes — under a third of what this reader admits — answered with
     // 33,554,431 bytes against the 33,554,432 cap, and one further byte of payload comes
     // back as `-32602` rather than as a frame.
     //
@@ -1061,8 +1061,9 @@ fn the_instructions_promise_is_kept_for_input_that_does_not_compress() {
     // save nothing and on a reply too large to send. A model acts on that sentence:
     // it embeds whatever comes back without re-checking. Until 0.0.1's wording was
     // corrected it said such input came back "unchanged", which only the decline path
-    // below keeps; the raw-marker path is held by
-    // `json_with_nothing_to_save_comes_back_verbatim_behind_the_raw_marker`, and the
+    // below kept while a passthrough rendering carried a marker line (it no longer
+    // does); the passthrough path is held by
+    // `json_with_nothing_to_save_comes_back_verbatim_as_its_rendering`, and the
     // oversized reply by the refusal tests in `server.rs` and `tests/session.rs`. If the
     // declined path ever returned an empty rendering, or an error, the model would
     // silently lose the tool output it asked to compress — and no test that only checks `isError` would notice.
@@ -1129,12 +1130,11 @@ fn an_unpaired_surrogate_in_the_text_is_an_id_less_parse_error_as_the_instructio
 }
 
 #[test]
-fn json_with_nothing_to_save_comes_back_verbatim_behind_the_raw_marker() {
+fn json_with_nothing_to_save_comes_back_verbatim_as_its_rendering() {
     // The second half of the instructions' promise. Valid JSON that no encoder
     // shortens is not a decline: it is a successful compress through the passthrough
-    // encoder, so `compressed` is `true` and the rendering is the input behind the
-    // marker line -- not the input unchanged, which is what the instructions said
-    // until their wording was corrected.
+    // encoder, so `compressed` is `true` and the rendering is the input itself, byte
+    // for byte. (In `0.0.1` it was the input behind a `⟦tkfd:v1:raw⟧` marker line.)
     let text = r#"{"a":1}"#;
     let arguments = format!(r#"{{"text":{}}}"#, json::Value::string(text));
     let message = reply(&call_line(1, "tokfold_compress", &arguments));
@@ -1149,7 +1149,7 @@ fn json_with_nothing_to_save_comes_back_verbatim_behind_the_raw_marker() {
     );
     assert_eq!(
         structured.get("rendering").and_then(json::Value::as_str),
-        Some(format!("\u{27E6}tkfd:v1:raw\u{27E7}\n{text}").as_str()),
+        Some(text),
         "{structured}"
     );
 
@@ -1162,9 +1162,13 @@ fn json_with_nothing_to_save_comes_back_verbatim_behind_the_raw_marker() {
         .and_then(json::Value::as_str)
         .expect("initialize carries the instructions");
     assert!(
-        instructions.contains("`\u{27E6}tkfd:v1:raw\u{27E7}` marker line"),
-        "the instructions must describe the marker the rendering carries: {instructions}"
+        instructions.contains(
+            "JSON with nothing to save comes back verbatim as the `rendering` of a \
+             `compressed: true` result whose encoder is `passthrough`"
+        ),
+        "the instructions must describe the passthrough rendering: {instructions}"
     );
+    assert!(!instructions.contains("tkfd:v1"), "{instructions}");
     assert!(
         !instructions.contains("returned unchanged"),
         "{instructions}"

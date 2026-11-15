@@ -11,9 +11,10 @@
 //!
 //! [`compress`](Compressor::compress) produces two independent things:
 //!
-//! * [`Artifact::rendering`] — the token-reduced, sentinel-framed text the model
-//!   reads. Whitespace and escape style are canonicalized, so it is deliberately
-//!   *not* byte-identical to the input.
+//! * [`Artifact::rendering`] — the text the model reads. When an encoder won it is
+//!   token-reduced and sentinel-framed, with whitespace and escape style
+//!   canonicalized, so it is deliberately *not* byte-identical to the input; when
+//!   none did, it is the input itself, unframed.
 //! * [`Artifact::archive`] — a `TKFD` recovery blob that reconstructs the exact
 //!   original bytes on demand.
 //!
@@ -304,33 +305,27 @@ impl EncoderId {
 /// are the headline numbers. A passthrough result reports both ratios as exactly
 /// `1.0` — "couldn't compress" is a statistic, never an error.
 ///
-/// That `1.0` is a floor, not a measurement: a passthrough rendering still carries the
-/// 18-byte `raw` sentinel, which costs 10 estimated (11 real `cl100k`, 13 real
-/// `o200k`) tokens more than a bare input that opens with a non-whitespace byte;
-/// leading whitespace can merge with the sentinel's newline and move each figure by
-/// at most one token (see the crate-level "Do no harm" guarantee). The `*_after`
-/// fields are *set* equal to their `*_before` counterparts on that path rather than
-/// measured, so the framing overhead is deliberately not attributed to compression.
-/// Callers that must account for every token should measure [`Artifact::rendering`]
-/// directly.
+/// On that path the `*_after` fields are *set* equal to their `*_before` counterparts
+/// rather than measured. The passthrough rendering is the input itself, unframed, so
+/// a measurement would give the same numbers: the `1.0` is exact, not a floor. (Before
+/// the sentinel became `#tkfd1 <tag>`, a passthrough rendering carried an 18-byte
+/// `raw` sentinel line these fields did not report.)
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct Stats {
     /// Byte length of the original input.
     pub bytes_before: usize,
     /// Byte length of the rendering. On the passthrough path this is *set* to
-    /// `bytes_before` rather than measured, so it under-reports the 18-byte `raw`
-    /// sentinel — the rendering is always 18 bytes longer than the input there, never
-    /// equal — and [`byte_ratio`](Stats::byte_ratio) is exactly `1.0`; see the
-    /// type-level doc. A caller summing this field to account for bytes actually
-    /// emitted should measure [`Artifact::rendering`] instead.
+    /// `bytes_before` rather than measured, which is the rendering's length too —
+    /// the rendering is the input there — and [`byte_ratio`](Stats::byte_ratio) is
+    /// exactly `1.0`; see the type-level doc.
     pub bytes_after: usize,
     /// Estimated tokens of the original input, per the configured estimator.
     pub est_tokens_before: usize,
     /// Estimated tokens of the rendering. On the passthrough path this is *set* to
-    /// `est_tokens_before` rather than measured, so it under-reports the sentinel
-    /// frame by whatever the configured estimator charges for it — 10 or 11 tokens
-    /// under the default heuristic; see the type-level doc.
+    /// `est_tokens_before` rather than measured, which is what the configured
+    /// estimator charges for the rendering too, since the rendering is the input
+    /// there; see the type-level doc.
     pub est_tokens_after: usize,
     /// Which encoder shaped the rendering.
     pub encoder: EncoderId,
@@ -359,7 +354,7 @@ pub struct Stats {
     /// Note what that does *not* say. An input the encoders cannot improve — an
     /// already-minified document, say — still reaches passthrough with this `true`:
     /// minification does render it, and the rendering then loses the strict
-    /// comparison by the width of the sentinel. Every profile enables E1 for a single
+    /// comparison by the width of the sentinel line. Every profile enables E1 for a single
     /// document, and E1 declines only on a defensive path that valid JSON does not
     /// reach, so a passthrough artifact from [`compress`](Compressor::compress) of a
     /// single document reports `true` in practice. A JSON Lines input is the
@@ -406,17 +401,22 @@ impl Stats {
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct Artifact {
-    /// Sentinel-framed text for model context. When an encoder won it is token-reduced
-    /// and canonicalized, so not byte-identical to the input; on the passthrough path
-    /// it is the input verbatim behind a `raw` sentinel, so it is neither.
+    /// Text for model context. When an encoder won it is a sentinel line —
+    /// `#tkfd1 <tag>` and a newline — followed by a token-reduced, canonicalized body,
+    /// so not byte-identical to the input. On the passthrough path it is the input
+    /// verbatim with no sentinel at all.
     ///
-    /// The frame is the **first line and only the first line**. The sentinel is written
-    /// once, at the very start, and is never escaped out of the body, so a document that
-    /// legitimately contains the sentinel's own text carries it through into the
-    /// rendering: compressing the JSON string `"⟦tkfd:v1:raw⟧"` yields a two-line
-    /// rendering whose body is that text. A consumer that splits renderings apart must
-    /// therefore cut at the first newline rather than search for the sentinel, and one
-    /// that concatenates renderings must keep its own boundaries — scanning a
+    /// The two cannot be confused: a JSON document or a JSON Lines record never opens
+    /// with `#` (RFC 8259 allows only whitespace before a value, and `#` is not
+    /// whitespace), so a rendering that opens with `#tkfd1 ` is framed and any other
+    /// is the input itself. The frame is the **first line and only the first line**.
+    /// The sentinel is written once, at the very start, and is never escaped out of
+    /// the body, so a document that legitimately contains the sentinel's text carries
+    /// it through: compressing a pretty-printed array holding the string
+    /// `"#tkfd1 min"` yields a rendering whose sentinel line is `#tkfd1 min` and
+    /// whose body holds that string too. A consumer that splits renderings apart must
+    /// therefore cut at the first newline rather than search for the sentinel, and
+    /// one that concatenates renderings must keep its own boundaries — scanning a
     /// concatenation for sentinels will find ones the body wrote.
     pub rendering: String,
     /// `TKFD` recovery blob that reconstructs the exact original via
@@ -542,8 +542,9 @@ impl Compressor {
         header.encode_into(&mut archive);
         archive.extend_from_slice(input);
 
-        // 6. Stats. Passthrough reports the input size as its "after" so both ratios
-        //    are exactly 1.0; a winning encoder reports the framed rendering length.
+        // 6. Stats. Passthrough reports the input size as its "after" — exact, since
+        //    its rendering is the input — so both ratios are 1.0; a winning encoder
+        //    reports the framed rendering length.
         let is_passthrough = matches!(selection.encoder, Encoder::Passthrough);
         let bytes_before = input.len();
         let bytes_after = if is_passthrough {
@@ -855,7 +856,7 @@ mod tests {
     /// anchor test):
     ///
     /// * **False positive** — a small homogeneous array. The heuristic over-counts
-    ///   and picks E2 tabular; both exact tokenizers see that hoisting three short,
+    ///   and picks E2 tabular; both exact tokenizers see that hoisting two short,
     ///   already-cheap key sets is not a token win and pass through. The exact gate
     ///   *suppresses* a transform the heuristic wrongly rated as helpful.
     /// * **False negative** — a small pretty-printed config object. The heuristic
@@ -885,7 +886,7 @@ mod tests {
 
         // False positive: heuristic picks E2 (id 2); both exact tokenizers pass
         // through (id 0). Selection diverges by estimator.
-        let pos_input = "[{\"id\":0,\"name\":\"item0\",\"active\":true},{\"id\":1,\"name\":\"item1\",\"active\":true},{\"id\":2,\"name\":\"item2\",\"active\":true}]";
+        let pos_input = "[{\"id\":0,\"name\":\"item0\",\"active\":true},{\"id\":1,\"name\":\"item1\",\"active\":true}]";
         let pos_heur = heuristic.compress(pos_input.as_bytes()).unwrap();
         let pos_cl = cl100k.compress(pos_input.as_bytes()).unwrap();
         let pos_o2 = o200k.compress(pos_input.as_bytes()).unwrap();
@@ -911,7 +912,7 @@ mod tests {
 
         // False negative: heuristic passes through (id 0); both exact tokenizers
         // pick E1 minify (id 1). Selection diverges the other way.
-        let neg_input = "{\n    \"enabled\": true,\n    \"retries\": 3,\n    \"timeout\": 30,\n    \"verbose\": false,\n    \"region\": \"us-east-1\"\n}";
+        let neg_input = "{\n    \"enabled\": true,\n    \"retries\": 3,\n    \"timeout\": 30\n}";
         let neg_heur = heuristic.compress(neg_input.as_bytes()).unwrap();
         let neg_cl = cl100k.compress(neg_input.as_bytes()).unwrap();
         let neg_o2 = o200k.compress(neg_input.as_bytes()).unwrap();
@@ -995,22 +996,24 @@ mod tests {
     #[test]
     fn a_body_may_contain_the_sentinel_the_frame_is_written_with() {
         let c = compressor();
-        let input = "\"\u{27E6}tkfd:v1:raw\u{27E7}\"";
+        let items = vec!["\n    \"#tkfd1 min\""; 20].join(",");
+        let input = format!("[{items}\n]");
         let art = c.compress(input.as_bytes()).unwrap();
+        assert_eq!(art.stats.encoder, EncoderId::E1_MINIFY, "{}", art.rendering);
 
         let (frame, body) = art
             .rendering
             .split_once('\n')
             .expect("a rendering is a sentinel line and a body");
-        assert_eq!(frame, "\u{27E6}tkfd:v1:raw\u{27E7}");
+        assert_eq!(frame, "#tkfd1 min");
         assert!(
-            body.contains("\u{27E6}tkfd:v1:raw\u{27E7}"),
+            body.contains("\"#tkfd1 min\""),
             "the body must carry the document's own sentinel text: {body:?}"
         );
         assert_eq!(
-            art.rendering.matches("\u{27E6}tkfd:v1:").count(),
-            2,
-            "one sentinel from the frame and one from the document: {}",
+            art.rendering.matches("#tkfd1 min").count(),
+            21,
+            "one sentinel from the frame and twenty from the document: {}",
             art.rendering
         );
         assert_eq!(c.decompress(&art.archive).unwrap(), input.as_bytes());
@@ -1022,7 +1025,7 @@ mod tests {
         let input = pretty_object(30);
         let art = c.compress(input.as_bytes()).unwrap();
         assert_eq!(art.stats.encoder, EncoderId(1), "expected E1 minify to win");
-        assert!(art.rendering.starts_with("\u{27E6}tkfd:v1:min\u{27E7}\n"));
+        assert!(art.rendering.starts_with("#tkfd1 min\n"));
         assert_eq!(c.decompress(&art.archive).unwrap(), input.as_bytes());
     }
 
@@ -1432,7 +1435,7 @@ mod tests {
         struct ZeroRatesFramed;
         impl TokenEstimator for ZeroRatesFramed {
             fn estimate(&self, text: &str) -> usize {
-                if text.starts_with('\u{27E6}') {
+                if text.starts_with("#tkfd1 ") {
                     0
                 } else {
                     text.len()
@@ -1919,37 +1922,31 @@ mod tests {
         assert_eq!(mk(0, 0, 0, 0).token_ratio(), 1.0);
     }
 
-    /// The passthrough rendering is the input *plus* an 18-byte sentinel line, so the
-    /// text handed to the model is strictly more expensive than the input — while
-    /// `Stats` reports both ratios as exactly `1.0`.
+    /// The passthrough rendering is the input itself — no sentinel line — so the
+    /// `1.0` ratios `Stats` reports on passthrough are exact, not a convention.
     ///
-    /// This test pins that measurement; it takes no position on whether the reporting
-    /// should change, which is an open product decision.
+    /// Until the frame fix, passthrough was rendered behind an 18-byte
+    /// `⟦tkfd:v1:raw⟧` line that cost 10 estimated tokens (11 when the input opened
+    /// with exactly one whitespace character) which `Stats` did not report. Both
+    /// inputs that measured those two costs are kept here: each must now cost nothing.
     #[test]
-    fn passthrough_framing_costs_tokens_the_stats_do_not_report() {
+    fn a_passthrough_rendering_is_the_input_and_costs_what_the_stats_report() {
         let c = compressor();
         let est = HeuristicEstimator;
-        // The framing costs 10 estimated tokens, or 11 when the input opens with
-        // exactly one whitespace character: it merges with the sentinel's trailing
-        // newline into a two-character run, which the heuristic charges where a
-        // one-character run is free.
-        for (input, extra_tokens) in [("{\"a\":1}", 10), (" {\"a\":1}", 11)] {
+        for input in ["{\"a\":1}", " {\"a\":1}"] {
             let art = c.compress(input.as_bytes()).unwrap();
             assert_eq!(art.stats.encoder, EncoderId::PASSTHROUGH, "{input:?}");
-            assert_eq!(
-                art.rendering,
-                format!("\u{27E6}tkfd:v1:raw\u{27E7}\n{input}")
-            );
+            assert_eq!(art.rendering, input, "{input:?}");
             // What Stats says: nothing changed.
             assert_eq!(art.stats.est_tokens_after, art.stats.est_tokens_before);
             assert_eq!(art.stats.token_ratio(), 1.0);
             assert_eq!(art.stats.byte_ratio(), 1.0);
-            // What the model is actually charged.
-            assert_eq!(art.rendering.len(), input.len() + 18, "{input:?}");
+            // What the model is actually charged: the same.
+            assert_eq!(art.rendering.len(), art.stats.bytes_after, "{input:?}");
             assert_eq!(
                 est.estimate(&art.rendering),
-                est.estimate(input) + extra_tokens,
-                "framing cost for {input:?}"
+                art.stats.est_tokens_after,
+                "{input:?}"
             );
         }
     }

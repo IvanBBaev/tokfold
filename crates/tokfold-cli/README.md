@@ -55,9 +55,9 @@ cargo build --release -p tokfold-cli   # binary at target/release/tokfold
   instead and exits `2`.
 - `tokfold stats` — report what a compression pass would achieve, without emitting
   the payload. On the passthrough path the `after` figures are *set* equal to the
-  `before` figures rather than measured, so a reported ratio of `1.0000` is a floor,
-  not a measurement: the rendering still carries the 18-byte `raw` sentinel. Measure
-  the rendering itself if you need to account for every token.
+  `before` figures, and that is exact: a passthrough rendering is the input itself,
+  byte for byte, with no sentinel line. (In `0.0.1` it carried an 18-byte
+  `⟦tkfd:v1:raw⟧` line, so the `1.0000` reported there was a floor.)
   `--tokenizer cl100k|o200k` appends four rows — `real tokens before`, `real tokens
   after`, `real token ratio`, `real tokenizer` — that count the input and the
   rendering with an exact GPT tokenizer (a GPT vocabulary, not Claude's). It is
@@ -221,15 +221,17 @@ a hook already running with that flag never fails the tool call: it leaves every
 result alone, prints nothing and exits `0`. `--print-config` writes `--profile` and
 `--tokenizer` into the command it prints whenever they differ from their defaults.
 
-Skipping the passthrough is the point. A passthrough rendering is the input behind an
-18-byte `⟦tkfd:v1:raw⟧` line, so a hook that forwarded every `compress` output would
-make most results longer. Measured on one user's Claude Code transcripts (2 194
-results that are one whole JSON document, 246 of them from a single MCP server), in
-`o200k_base` tokens — a GPT vocabulary, not Claude's — over the original: forwarding
-every `compress` output gives 1.047 on all of them and 0.949 on the MCP ones.
+A passthrough rendering is the input itself, so there is nothing to forward. In
+`0.0.1` it was the input behind an 18-byte `⟦tkfd:v1:raw⟧` line, and a hook that
+forwarded every `compress` output made most results longer: measured with that frame
+on one user's Claude Code transcripts (2 194 results that are one whole JSON
+document, 246 of them from a single MCP server), in `o200k_base` tokens — a GPT
+vocabulary, not Claude's — over the original, forwarding every `compress` output gave
+1.047 on all of them and 0.949 on the MCP ones.
 
 What `--tokenizer` changes, measured with a release build with `tiktoken` from the
-working tree of 2026-11-14, `--profile balanced`, over the same kind of corpus taken
+working tree of 2026-11-14 (before the sentinel became `#tkfd1 <tag>`, so every
+replacement still carried the `⟦tkfd:v1:<tag>⟧` line), `--profile balanced`, over the same kind of corpus taken
 again that day (2 180 whole-JSON results of at least 200 bytes from the 40 largest
 transcripts, 246 of them MCP), counted with Python `tiktoken` 0.14.0. Tokens the model
 is shown over the original, all results / MCP only:

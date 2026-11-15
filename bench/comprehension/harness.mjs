@@ -198,9 +198,11 @@ async function main() {
     const r = await run(tokfold, ["compress", "--profile", profile, "-i", src], { timeoutMs: 60000 });
     if (r.code !== 0) fail(`tokfold compress failed on ${d.id} (exit ${r.code}): ${r.stderr.trim()}`);
     fs.writeFileSync(path.join(out, "inputs", `${d.id}.tokfold.txt`), r.stdout);
-    const head = /^⟦tkfd:v1:([^⟧]*)⟧/.exec(r.stdout);
+    // `#tkfd1 <tag>` opens a framed rendering; `0.0.1` wrote `⟦tkfd:v1:<tag>⟧` (with
+    // `raw` on passthrough). An unframed rendering is a passthrough: the input itself.
+    const head = /^(?:#tkfd1 (\S+)|⟦tkfd:v1:([^⟧]*)⟧)\n/.exec(r.stdout);
     d.rendered = { json: d.text, tokfold: r.stdout };
-    d.encoder = head ? head[1] : "unframed";
+    d.encoder = head ? (head[1] ?? head[2]) : "passthrough";
     d.bytes = { json: Buffer.byteLength(d.text), tokfold: Buffer.byteLength(r.stdout) };
     for (const rendering of renderings) fs.writeFileSync(path.join(out, "prompts", `${d.id}.${rendering}.txt`), buildPrompt(d.rendered[rendering], d.questions));
   }

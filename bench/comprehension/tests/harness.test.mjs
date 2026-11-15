@@ -39,7 +39,7 @@ test("a dry run renders and writes every prompt but calls no model", (t) => {
   assert.equal(r.run.totals.planned, 12);
   assert.equal(fs.readdirSync(path.join(r.out, "prompts")).length, 6);
   const prompt = fs.readFileSync(path.join(r.out, "prompts", "D01.tokfold.txt"), "utf8");
-  assert.match(prompt, /<document>\n⟦tkfd:v1:tbl⟧\n/);
+  assert.match(prompt, /<document>\n#tkfd1 tbl\n/);
   assert.equal(r.run.config.documents.perDocument[0].encoder, "tbl");
 });
 

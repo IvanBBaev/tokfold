@@ -478,8 +478,8 @@ mod tests {
     ///
     /// Measured on runs standing alone, which is how the docs state them. A run
     /// inside a document can price differently when a neighbouring byte merges into
-    /// it; `the_sentinel_cost_moves_with_leading_whitespace` in `estimator` measures
-    /// that case.
+    /// it; `the_sentinel_costs_what_the_docs_say_it_costs` in `estimator` measures
+    /// one such case, the sentinel's newline merging with a body's leading newline.
     #[cfg(feature = "tiktoken")]
     #[test]
     fn run_pricing_is_what_the_module_docs_say_it_is() {

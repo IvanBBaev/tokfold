@@ -37,7 +37,7 @@
 //! passes it and only an input whose rendering barely shrinks would trip it. That 3.3x
 //! is a limit approached from above, not a ceiling: the reply's fixed envelope outweighs
 //! the call's, so a small call measures more (`{"k":"z"}` answers a 121-byte framed call
-//! with 608 bytes, 5.02x), and the ratchet's fixtures are kilobytes wide so that the
+//! with 570 bytes, 4.71x), and the ratchet's fixtures are kilobytes wide so that the
 //! envelope cannot move them. The reason
 //! not to do this is the cost and the wire-shape change, which is an owner decision
 //! and not a documentation one — it is not a guard rail already in place.
@@ -719,13 +719,10 @@ mod tests {
         };
         let (name, text) = stats_of("balanced");
         assert_eq!(name, "jsonl");
-        assert!(
-            text.starts_with("\u{27E6}tkfd:v1:jsonl\u{27E7}\n"),
-            "{text}"
-        );
+        assert!(text.starts_with("#tkfd1 jsonl\n"), "{text}");
         let (name, text) = stats_of("conservative");
         assert_eq!(name, "passthrough");
-        assert!(text.starts_with("\u{27E6}tkfd:v1:raw\u{27E7}\n"), "{text}");
+        assert_eq!(text, lines.replace("\\n", "\n").replace("\\\"", "\""));
     }
 
     #[test]

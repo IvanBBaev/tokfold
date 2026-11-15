@@ -579,6 +579,35 @@ released says so, and names what `0.0.1` does in the same case.
 
 ### Changed
 
+- **The rendering sentinel is now `#tkfd1 <tag>`, and a passthrough rendering is the
+  input itself.** `0.0.1` opened every rendering with a `⟦tkfd:v1:<tag>⟧` line, a
+  passthrough one included (`⟦tkfd:v1:raw⟧`). The two brackets are three `cl100k` and
+  `o200k` tokens each, so that line cost 10 to 14 real tokens; `#tkfd1 min`, `#tkfd1
+  tbl` and `#tkfd1 jsonl` cost 5 to 7, pinned per tag and tokenizer by
+  `the_sentinel_costs_what_the_docs_say_it_costs` in `tokfold-core`'s `estimator`. A
+  passthrough rendering now has no sentinel line at all: a JSON or JSON Lines document
+  never opens with `#`, so a rendering that opens with `#tkfd1 ` is framed and one that
+  does not is the input. Two consequences follow. The do-no-harm gate compares the
+  framed candidate with the unframed input, and that input is now exactly what the
+  passthrough emits, so a gate decision is no longer priced against a baseline the
+  fallback cannot reach. And on the passthrough path `Stats`' `*_after` fields (and the
+  `1.0000` that `tokfold stats` reports there) are exact, where in `0.0.1` they were a
+  floor that left out the marker. The recovery archive format did not change — the
+  header bytes and encoder ids are the same, and an archive stores the input, not the
+  rendering — so every `0.0.1` archive still decompresses: `crates/tokfold-core/tests/golden.rs`
+  holds six inputs with the archives and renderings the `0.0.1` source wrote for them
+  (the registry binary `tokfold-darwin-arm64` gives the same bytes for the five
+  single-document ones), checks that each archive decompresses to its input, that a
+  fresh pass writes the same archive, and that each legacy rendering, read through the
+  old frame and a reference decoder in the test, is semantically equal to its input,
+  and that a fresh rendering differs from the legacy one only in its frame. What a reader of renderings sees changes: a client that
+  matched `⟦tkfd:v1:` must match `#tkfd1 ` instead, and must not expect a marker on a
+  passthrough. Through the MCP server, the quickstart replay's reply 3 grows from 527
+  to 528 bytes and reply 4 shrinks from 1 502 to 1 489 (`bytesAfter` 233 → 226,
+  `estTokensAfter` 136 → 130), pinned by the `COVERAGE` rows in
+  `crates/tokfold-mcp/tests/quickstart.rs`. The MCP `initialize` instructions no
+  longer quote the old frame.
+
 - **A rejected `compress --archive PATH` can now exit `2`.** `0.0.1` exited `0` on
   the rejected path unless writing the passthrough itself failed (a file-size limit
   with `SIGXFSZ` ignored exits `2` there too): it wrote a line saying no recovery
@@ -641,9 +670,11 @@ released says so, and names what `0.0.1` does in the same case.
   compress "is returned unchanged".** `0.0.1` said so, and it holds only for input
   the engine declines — not JSON, nested deeper than 512, or too large — which comes
   back unchanged with `compressed: false` and a `reasonCode`. Valid JSON
-  with nothing to save comes back with `compressed: true` and a rendering that is
-  the input behind a `⟦tkfd:v1:raw⟧` marker line — not unchanged. The sentence now
-  names both cases, and it scopes "never dropped silently" to input that reaches
+  with nothing to save comes back with `compressed: true` through the passthrough
+  encoder — in `0.0.1` behind a `⟦tkfd:v1:raw⟧` marker line, so not unchanged; since
+  the sentinel change in this release the rendering is the input itself, byte for
+  byte (pinned by `json_with_nothing_to_save_comes_back_verbatim_as_its_rendering`).
+  The sentence now names both cases, and it scopes "never dropped silently" to input that reaches
   the engine: text holding an unpaired UTF-16 surrogate escape (`\ud800` alone)
   fails the whole line as an id-less `-32700`, so the client cannot tie the error to
   its call, and the instructions now say so (pinned by
@@ -811,7 +842,8 @@ released says so, and names what `0.0.1` does in the same case.
   the rendering is shorter in bytes (by default; see `--tokenizer` above), prints
   `{"hookSpecificOutput":{"hookEventName":"PostToolUse","updatedToolOutput":…}}` so
   the model is shown the rendering instead of the result. Otherwise it prints nothing.
-  A passthrough is never forwarded: its `⟦tkfd:v1:raw⟧` line only adds tokens. A
+  A passthrough is never forwarded: its rendering is the input itself, so it would
+  change nothing. A
   built-in tool's result is an object and is left alone. As a hook it always exits
   `0` — a read or write failure, a malformed event and a panic in the engine all
   leave the result unchanged — so it cannot fail the tool call it sits in front of.
@@ -833,13 +865,14 @@ released says so, and names what `0.0.1` does in the same case.
   later line as the whole-input `InvalidJson`.
 
   The records are rendered the way E2 renders the array of them, under a new
-  `⟦tkfd:v1:jsonl⟧` sentinel and a new encoder id **4** (`EncoderId::E4_JSONL`;
+  `#tkfd1 jsonl` sentinel and a new encoder id **4** (`EncoderId::E4_JSONL`;
   id 3 stays reserved for E3). The CLI names it `e4-jsonl`, the MCP server `jsonl`.
   The do-no-harm gate prices that rendering against the original text, and when it
-  loses, the input passes through behind the `raw` sentinel like any other. The
+  loses, the input passes through like any other — as itself, with no sentinel. The
   archive is always a passthrough of the original bytes, so line endings and blank
-  lines come back exactly. The `jsonl` sentinel is 20 bytes and costs 11 estimated
-  (12 real `cl100k`, 14 real `o200k`) tokens, one more than `raw`, pinned in
+  lines come back exactly. The `jsonl` sentinel line is 13 bytes and costs 5
+  estimated (7 real `cl100k`, 7 real `o200k`) tokens before a body that does not open
+  with a newline, and 6 of each before a table body, which does; pinned in
   `the_sentinel_costs_what_the_docs_say_it_costs`.
 
   Behaviour changes against `0.0.1`: under `Balanced` (the default) and `Aggressive`
@@ -1425,7 +1458,8 @@ released says so, and names what `0.0.1` does in the same case.
   `crates/tokfold-mcp/src/server.rs`; and F2 now names the gate as `clears_margin` as
   `select` calls it in `crates/tokfold-core/src/encoder/mod.rs`, with the two numbers
   it is handed — `estimate(&candidate)`, where `render` wraps every body in `framed`
-  so the candidate is the `⟦tkfd:v1:<tag>⟧` rendering, against `est_before`, which is
+  so the candidate is the framed rendering (`⟦tkfd:v1:<tag>⟧` when this entry was
+  written, `#tkfd1 <tag>` since the sentinel change), against `est_before`, which is
   `estimate(input)` on the raw input. That is the asymmetry F2 names, read off the
   call rather than restated. F2's 6.67% is untouched, because re-measuring or hedging it
   is owner-gated; what was recorded beside it is that no test, bench or module doc holds
@@ -2730,11 +2764,13 @@ documentation a previous fix falsified.
   give the ceiling, its inclusivity, the absence of any flag to raise it, and what
   each subcommand does when it is hit.
 - **`Artifact::rendering` never said where its frame ends, and the natural guess is
-  wrong.** Every rendering opens with a `⟦tkfd:v1:<tag>⟧` sentinel line, and the body
-  after it is copied through unescaped. A document that legitimately contains the
-  sentinel's own text therefore carries it into the rendering: compressing the JSON
-  string `"⟦tkfd:v1:raw⟧"` yields a two-line rendering in which the sentinel appears
-  twice, once as the frame and once as the payload. A consumer that splits renderings
+  wrong.** Every rendering an encoder won opens with a sentinel line (`#tkfd1 <tag>`
+  since the sentinel change in this release; a passthrough rendering is the input
+  itself and has none), and the body after it is copied through unescaped. A
+  document that legitimately contains the sentinel's own text therefore carries it
+  into the rendering: compressing a pretty-printed array holding the string
+  `"#tkfd1 min"` yields a rendering in which that text appears as the frame and again
+  in the payload. A consumer that splits renderings
   apart by *searching* for the sentinel cuts wherever the body chose; the rule is to
   cut at the first newline, and a consumer that concatenates renderings must keep its
   own boundaries rather than re-derive them by scanning. The field's docs now state
@@ -3539,7 +3575,9 @@ documentation a previous fix falsified.
   `121033e0a6323eb1fc997a7cf85ef6d86fa8cca2a9049bc6e71df93b53652d1d`, which matches
   nothing recorded), replayed against a release build of this tree on macOS arm64.
   Replies 3 to 6 are byte-identical at 527, 1 502, 921 and 386 bytes, the totals the
-  `COVERAGE` rows in `crates/tokfold-mcp/tests/quickstart.rs` already pin. A
+  `COVERAGE` rows in `crates/tokfold-mcp/tests/quickstart.rs` then pinned (the
+  rendering sentinel change makes replies 3 and 4 differ from `0.0.1` and 528 and
+  1 489 bytes wide; see that entry). A
   field-by-field walk of replies 1 and 2 found exactly one differing path each,
   `/result/instructions` and `/result/tools[0]/description` with `tools[0]` being
   `tokfold_compress`, and the two strings account for the whole difference — 560 bytes

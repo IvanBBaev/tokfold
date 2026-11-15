@@ -58,27 +58,27 @@ fuzz_target!(|data: &[u8]| {
                 .expect("an archive compress just wrote does not decompress");
             assert_eq!(restored, input, "the archive does not restore the input");
 
-            // The rendering: one sentinel line, then a body the encoder vouches for.
-            let (frame, body) = artifact
-                .rendering
-                .split_once('\n')
-                .expect("the rendering has no sentinel line");
+            // The rendering: the input itself on passthrough; otherwise one sentinel
+            // line, then a body the encoder vouches for.
             let stats = &artifact.stats;
-            let tag = match stats.encoder.0 {
-                0 => "raw",
-                1 => "min",
-                2 => "tbl",
-                other => panic!("unknown encoder id {other}"),
-            };
-            assert_eq!(frame, format!("\u{27E6}tkfd:v1:{tag}\u{27E7}"));
-            match stats.encoder.0 {
-                0 => assert_eq!(body, text, "the raw body is not the input"),
-                1 => {
+            if stats.encoder.0 == 0 {
+                assert_eq!(artifact.rendering, text, "passthrough is not the input");
+            } else {
+                let (frame, body) = artifact
+                    .rendering
+                    .split_once('\n')
+                    .expect("a framed rendering has no sentinel line");
+                let tag = match stats.encoder.0 {
+                    1 => "min",
+                    2 => "tbl",
+                    other => panic!("unknown encoder id {other}"),
+                };
+                assert_eq!(frame, format!("#tkfd1 {tag}"));
+                if stats.encoder.0 == 1 {
                     if let Some(eq) = oracle_eq(text, body) {
                         assert!(eq, "the minified body is not semantically equal");
                     }
                 }
-                _ => {}
             }
 
             // The do-no-harm gate, recomputed from the default estimator.

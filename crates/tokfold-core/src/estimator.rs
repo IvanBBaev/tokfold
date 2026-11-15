@@ -234,8 +234,10 @@ impl HeuristicEstimator {
     /// Derived from the reference corpus of agent tool output (11 fixtures, real
     /// `cl100k_base` and `o200k_base` counts): size-weighted over the rows this
     /// engine actually compresses, the heuristic claims a 32.4% saving where the real
-    /// saving is 26.4%. The floor is not a modelling accident — sweeping the cost
-    /// constants bottoms out near +2.8 pp, so the residual is structural.
+    /// saving is 26.4% (both measured when every rendering still carried the 18-byte
+    /// `⟦tkfd:v1:<tag>⟧` frame, which the `#tkfd1 <tag>` line has since replaced). The
+    /// floor is not a modelling accident — sweeping the cost constants bottoms out
+    /// near +2.8 pp, so the residual is structural.
     ///
     /// The error is **two-sided**, which is why this is not simply "the" safe margin:
     /// per-fixture it ranges from −20.8 pp (the heuristic under-claims, i.e. a real
@@ -253,18 +255,21 @@ impl HeuristicEstimator {
     ///
     /// | shape | claimed saving |
     /// |---|---|
-    /// | flat object, 40 keys (1 KB) | 5.35% |
+    /// | flat object, 20 keys (0.5 KB) | 5.69% |
     /// | flat object, 200–5 000 keys | 6.4%–7.1% |
-    /// | array of row objects, 10–2 000 rows | 13.1%–16.0% |
-    /// | nested 4 levels | 1.96% |
-    /// | nested 8–30 levels | 13.1%–21.8% |
+    /// | array of row objects, 10–2 000 rows | 15.0%–16.1% |
+    /// | nested 2 levels | 3.70% |
+    /// | nested 8–30 levels | 19.2%–23.4% |
     ///
     /// The flat-object plateau is the binding one: it clears a 6.00 pp margin by
-    /// 0.4–1.1 pp, and the 40-key document below it does not clear it at all — at
-    /// 600 bps that input, and a shallow 4-level nesting, fall back to passthrough
+    /// 0.4–1.1 pp, and the 20-key document below it does not clear it at all — at
+    /// 600 bps that input, and a shallow 2-level nesting, fall back to passthrough
     /// while every other row above keeps E1. Small documents never reach the
-    /// question: they take passthrough at any margin, because minification loses the
-    /// strict comparison by the width of the sentinel. Every "keeps E1" here is a
+    /// question: a flat object of up to 4 keys takes passthrough at any margin,
+    /// because minification loses the strict comparison by the width of the
+    /// `#tkfd1 min` sentinel line. (The table was re-measured when that sentinel
+    /// replaced the 18-byte `⟦tkfd:v1:min⟧` frame, which had cost every E1 candidate
+    /// more and moved every row above down.) Every "keeps E1" here is a
     /// statement about that profile: under the default
     /// [`Profile::Balanced`](crate::Profile::Balanced) the array-of-rows shape goes to
     /// E2 instead, and the margin is weighed against each candidate separately, so a
@@ -573,7 +578,7 @@ mod tests {
     /// 11.2% is a value between two plateaus that no shape actually sits at — and,
     /// worse for the argument, it overstates the headroom by roughly 4 pp on the very
     /// shape that binds. The real margin over a 6.00 pp bar is under 1.1 pp, and a
-    /// 1 KB flat object is already below the bar. Anyone raising the constant needs
+    /// 0.5 KB flat object is already below the bar. Anyone raising the constant needs
     /// to see that here, not discover it in the field.
     #[test]
     fn the_600_bps_bar_sits_just_above_the_flat_object_plateau() {
@@ -593,7 +598,8 @@ mod tests {
         // Small documents never reach the question: minification loses the strict
         // comparison by the width of the sentinel, so they take passthrough at any
         // margin. `EncoderId::PASSTHROUGH` is the id the header records for that.
-        for n in [3usize, 10] {
+        // Four keys is the largest flat object that does; five keys already wins E1.
+        for n in [3usize, 4] {
             let (saving, encoder) = claimed(&four_space_json("flat", n), 0);
             assert!(
                 (saving - 0.0).abs() < 1e-9,
@@ -630,13 +636,13 @@ mod tests {
             .collect();
         for saving in &rows {
             assert!(
-                (13.0..=16.5).contains(saving),
+                (14.5..=16.5).contains(saving),
                 "row-array saving moved: {saving}"
             );
         }
         assert_eq!(
             spelled(&rows),
-            "13.1%–16.0%",
+            "15.0%–16.1%",
             "the row-array row of the table"
         );
         let nested: Vec<f64> = [8usize, 16, 30]
@@ -645,18 +651,18 @@ mod tests {
             .collect();
         for saving in &nested {
             assert!(
-                (13.0..=22.5).contains(saving),
+                (19.0..=23.5).contains(saving),
                 "nested saving moved: {saving}"
             );
         }
         assert_eq!(
             spelled(&nested),
-            "13.1%–21.8%",
+            "19.2%–23.4%",
             "the deep-nesting row of the table"
         );
 
         // And the conclusion: at the bar, two shapes above lose E1 outright.
-        for (shape, n, row) in [("flat", 40usize, "5.35%"), ("nested", 4usize, "1.96%")] {
+        for (shape, n, row) in [("flat", 20usize, "5.69%"), ("nested", 2usize, "3.70%")] {
             let (saving, at_zero) = claimed(&four_space_json(shape, n), 0);
             assert_ne!(
                 at_zero,
@@ -704,7 +710,7 @@ mod tests {
     /// construction — and the bar it is named for cannot distinguish the two halves
     /// either: 6.00 pp is below both encoders' savings on this shape. The
     /// distinguishing bar has to sit between them. E1 claims the table's
-    /// 13.1%–16.0% here and E2 claims three times that, so 2 000 bps (20.00 pp) is
+    /// 15.0%–16.1% here and E2 claims three times that, so 2 000 bps (20.00 pp) is
     /// above everything E1 can claim on this shape and below everything E2 can. The
     /// gate runs per candidate, so at that bar E1 is refused under either profile:
     /// `Conservative`, which enables nothing else, falls back to passthrough, while
@@ -727,8 +733,8 @@ mod tests {
             );
             assert_eq!(balanced, EncoderId::E2_TABULAR, "{n} rows under Balanced");
             assert!(
-                (13.0..=16.1).contains(&e1_saving),
-                "{n} rows: E1 left the band the table spells, 13.1%-16.0%: {e1_saving}"
+                (14.9..=16.2).contains(&e1_saving),
+                "{n} rows: E1 left the band the table spells, 15.0%-16.1%: {e1_saving}"
             );
             assert!(
                 (45.0..=60.0).contains(&e2_saving),
@@ -979,141 +985,69 @@ mod tiktoken_tests {
 
     use super::{Cl100kEstimator, HeuristicEstimator, O200kEstimator, TokenEstimator, ids};
 
-    /// The sentinel's real cost, pinned per tokenizer.
+    /// The sentinel's real cost, pinned per tag and tokenizer.
     ///
-    /// The passthrough overhead is quoted in four places that state the current cost:
-    /// `lib.rs`, `Stats` in `compressor.rs`, the `tokfold-core` README and the
-    /// workspace root README. (`tokfold-cli`'s README names the sentinel without
-    /// pricing it, and the CHANGELOG quotes the figures as history of this fix.)
-    /// Before commit `0f759f6` all four read "about 10 estimated (11 real `cl100k`)
-    /// tokens" — prose with nothing holding it to the tokenizers — and the `o200k`
-    /// figure was absent from every one of them until it was measured here: 18% above
-    /// the `cl100k` number they quoted, on the tokenizer a GPT-4o caller is actually
-    /// billed on.
+    /// `SENTINEL_OPEN` in `encoder` states the cost of the `#tkfd1 <tag>` line a
+    /// framed rendering opens with: 5 to 7 real tokens. Passthrough has no sentinel —
+    /// its rendering is the input — so there is no passthrough overhead left to price.
+    /// (Until the frame fix the passthrough rendering carried an 18-byte
+    /// `⟦tkfd:v1:raw⟧` line, priced here at 10 estimated, 11 `cl100k` and 13 `o200k`
+    /// tokens; the CHANGELOG keeps those figures as history.)
     ///
     /// The cost is measured the way the docs state it: as the *delta* a prepended
-    /// sentinel adds to a real payload, not as the line's count in isolation. The two
-    /// could differ — BPE merges across the boundary — and this asserts they do not,
-    /// across payloads whose first character is `{`, `[`, `"` and a digit.
+    /// sentinel adds to a real body, not as the line's count in isolation. The two
+    /// differ exactly when the body opens with a newline — the shape every top-level
+    /// table body has (`\n#<N>[...]`) — because the sentinel's own newline merges with
+    /// it: both exact tokenizers then charge one token less and the heuristic one
+    /// more. Bodies opening with `{`, `[`, `"` and a digit are the other case.
     #[test]
     fn the_sentinel_costs_what_the_docs_say_it_costs() {
         let cl100k = Cl100kEstimator::new().unwrap();
         let o200k = O200kEstimator::new().unwrap();
-        let payloads = [
+        let bodies = [
             "{\"a\":1}",
             "[{\"id\":0,\"name\":\"item0\"},{\"id\":1,\"name\":\"item1\"}]",
-            "{\n    \"alpha\": 1,\n    \"beta\": 2\n}",
             "\"plain string with words in it\"",
             "[1,2,3,4,5,6,7,8,9,10]",
             "1234567890",
+            "{\"issues\":\n#2[\"id\"]\n+[1]\n+[2]\n}",
         ];
-        // (tag, heuristic, cl100k, o200k). Only `raw` is quoted in the docs — it is
-        // the tag the passthrough path always writes. `min`, `tbl` and `jsonl` are
-        // measured alongside it so a future retag cannot move the published number
-        // unnoticed; `min` happens to cost one token less under both exact tokenizers,
-        // and the two bytes longer `jsonl` one token more under all three.
+        let table_body = "\n#2[\"id\"]\n+[1]\n+[2]";
+        // (tag, heuristic, cl100k, o200k) before a body that does not open with a
+        // newline, then the same before `table_body`.
         let expected = [
-            ("raw", 10, 11, 13),
-            ("min", 10, 10, 12),
-            ("tbl", 10, 11, 13),
-            ("jsonl", 11, 12, 14),
+            ("min", (4, 6, 6), (5, 5, 5)),
+            ("tbl", (4, 6, 6), (5, 5, 5)),
+            ("jsonl", (5, 7, 7), (6, 6, 6)),
         ];
 
-        for (tag, heur, cl, o2) in expected {
-            let sentinel = format!("\u{27E6}tkfd:v1:{tag}\u{27E7}\n");
-            // 15 bytes of frame (two 3-byte brackets, `tkfd:v1:`, the newline) plus
-            // the tag: 18 for the three-letter tags, 20 for `jsonl`.
-            assert_eq!(
-                sentinel.len(),
-                15 + tag.len(),
-                "the {tag} sentinel line's length"
-            );
-            for payload in payloads {
-                let framed = format!("{sentinel}{payload}");
+        for (tag, plain, table) in expected {
+            let sentinel = format!("#tkfd1 {tag}\n");
+            // `#tkfd1 `, the tag and the newline: 11 for the three-letter tags, 13
+            // for `jsonl`.
+            assert_eq!(sentinel.len(), 8 + tag.len(), "the {tag} sentinel's length");
+            let cases = bodies
+                .iter()
+                .map(|body| (*body, plain))
+                .chain([(table_body, table)]);
+            for (body, (heur, cl, o2)) in cases {
+                let framed = format!("{sentinel}{body}");
                 assert_eq!(
-                    HeuristicEstimator.estimate(&framed) - HeuristicEstimator.estimate(payload),
+                    HeuristicEstimator.estimate(&framed) - HeuristicEstimator.estimate(body),
                     heur,
-                    "heuristic cost of the {tag} sentinel before {payload:?}"
+                    "heuristic cost of the {tag} sentinel before {body:?}"
                 );
                 assert_eq!(
-                    cl100k.estimate(&framed) - cl100k.estimate(payload),
+                    cl100k.estimate(&framed) - cl100k.estimate(body),
                     cl,
-                    "cl100k cost of the {tag} sentinel before {payload:?}"
+                    "cl100k cost of the {tag} sentinel before {body:?}"
                 );
                 assert_eq!(
-                    o200k.estimate(&framed) - o200k.estimate(payload),
+                    o200k.estimate(&framed) - o200k.estimate(body),
                     o2,
-                    "o200k cost of the {tag} sentinel before {payload:?}"
+                    "o200k cost of the {tag} sentinel before {body:?}"
                 );
             }
-        }
-    }
-
-    /// The sentinel's cost is not constant: it depends on the input's first bytes.
-    ///
-    /// `the_sentinel_costs_what_the_docs_say_it_costs` feeds only payloads that open
-    /// with a non-whitespace byte, and the docs once called the overhead "constant".
-    /// Valid JSON may open with whitespace, and the passthrough path renders it
-    /// verbatim, so the input's leading whitespace sits directly after the sentinel's
-    /// newline, where BPE (and the heuristic's whitespace-run rule) can merge the two.
-    /// This pins single cases
-    /// and the whole range the crate docs quote: over every prefix of up to six
-    /// spaces, tabs, CRs and LFs before `{}`, 10–11 estimated, 10–12 `cl100k`, 12–13
-    /// `o200k`. (A survey of the same prefixes before ten other bodies — `[]`, `1`,
-    /// `null`, strings, objects — found the same six bounds; only `{}` is swept here
-    /// because the exact tokenizers are slow in a debug build.)
-    #[test]
-    fn the_sentinel_cost_moves_with_leading_whitespace() {
-        let cl100k = Cl100kEstimator::new().unwrap();
-        let o200k = O200kEstimator::new().unwrap();
-        let sentinel = "\u{27E6}tkfd:v1:raw\u{27E7}\n";
-        let cost = |est: &dyn TokenEstimator, input: &str| {
-            est.estimate(&format!("{sentinel}{input}")) - est.estimate(input)
-        };
-
-        // (input, heuristic, cl100k, o200k)
-        for (input, heur, cl, o2) in [
-            (" {}", 11, 11, 13),
-            ("\n{}", 11, 10, 12),
-            ("\r\n{}", 10, 11, 12),
-            ("\r\n\t\t\r\n{}", 10, 12, 13),
-        ] {
-            assert_eq!(
-                cost(&HeuristicEstimator, input),
-                heur,
-                "heuristic {input:?}"
-            );
-            assert_eq!(cost(&cl100k, input), cl, "cl100k {input:?}");
-            assert_eq!(cost(&o200k, input), o2, "o200k {input:?}");
-        }
-
-        let mut prefixes = vec![String::new()];
-        let mut frontier = vec![String::new()];
-        for _ in 0..6 {
-            frontier = frontier
-                .iter()
-                .flat_map(|p| [" ", "\t", "\r", "\n"].map(|w| format!("{p}{w}")))
-                .collect();
-            prefixes.extend(frontier.iter().cloned());
-        }
-        assert_eq!(prefixes.len(), 5461, "4^0 + 4^1 + ... + 4^6 prefixes");
-
-        for (name, est, lo, hi) in [
-            (
-                "heuristic",
-                &HeuristicEstimator as &dyn TokenEstimator,
-                10,
-                11,
-            ),
-            ("cl100k", &cl100k, 10, 12),
-            ("o200k", &o200k, 12, 13),
-        ] {
-            let costs: Vec<usize> = prefixes
-                .iter()
-                .map(|p| cost(est, &format!("{p}{{}}")))
-                .collect();
-            assert_eq!(costs.iter().min(), Some(&lo), "{name}: cheapest sentinel");
-            assert_eq!(costs.iter().max(), Some(&hi), "{name}: dearest sentinel");
         }
     }
 

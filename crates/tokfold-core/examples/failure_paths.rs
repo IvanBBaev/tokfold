@@ -14,10 +14,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let artifact = engine.compress(minified)?;
     assert_eq!(artifact.stats.encoder, EncoderId::PASSTHROUGH);
     assert!((artifact.stats.token_ratio() - 1.0).abs() < f64::EPSILON);
-    // The ratio is a floor, not a measurement: the passthrough rendering is the input
-    // behind an 18-byte `raw` sentinel line, so it is longer than the input. Callers
-    // that account for every token should measure the rendering itself.
-    assert_eq!(artifact.rendering.len(), minified.len() + 18);
+    // The ratio is exact: a passthrough rendering is the input itself, byte for byte,
+    // with no sentinel line.
+    assert_eq!(artifact.rendering.as_bytes(), minified);
     println!(
         "passthrough: ratio {:.1}, rendering:",
         artifact.stats.token_ratio()

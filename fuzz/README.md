@@ -190,7 +190,7 @@ the corpus `table` -- drives an edit of an 8-row table it does not contain.
 `json.dict` is a libFuzzer dictionary with the following tokens:
 
 - JSON tokens and escapes, including surrogate pairs;
-- the `⟦tkfd:v1:…⟧` sentinel and the `TKFD` magic;
+- the `#tkfd1 ` sentinel opening and the `TKFD` magic;
 - JSON-RPC and MCP keys and method names.
 
 ## Reproducing a crash

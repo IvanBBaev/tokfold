@@ -1,1 +1,5 @@
 * text=auto eol=lf
+
+# Golden fixtures are compared byte for byte (one input holds CRLF line ends on
+# purpose), so their bytes must never be normalised.
+crates/tokfold-core/tests/golden/** -text

@@ -78,8 +78,8 @@ test("a document without a usable list yields no questions", () => {
 });
 
 test("the prompt carries the rendering and every question id", () => {
-  const p = buildPrompt("⟦tkfd:v1:tbl⟧\nbody\n", [{ id: "D1Q1", text: "How many?" }]);
-  assert.match(p, /<document>\n⟦tkfd:v1:tbl⟧\nbody\n<\/document>/);
+  const p = buildPrompt("#tkfd1 tbl\nbody\n", [{ id: "D1Q1", text: "How many?" }]);
+  assert.match(p, /<document>\n#tkfd1 tbl\nbody\n<\/document>/);
   assert.match(p, /\nD1Q1: How many\?\n$/);
 });
 

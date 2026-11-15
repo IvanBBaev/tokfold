@@ -88,21 +88,20 @@ and 512 levels of nesting by default, both raised through `ConfigBuilder` (the i
 limit no further than 4 GiB less one byte, the most the parser's `u32` offsets can
 address), and past either one it returns a `CompressError`. If no encoder reduces the estimated token
 count, it returns a passthrough artifact with ratio `1.0`. "Couldn't compress" is
-a statistic, never an error. That `1.0` is a floor rather than a measurement: a
-passthrough rendering still carries the 18-byte `raw` sentinel, which costs 10
-estimated (11 real `cl100k`, 13 real `o200k`) tokens more than a bare input that
-opens with a non-whitespace byte — leading whitespace can merge with the
-sentinel's newline and move each figure by at most one token (over every prefix
-of up to six spaces, tabs, CRs and LFs before `{}`: 10–11 estimated, 10–12
-`cl100k`, 12–13 `o200k`) — and on that path the `*_after` fields are *set* equal to their `*_before`
-counterparts instead of being measured. Callers that must account for every token
-should measure `Artifact::rendering` directly.
+a statistic, never an error. A passthrough rendering is the input itself, byte for
+byte, with no sentinel line, so on that path the `*_after` fields equal their
+`*_before` counterparts because the rendering *is* the input. Every other rendering
+opens with a one-line `#tkfd1 <tag>` sentinel (`min`, `tbl` or `jsonl`), and the
+do-no-harm gate prices that line in: an encoder wins only when the estimate of its
+whole rendering, sentinel included, is lower than the input's. (`0.0.1` renderings
+open with a `⟦tkfd:v1:<tag>⟧` line instead, a passthrough one included; archives
+did not change, and every `0.0.1` archive still decompresses.)
 
 JSON Lines is the one input that is not a single JSON document and is still
 accepted (after `0.0.1`, which rejected it): two or more JSON values, one per line,
 blank and CRLF lines allowed, each line under the nesting limit on its own. Under
 the default `Balanced` profile and `Aggressive` the records are rendered as the
-tabular encoder renders the array of them, behind a `⟦tkfd:v1:jsonl⟧` sentinel,
+tabular encoder renders the array of them, behind a `#tkfd1 jsonl` sentinel,
 when that saves estimated tokens; `Conservative` passes them through. Either way
 the archive holds the original bytes, so `decompress` returns the lines exactly.
 

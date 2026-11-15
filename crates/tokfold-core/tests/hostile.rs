@@ -101,13 +101,14 @@ const DEFAULT_MAX_INPUT_BYTES: usize = 16 * 1024 * 1024;
 // ===========================================================================
 
 /// The sentinel line an encoder's rendering opens with, without its newline. The
-/// tags are the ones `encoder::Encoder` documents: `raw`, `min`, `tbl` and `jsonl`.
+/// tags are the ones `encoder::Encoder` documents: `min`, `tbl` and `jsonl`.
+/// Passthrough has none -- its rendering is the input, unframed -- and neither has an
+/// id no encoder holds.
 fn sentinel_for(encoder: EncoderId) -> Option<&'static str> {
     match encoder {
-        EncoderId::PASSTHROUGH => Some("\u{27E6}tkfd:v1:raw\u{27E7}"),
-        EncoderId::E1_MINIFY => Some("\u{27E6}tkfd:v1:min\u{27E7}"),
-        EncoderId::E2_TABULAR => Some("\u{27E6}tkfd:v1:tbl\u{27E7}"),
-        EncoderId::E4_JSONL => Some("\u{27E6}tkfd:v1:jsonl\u{27E7}"),
+        EncoderId::E1_MINIFY => Some("#tkfd1 min"),
+        EncoderId::E2_TABULAR => Some("#tkfd1 tbl"),
+        EncoderId::E4_JSONL => Some("#tkfd1 jsonl"),
         _ => None,
     }
 }
@@ -159,21 +160,27 @@ fn check_accepted(c: &Compressor, input: &str) -> Result<Artifact, TestCaseError
     );
     prop_assert_eq!(&refolded.archive, &art.archive, "archive not a fixed point");
 
-    // The rendering: sentinel line first, then a body that stands for the input.
-    let (sentinel, body) = art
-        .rendering
-        .split_once('\n')
-        .expect("a framed rendering carries a sentinel line");
-    let expected_sentinel = sentinel_for(art.stats.encoder);
-    prop_assert_eq!(
-        Some(sentinel),
-        expected_sentinel,
-        "sentinel does not name the reported encoder {:?}",
-        art.stats.encoder
-    );
+    // The rendering: the input itself on the passthrough path; otherwise the
+    // sentinel line first, then a body that stands for the input.
+    let body = if art.stats.encoder == EncoderId::PASSTHROUGH {
+        art.rendering.as_str()
+    } else {
+        let (sentinel, body) = art
+            .rendering
+            .split_once('\n')
+            .expect("a framed rendering carries a sentinel line");
+        let expected_sentinel = sentinel_for(art.stats.encoder);
+        prop_assert_eq!(
+            Some(sentinel),
+            expected_sentinel,
+            "sentinel does not name the reported encoder {:?}",
+            art.stats.encoder
+        );
+        body
+    };
     match art.stats.encoder {
         EncoderId::PASSTHROUGH => {
-            prop_assert_eq!(body, input, "passthrough body altered its input");
+            prop_assert_eq!(body, input, "a passthrough rendering is not its input");
         }
         EncoderId::E1_MINIFY => prop_assert!(
             json_semantically_eq(input, body),
@@ -554,13 +561,13 @@ fn arb_string_piece() -> impl Strategy<Value = String> {
         ])
         .prop_map(String::from),
         // Text that imitates the rendering's own framing: all three sentinels
-        // `sentinel_for` names — this list held two of them, so a string that spells
-        // the E1 sentinel was never generated — E2's header and row markers, and a
-        // whole escaped table block.
+        // `sentinel_for` names — this list once held two of them, so a string that
+        // spelled the E1 sentinel was never generated — E2's header and row markers,
+        // and a whole escaped table block.
         2 => prop::sample::select(vec![
-            "\u{27E6}tkfd:v1:raw\u{27E7}",
-            "\u{27E6}tkfd:v1:min\u{27E7}",
-            "\u{27E6}tkfd:v1:tbl\u{27E7}",
+            "#tkfd1 min",
+            "#tkfd1 tbl",
+            "#tkfd1 jsonl",
             "+[", "*{", "#2[", ",:[]{}",
             "\\n#1[\\\"a\\\"]\\n+[1]\\n",
         ])
@@ -819,7 +826,7 @@ proptest! {
     /// different arm of the selection. Shapes 0-2 are passthrough: they are scalars
     /// or two-member objects, and `pretty` does not move them, because the filler
     /// `inject_whitespace` adds to a document that small is worth less than the
-    /// `⟦tkfd:v1:min⟧` framing plus the do-no-harm margin. Shape 3 is the array of
+    /// `#tkfd1 min` sentinel line plus the do-no-harm margin. Shape 3 is the array of
     /// three like objects E2 tabularizes. Shape 4 — twenty copies of the lexeme in
     /// one array, always pretty-printed — is the only one E1 wins, and it is here
     /// because without it this test never reached E1 at all: measured over 4 000
@@ -839,7 +846,11 @@ proptest! {
         // `pretty` says; on the others the flag is free.
         let doc = if pretty || shape == 4 { inject_whitespace(&doc, "\n    ") } else { doc };
         let art = check_accepted(&compressor(), &doc)?;
-        let body = art.rendering.split_once('\n').unwrap().1;
+        let body = if art.stats.encoder == EncoderId::PASSTHROUGH {
+            art.rendering.as_str()
+        } else {
+            art.rendering.split_once('\n').unwrap().1
+        };
         prop_assert!(
             body.contains(lex.as_str()),
             "lexeme {:?} missing from the {:?} body {:?}",
@@ -1395,16 +1406,16 @@ fn hostile_generators_reach_every_encoder_and_row_kind() {
     let (mut plain_rows, mut deviating_rows, mut escaped_header_keys) = (0usize, 0usize, 0usize);
     // One counter per sentinel `sentinel_for` names, over the *input*: the framing pool in
     // `arb_string_piece` is the only place these strings are generated, so a zero here is
-    // the pool having lost a member. Measured in place over these `DRAWS`: raw 38,
-    // min 40, tbl 33 of 600 drawn documents spell one, so none of the
+    // the pool having lost a member. Measured in place over these `DRAWS`: min 38,
+    // tbl 40, jsonl 33 of 600 drawn documents spell one, so none of the
     // three is a near miss.
     let mut sentinels_spelled = [0usize; 3];
     for _ in 0..DRAWS {
         let doc = arb_hostile_valid().new_tree(&mut runner).unwrap().current();
         for (i, kind) in [
-            EncoderId::PASSTHROUGH,
             EncoderId::E1_MINIFY,
             EncoderId::E2_TABULAR,
+            EncoderId::E4_JSONL,
         ]
         .into_iter()
         .enumerate()
@@ -1440,9 +1451,9 @@ fn hostile_generators_reach_every_encoder_and_row_kind() {
         ("plain rows", plain_rows),
         ("deviating rows", deviating_rows),
         ("escaped header keys", escaped_header_keys),
-        ("inputs spelling the raw sentinel", sentinels_spelled[0]),
-        ("inputs spelling the min sentinel", sentinels_spelled[1]),
-        ("inputs spelling the tbl sentinel", sentinels_spelled[2]),
+        ("inputs spelling the min sentinel", sentinels_spelled[0]),
+        ("inputs spelling the tbl sentinel", sentinels_spelled[1]),
+        ("inputs spelling the jsonl sentinel", sentinels_spelled[2]),
     ] {
         assert!(n > 0, "no {name} in {DRAWS} hostile draws");
     }

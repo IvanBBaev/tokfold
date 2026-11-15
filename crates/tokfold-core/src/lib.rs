@@ -34,20 +34,14 @@
 //!   levels of nesting by default). If no encoder reduces the estimated token count,
 //!   the engine returns a passthrough artifact. "Couldn't compress" is a statistic,
 //!   never an error.
-//! * **Do no harm.** When an encoder wins, its rendering — sentinel frame included —
-//!   costs fewer estimated tokens than the input. The passthrough fallback is the one
-//!   exception: it re-emits the input behind an 18-byte `raw` sentinel, an overhead
-//!   of 10 estimated (11 real `cl100k`, 13 real `o200k`) tokens for an input that
-//!   opens with a non-whitespace byte. It is not constant: leading whitespace can
-//!   merge with the sentinel's newline, and over every prefix of up to six spaces,
-//!   tabs, CRs and LFs before `{}` it measured 10–11 estimated, 10–12 `cl100k` and
-//!   12–13 `o200k` tokens. [`Stats::token_ratio`] does not attribute it to
-//!   compression — it reports exactly `1.0`. The guarantee is therefore "an encoder's rendering
-//!   replaces the input only when the estimate prices it lower, frame included", not
-//!   "the rendering is never longer than the input" — the passthrough rendering is
-//!   longer, by the estimate too — and it is a statement about estimated tokens
-//!   only: a real tokenizer can count a winning rendering as more tokens than the
-//!   input.
+//! * **Do no harm.** When an encoder wins, its rendering — the `#tkfd1 <tag>`
+//!   sentinel line included — costs fewer estimated tokens than the input. When none
+//!   does, the passthrough rendering is the input itself, byte for byte, with no
+//!   sentinel, so the fallback costs exactly what the input costs and the `1.0`
+//!   [`Stats::token_ratio`] reports for it is exact. The guarantee is "a rendering
+//!   replaces the input only when the estimate prices it lower, sentinel included,
+//!   and is otherwise the input" — a statement about estimated tokens only: a real
+//!   tokenizer can count a winning rendering as more tokens than the input.
 //! * **Fail closed.** Any integrity mismatch on decode returns an error rather than
 //!   partially recovered bytes.
 //!

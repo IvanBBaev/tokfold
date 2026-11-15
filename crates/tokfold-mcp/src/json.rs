@@ -794,8 +794,10 @@ mod tests {
 
     #[test]
     fn non_ascii_survives_verbatim() {
-        // The rendering sentinel is non-ASCII, so this is a load-bearing property.
+        // A rendering carries the input's non-ASCII text verbatim, and the sentinel
+        // `0.0.1` wrote was non-ASCII too, so this is a load-bearing property.
         assert_eq!(roundtrip("\"⟦tkfd:v1:min⟧\""), "\"⟦tkfd:v1:min⟧\"");
+        assert_eq!(roundtrip("\"Ünïcødé ✓\""), "\"Ünïcødé ✓\"");
     }
 
     #[test]

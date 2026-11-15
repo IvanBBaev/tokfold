@@ -43,8 +43,9 @@ const WHITESPACE_JSON: &[u8] = br#"{
     }
 }"#;
 
-/// The rendering always opens with `⟦tkfd:v1:` regardless of the winning encoder.
-const SENTINEL_PREFIX: &[u8] = "\u{27E6}tkfd:v1:".as_bytes();
+/// A rendering opens with `#tkfd1 ` whenever an encoder other than passthrough wins
+/// (a passthrough rendering is the input itself, with no sentinel).
+const SENTINEL_PREFIX: &[u8] = b"#tkfd1 ";
 
 /// Run the built `tokfold` binary with `args`, feeding `stdin_bytes` on standard
 /// input, and capture its output and exit status.
@@ -787,8 +788,9 @@ fn stats_refuses_an_exact_tokenizer_this_build_lacks() {
 /// byte, so the gate's estimate, the encoder it chose and therefore the archive are
 /// untouched. `real tokens before` counts the input, `real tokens after` counts what
 /// `compress` prints for the same profile -- checked against the core estimator, not
-/// only against the pinned literals -- and on the passthrough path `after` is set to
-/// `before`, the convention of the `est tokens` rows. Every row keeps column 21.
+/// only against the pinned literals -- and on the passthrough path the rendering is
+/// the input itself, so `after` equals `before` because it counts the same text.
+/// Every row keeps column 21.
 #[cfg(feature = "tiktoken")]
 #[test]
 fn stats_appends_exact_counts_without_changing_the_report() {
@@ -814,8 +816,8 @@ fn stats_appends_exact_counts_without_changing_the_report() {
             &cl100k,
             "balanced",
             54,
-            52,
-            "0.9630",
+            47,
+            "0.8704",
             "cl100k-base (id 2)",
         ),
         (
@@ -832,8 +834,8 @@ fn stats_appends_exact_counts_without_changing_the_report() {
             &o200k,
             "balanced",
             54,
-            54,
-            "1.0000",
+            47,
+            "0.8704",
             "o200k-base (id 3)",
         ),
         (
@@ -873,19 +875,17 @@ fn stats_appends_exact_counts_without_changing_the_report() {
         let compressed = run_tokfold(&["compress", "--profile", profile], COMPRESSIBLE_JSON);
         assert!(compressed.status.success(), "{compressed:?}");
         let rendering = String::from_utf8(compressed.stdout).expect("utf-8");
-        let passthrough = plain.contains("passthrough (id 0)");
-        if passthrough {
-            assert!(
-                counter.estimate(&rendering) > before,
-                "{name} {profile}: the raw frame costs tokens the row does not charge"
-            );
-        } else {
+        if plain.contains("passthrough (id 0)") {
             assert_eq!(
-                counter.estimate(&rendering),
-                after,
-                "{name} {profile}: rendering"
+                rendering, input,
+                "{name} {profile}: passthrough is the input"
             );
         }
+        assert_eq!(
+            counter.estimate(&rendering),
+            after,
+            "{name} {profile}: rendering"
+        );
         for line in report.lines() {
             let (label, value) = line.split_at(20);
             assert!(
@@ -897,8 +897,8 @@ fn stats_appends_exact_counts_without_changing_the_report() {
 }
 
 /// The exact rows report; they do not vote. On this array the heuristic prices the
-/// tabular rendering as a win (49 -> 46 estimated tokens) while `cl100k` counts it as
-/// a loss (27 -> 33), and the encoder stays the one the heuristic chose -- the gate's
+/// tabular rendering as a win (49 -> 40 estimated tokens) while `cl100k` counts it as
+/// a loss (27 -> 28), and the encoder stays the one the heuristic chose -- the gate's
 /// estimator is unchanged, which is what makes a ratio above `1.0000` possible.
 #[cfg(feature = "tiktoken")]
 #[test]
@@ -917,16 +917,16 @@ fn stats_reports_an_exact_loss_the_heuristic_priced_as_a_win() {
             .find(|(l, _)| l == label)
             .map_or_else(|| panic!("no {label} row: {report}"), |(_, v)| v.as_str())
     };
-    assert_eq!(value("token ratio"), "0.9388");
+    assert_eq!(value("token ratio"), "0.8163");
     assert_eq!(value("encoder"), "e2-tabular (id 2)");
     assert_eq!(value("real tokens before"), "27");
-    assert_eq!(value("real tokens after"), "33");
-    assert_eq!(value("real token ratio"), "1.2222");
+    assert_eq!(value("real tokens after"), "28");
+    assert_eq!(value("real token ratio"), "1.0370");
 }
 
 /// `stats --json --tokenizer cl100k` is the MCP object followed by the four exact
 /// counts, under the keys the help names, and the same numbers the text rows print for
-/// the same pass (the exact-loss array above: 27 -> 33). Without an exact tokenizer the
+/// the same pass (the exact-loss array above: 27 -> 28). Without an exact tokenizer the
 /// line is the MCP object alone, pinned by the test below.
 #[cfg(feature = "tiktoken")]
 #[test]
@@ -952,8 +952,8 @@ fn stats_json_appends_the_exact_counts_after_the_mcp_object() {
     assert_eq!(
         line,
         format!(
-            "{object},\"realTokensBefore\":27,\"realTokensAfter\":33,\
-             \"realTokenRatio\":1.2222222222222223,\"realTokenizerId\":2}}\n"
+            "{object},\"realTokensBefore\":27,\"realTokensAfter\":28,\
+             \"realTokenRatio\":1.037037037037037,\"realTokenizerId\":2}}\n"
         )
     );
 }
@@ -980,9 +980,9 @@ fn stats_json_prints_the_mcp_stats_object_as_one_line() {
 
     assert_eq!(
         run("balanced"),
-        "{\"bytesBefore\":153,\"bytesAfter\":116,\"estTokensBefore\":105,\
-         \"estTokensAfter\":76,\"byteRatio\":0.7581699346405228,\
-         \"tokenRatio\":0.7238095238095238,\"encoder\":\"tabular\",\"encoderId\":2,\
+        "{\"bytesBefore\":153,\"bytesAfter\":109,\"estTokensBefore\":105,\
+         \"estTokensAfter\":70,\"byteRatio\":0.7124183006535948,\
+         \"tokenRatio\":0.6666666666666666,\"encoder\":\"tabular\",\"encoderId\":2,\
          \"tokenizerId\":0,\"minSavingBps\":0,\"fidelity\":\"lossless\"}\n"
     );
     assert_eq!(
@@ -997,9 +997,9 @@ fn stats_json_prints_the_mcp_stats_object_as_one_line() {
     let text = stats_report("balanced", COMPRESSIBLE_JSON);
     for row in [
         "bytes before:       153",
-        "bytes after:        116",
+        "bytes after:        109",
         "est tokens before:  105",
-        "est tokens after:   76",
+        "est tokens after:   70",
         "encoder:            e2-tabular (id 2)",
     ] {
         assert!(
@@ -1783,8 +1783,8 @@ fn a_standard_output_that_cannot_be_written_fails_the_command() {
 /// a `compress` or `expand` whose payload is zero bytes writes nothing, so no write can
 /// fail, and it exits `0`. Both halves are reached here — a rejected pass over an
 /// empty input, whose passthrough is empty, and an `expand` of an archive whose
-/// original is empty. The compressor never emits that archive (any non-empty input
-/// yields at least the raw sentinel, and an empty one is rejected), so it is built by
+/// original is empty. The compressor never emits that archive (it rejects an empty
+/// input, so every archive it writes holds at least one byte), so it is built by
 /// hand from the layout in `tokfold-core/src/format.rs`: magic, version `1`, encoder
 /// `0`, tokenizer and flags `0`, a `ULEB128` length of `0`, and the SHA-256 of the
 /// empty original.
@@ -4863,7 +4863,7 @@ fn hook_replaces_a_compressible_mcp_result_with_its_rendering() {
 
 /// Every reason to leave a result alone ends the same way through the binary: nothing
 /// on standard output, nothing on standard error, exit `0`. The passthrough case is
-/// the one that matters most — its frame only adds tokens.
+/// the one that matters most — its rendering is the result itself.
 #[test]
 fn hook_leaves_every_other_result_alone_silently_and_exits_zero() {
     let bash_shaped = br#"{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_response":{"stdout":"[1,2,3]","stderr":"","interrupted":false,"isImage":false}}"#;
@@ -4910,14 +4910,21 @@ fn hook_honours_the_profile_flag() {
     assert!(!out.stdout.is_empty());
 }
 
-/// A tabular array the byte rule and the token rule disagree on: the rendering is one
-/// byte shorter (72 against 73) and costs more real tokens (42 against 39 in
-/// `cl100k`, 44 against 39 in `o200k`).
+/// A tabular array the byte rule and the token rule disagree on: the rendering is
+/// shorter (58 bytes against 66) and costs more real tokens (31 against 23, in both
+/// `cl100k` and `o200k`).
 const SHORTER_BUT_DEARER: &str =
-    r#"[{"id":0,"v":"x0"},{"id":1,"v":"x1"},{"id":2,"v":"x2"},{"id":3,"v":"x3"}]"#;
+    r#"[{"type":"x"},{"type":"x"},{"type":"x"},{"type":"x"},{"type":"x"}]"#;
 
-/// The default `--tokenizer heuristic` keeps the byte rule: a rendering one byte
-/// shorter is forwarded, whatever it costs in tokens.
+/// A tabular array the two exact tokenizers disagree on: its rendering (68 bytes
+/// against 80) costs 37 real tokens in both, the input 37 in `cl100k` and 46 in
+/// `o200k`, so the counts tie under one and the rendering wins under the other.
+#[cfg(feature = "tiktoken")]
+const TIES_IN_CL100K: &str =
+    r#"[{"x":0,"a":""},{"x":-1,"a":""},{"x":-2,"a":""},{"x":-3,"a":""},{"x":-4,"a":""}]"#;
+
+/// The default `--tokenizer heuristic` keeps the byte rule: a shorter rendering is
+/// forwarded, whatever it costs in tokens.
 #[test]
 fn hook_compares_bytes_by_default() {
     let compressed = run_tokfold(&["compress"], SHORTER_BUT_DEARER.as_bytes());
@@ -4930,9 +4937,9 @@ fn hook_compares_bytes_by_default() {
 }
 
 /// With an exact tokenizer the hook forwards a rendering only on strictly fewer real
-/// tokens: the byte-shorter fixture is withheld under both, and `COMPRESSIBLE_JSON`
-/// (54 tokens; its rendering 52 in `cl100k`, 54 in `o200k`) is forwarded under
-/// `cl100k` and withheld under `o200k`, where the counts tie.
+/// tokens: the byte-shorter fixture is withheld under both, `COMPRESSIBLE_JSON` (54
+/// tokens; its rendering 47 in both) is forwarded under both, and `TIES_IN_CL100K` is
+/// withheld under `cl100k`, where the counts tie, and forwarded under `o200k`.
 #[cfg(feature = "tiktoken")]
 #[test]
 fn hook_with_an_exact_tokenizer_replaces_only_on_fewer_tokens() {
@@ -4941,7 +4948,9 @@ fn hook_with_an_exact_tokenizer_replaces_only_on_fewer_tokens() {
         ("cl100k", SHORTER_BUT_DEARER, false),
         ("o200k", SHORTER_BUT_DEARER, false),
         ("cl100k", compressible, true),
-        ("o200k", compressible, false),
+        ("o200k", compressible, true),
+        ("cl100k", TIES_IN_CL100K, false),
+        ("o200k", TIES_IN_CL100K, true),
     ] {
         let out = run_tokfold(&["hook", "--tokenizer", tokenizer], &hook_event(input));
         assert_eq!(out.status.code(), Some(0), "{tokenizer}");
@@ -5271,7 +5280,7 @@ fn bench_json_reports_the_model_on_a_synthetic_transcript() {
     assert!(mcp_after < mcp_before, "the fixture must be a real saving");
     assert_eq!(
         (mcp_before, mcp_after, bash),
-        (105, 76, 7),
+        (105, 70, 7),
         "pinned derivation"
     );
 

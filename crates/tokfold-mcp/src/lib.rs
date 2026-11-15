@@ -141,9 +141,9 @@ pub use server::Server;
 /// figure being 2 + 4/3; escaping inflates the call and both copies in the reply
 /// together, so it can only pull the payload's share of the ratio down. Those are limits
 /// approached from above, not ceilings — the reply's fixed envelope outweighs the
-/// call's, so `{"k":"z"}` measures 5.02x counting each line's newline (a 121-byte call,
-/// a 608-byte reply; 5.06x on the messages alone) — but only a large call nears this cap, and
-/// there the envelope is noise. With only the read side capped, a 10,066,259-byte call — under a
+/// call's, so `{"k":"z"}` measures 4.71x counting each line's newline (a 121-byte call,
+/// a 570-byte reply; 4.74x on the messages alone) — but only a large call nears this cap, and
+/// there the envelope is noise. With only the read side capped, a 10,066,270-byte call — under a
 /// third of what this admits — produced a 33,554,431-byte line this same reader would
 /// have refused one byte later. Those two sizes are messages with the newline left out,
 /// as the cap measures them.
