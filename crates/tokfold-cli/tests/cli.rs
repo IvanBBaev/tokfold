@@ -95,12 +95,18 @@ fn run_tokfold_without_stdin(args: &[&str]) -> Output {
 /// child exits -- including `run_tokfold`'s own `.output()`, so even the common path
 /// is unguarded. Measured on 2026-10-03 over this file: `grep -c '\.output()'` is 16
 /// and `grep -cE '\.wait\(\)|\.wait_with_output\(\)'` is 8, against a single
-/// `try_wait` -- the one below -- and four callers of this helper. Those 24 waits
+/// `try_wait` -- now in [`finished_within`] -- and four callers of this helper. Those 24 waits
 /// assume the binary terminates, which is not what their tests are about; if one
 /// regresses, the run stalls until the harness' own bound instead of failing here.
 /// Route a new wait through this helper when termination *is* the test's subject.
 fn finished_within_ten_seconds(child: &mut Child) -> bool {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    finished_within(child, Duration::from_secs(10))
+}
+
+/// Wait for `child` for at most `limit`, killing it if it outlives that, and report
+/// whether it exited on its own — [`finished_within_ten_seconds`] with the bound named.
+fn finished_within(child: &mut Child, limit: Duration) -> bool {
+    let deadline = Instant::now() + limit;
     while Instant::now() < deadline {
         if child.try_wait().expect("poll the child").is_some() {
             return true;
@@ -5223,8 +5229,31 @@ fn bench_dir(name: &str) -> PathBuf {
     dir
 }
 
-/// Run `bench` with `args` and no standard input, bounded, and return its output.
+/// Run `bench` with `args` and no standard input, bounded at ten seconds, and return
+/// its output.
+///
+/// The bound is what lets a `bench` that never returns — on a FIFO, say — fail its
+/// test instead of stalling the run.
 fn run_bench(args: &[&str]) -> Output {
+    run_bench_within(args, Duration::from_secs(10))
+}
+
+/// How long a `bench` that loads an exact tokenizer is given.
+///
+/// Building a BPE table is slow in a debug build: measured on 2026-11-19 on an Apple
+/// silicon Mac, one `bench --json --tokenizer` child over [`bench_dir`] took 1.06 s for
+/// `cl100k` and 2.62 s for `o200k` unloaded in debug, 0.10 s and 0.09 s in release.
+/// That test runs two such children and builds both tables in-process as well, and took
+/// 8.07 s unloaded against the ten-second bound [`run_bench`] uses: running this file's
+/// Rust 1.85 debug test binary 20 times, four at a time, the same day, that bound failed
+/// [`bench_counts_with_an_exact_tokenizer`] in 12 of the 20 runs and nothing else. Its
+/// subject is the numbers, not termination, so it waits longer; a hang still fails
+/// rather than stalls.
+const EXACT_TOKENIZER_BENCH_LIMIT: Duration = Duration::from_secs(120);
+
+/// Run `bench` with `args` and no standard input, bounded at `limit`, and return its
+/// output.
+fn run_bench_within(args: &[&str], limit: Duration) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_tokfold"))
         .arg("bench")
         .args(args)
@@ -5235,8 +5264,8 @@ fn run_bench(args: &[&str]) -> Output {
         .expect("spawn tokfold");
     // Both pipes are tiny here, so polling before draining cannot deadlock.
     assert!(
-        finished_within_ten_seconds(&mut child),
-        "bench {args:?} did not finish within ten seconds"
+        finished_within(&mut child, limit),
+        "bench {args:?} did not finish within {limit:?}"
     );
     child.wait_with_output().expect("collect bench's output")
 }
@@ -5562,7 +5591,10 @@ fn bench_counts_with_an_exact_tokenizer() {
         ("o200k", &o200k, "o200k-base", 3),
     ];
     for (name, counter, label, id) in cases {
-        let out = run_bench(&["--json", "--tokenizer", name, path_str(&dir)]);
+        let out = run_bench_within(
+            &["--json", "--tokenizer", name, path_str(&dir)],
+            EXACT_TOKENIZER_BENCH_LIMIT,
+        );
         assert_eq!(out.status.code(), Some(0), "{name}: {out:?}");
         let report = json::parse(String::from_utf8_lossy(&out.stdout).trim_end()).expect("JSON");
         assert_eq!(report.get("tokenizer").and_then(Value::as_str), Some(label));

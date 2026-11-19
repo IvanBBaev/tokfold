@@ -4979,6 +4979,19 @@ documentation a previous fix falsified.
   code, no behaviour and no format change.
 
 ### Tests
+- **`bench_counts_with_an_exact_tokenizer` failed under load on a bound meant for
+  hangs.** It ran its two `bench --json --tokenizer` children through `run_bench`,
+  whose ten-second bound exists so a `bench` that never returns (on a FIFO) fails
+  instead of stalling. Building a BPE table is slow in a debug build — measured
+  2026-11-19 on an Apple-silicon Mac, one child took 1.06 s for `cl100k` and 2.62 s for
+  `o200k` unloaded (0.10 s and 0.09 s in release) — and the whole test took 8.07 s
+  unloaded. Running the `cli` test binary built by Rust 1.85 (debug) 20 times, four at a
+  time, failed that test in 12 of the 20 runs and nothing else; at a load average of
+  about 130 the same day it failed on Rust 1.97 debug too ("did not finish within ten
+  seconds"). Its subject is the numbers, so those two children now wait up to
+  `EXACT_TOKENIZER_BENCH_LIMIT` (120 s) through `run_bench_within`; every other `bench`
+  test keeps the ten-second bound, and a hang still fails. With the change the six
+  `bench_` tests passed at that load (53.9 s). The production binary is unchanged.
 - **The offset in the node-budget refusal was pinned nowhere, under a comment that
   mis-stated the message.** `an_over_budget_message_reports_the_node_limit` asserted
   `error.msg` and then only that the rendered line *contains* `too many values`, under
