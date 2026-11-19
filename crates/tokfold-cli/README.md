@@ -73,7 +73,7 @@ cargo build --release -p tokfold-cli   # binary at target/release/tokfold
   every MCP tool reply carries (`bytesBefore`, `bytesAfter`, `estTokensBefore`,
   `estTokensAfter`, `byteRatio`, `tokenRatio`, `encoder`, `encoderId`,
   `tokenizerId`, `minSavingBps`, `fidelity`). Its encoder names are the MCP ones
-  (`minify`, `tabular`, `jsonl`, `passthrough`), not the text report's `e1-minify`
+  (`minify`, `tabular`, `jsonl`, `grid`, `passthrough`), not the text report's `e1-minify`
   spelling, and its ratios are not rounded. With `--tokenizer cl100k|o200k` the
   four exact counts follow as `realTokensBefore`, `realTokensAfter`,
   `realTokenRatio` and `realTokenizerId` (`2` for `cl100k`, `3` for `o200k`);

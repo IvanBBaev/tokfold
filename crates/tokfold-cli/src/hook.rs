@@ -173,8 +173,9 @@ mod tests {
     use tokfold_core::{Compressor, Config, Profile, TokenEstimator};
     use tokfold_mcp::json::{self, Object, Value};
 
-    /// A homogeneous array the tabular encoder wins on.
-    const TABULAR: &str = r#"[{"id":0,"name":"item0","active":true},{"id":1,"name":"item1","active":true},{"id":2,"name":"item2","active":true},{"id":3,"name":"item3","active":true}]"#;
+    /// A homogeneous array a table encoder wins on: E5's grid, which also hoists the
+    /// constant `active` column into its header.
+    const TABLE: &str = r#"[{"id":0,"name":"item0","active":true},{"id":1,"name":"item1","active":true},{"id":2,"name":"item2","active":true},{"id":3,"name":"item3","active":true}]"#;
 
     /// Build the stdin object Claude Code sends, with `tool_response` set to `response`.
     fn event(response: Value) -> String {
@@ -207,26 +208,26 @@ mod tests {
     #[test]
     fn a_compressible_string_result_is_replaced_by_its_rendering() {
         let line = respond(
-            event(Value::string(TABULAR)).as_bytes(),
+            event(Value::string(TABLE)).as_bytes(),
             Profile::Balanced,
             Price::Bytes,
         )
-        .expect("a tabular win is replaced");
+        .expect("a table win is replaced");
         let expected = Compressor::new(Config::default())
-            .compress(TABULAR.as_bytes())
+            .compress(TABLE.as_bytes())
             .unwrap()
             .rendering;
-        assert!(expected.starts_with("#tkfd1 tbl\n"), "{expected}");
+        assert!(expected.starts_with("#tkfd1 grid\n"), "{expected}");
         assert_eq!(updated_output(&line), expected);
     }
 
     #[test]
     fn the_profile_reaches_the_engine() {
-        // `Conservative` has no tabular encoder; a compact array leaves minify nothing
+        // `Conservative` has no table encoder; a compact array leaves minify nothing
         // to remove, so the same input that `Balanced` replaces stands.
         assert!(
             respond(
-                event(Value::string(TABULAR)).as_bytes(),
+                event(Value::string(TABLE)).as_bytes(),
                 Profile::Conservative,
                 Price::Bytes,
             )
@@ -278,7 +279,7 @@ mod tests {
         // A built-in tool's result is an object whose shape Claude Code checks; even
         // when its text would compress, the hook does not touch it.
         let bash = Object::new()
-            .set("stdout", Value::string(TABULAR))
+            .set("stdout", Value::string(TABLE))
             .set("stderr", Value::string(""))
             .set("interrupted", Value::Bool(false))
             .set("isImage", Value::Bool(false))
@@ -309,22 +310,23 @@ mod tests {
                 "{stdin:?}"
             );
         }
-        let pre = event(Value::string(TABULAR)).replace(EVENT, "PreToolUse");
+        let pre = event(Value::string(TABLE)).replace(EVENT, "PreToolUse");
         assert!(respond(pre.as_bytes(), Profile::Balanced, Price::Bytes).is_none());
     }
 
     #[test]
     fn an_event_without_a_name_is_still_answered() {
         let bare = Object::new()
-            .set("tool_response", Value::string(TABULAR))
+            .set("tool_response", Value::string(TABLE))
             .build()
             .to_string();
         assert!(respond(bare.as_bytes(), Profile::Balanced, Price::Bytes).is_some());
     }
 
-    /// A tabular array whose rendering is *longer* in bytes (47 against 39) although
-    /// the engine's heuristic still picks the tabular encoder for it.
-    const LONGER_IN_BYTES: &str = r#"[{"id":10,"v":"aa"},{"id":20,"v":"aa"}]"#;
+    /// A two-row array whose grid rendering is *longer* in bytes (40 against 39)
+    /// although the engine's heuristic still picks the grid encoder for it. Its cells
+    /// differ, so there is no constant column for E5 to hoist.
+    const LONGER_IN_BYTES: &str = r#"[{"id":10,"v":"ab"},{"id":20,"v":"cd"}]"#;
 
     /// A stand-in tokenizer: every rendering (it opens with the sentinel) costs
     /// `rendering`, every other text costs `original`.
@@ -362,7 +364,7 @@ mod tests {
 
     #[test]
     fn a_token_price_replaces_only_on_strictly_fewer_tokens() {
-        let stdin = event(Value::string(TABULAR));
+        let stdin = event(Value::string(TABLE));
         let by_bytes = respond(stdin.as_bytes(), Profile::Balanced, Price::Bytes).unwrap();
 
         let (cheaper, calls) = priced(9, 10);
@@ -383,7 +385,7 @@ mod tests {
     /// The token rule replaces the byte rule rather than adding to it: a rendering
     /// longer in bytes but cheaper in tokens is forwarded, and the byte rule refuses it.
     /// `Fake` stands in for the tokenizer because neither exact one is known to price
-    /// a byte-longer rendering cheaper (`cl100k` and `o200k` both count this one 19 -> 23).
+    /// a byte-longer rendering cheaper (`cl100k` and `o200k` both count this one 19 -> 21).
     #[test]
     fn a_token_price_does_not_also_compare_bytes() {
         let stdin = event(Value::string(LONGER_IN_BYTES));
@@ -399,7 +401,7 @@ mod tests {
         let price = Price::Tokens(Box::new(|| None));
         assert!(
             respond(
-                event(Value::string(TABULAR)).as_bytes(),
+                event(Value::string(TABLE)).as_bytes(),
                 Profile::Balanced,
                 price
             )
@@ -411,7 +413,7 @@ mod tests {
     /// reason to leave a result alone returns before the loader runs.
     #[test]
     fn the_tokenizer_is_not_loaded_without_a_rendering_to_price() {
-        let other_event = event(Value::string(TABULAR)).replace(EVENT, "PreToolUse");
+        let other_event = event(Value::string(TABLE)).replace(EVENT, "PreToolUse");
         let cases = [
             event(Value::string("\"a short string\"")),
             event(Value::string("plain text, not JSON")),

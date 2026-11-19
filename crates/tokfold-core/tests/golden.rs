@@ -25,13 +25,24 @@
 //!   (the archive is the input behind a passthrough header, whatever encoder wins);
 //! * every legacy rendering still decodes, through the legacy frame and a reference
 //!   decoder for its tag, to a document semantically equal to its input.
-//! * a fresh rendering differs from the legacy one only in its frame: the body
-//!   behind `#tkfd1 <tag>` is the legacy body byte for byte, and a `raw`
-//!   (passthrough) rendering is now the input itself.
+//! * a fresh rendering of every input whose winning encoder is unchanged differs
+//!   from the legacy one only in its frame: the body behind `#tkfd1 <tag>` is the
+//!   legacy body byte for byte, and a `raw` (passthrough) rendering is now the
+//!   input itself.
+//!
+//! The two table inputs are the exception to the last point: the E5 `grid` encoder
+//! (id 5) postdates `a21a26a` and now wins them, so their legacy `tbl` renderings
+//! are pinned only as decodable history. For those inputs `X.grid` holds the fresh
+//! rendering, written by `tokfold compress` when E5 was added, and the suite pins
+//! that a fresh compression still writes it byte for byte and that a reference grid
+//! decoder rebuilds the input from it.
 
 #[path = "oracle.rs"]
 mod oracle;
 use oracle::json_semantically_eq;
+
+#[path = "support/grid.rs"]
+mod grid;
 
 use std::path::PathBuf;
 
@@ -46,6 +57,10 @@ const FIXTURES: &[(&str, &str)] = &[
     ("unicode-table.json", "tbl"),
     ("records.jsonl", "jsonl"),
 ];
+
+/// The inputs a fresh compression now sends to the E5 grid, whose fresh rendering
+/// is pinned in `X.grid` rather than derived from the legacy body.
+const GRID_FIXTURES: &[&str] = &["table.json", "unicode-table.json"];
 
 /// The legacy frame: `⟦tkfd:v1:` + tag + `⟧` + newline.
 const LEGACY_OPEN: &str = "\u{27E6}tkfd:v1:";
@@ -227,6 +242,9 @@ fn a_fresh_rendering_is_the_legacy_body_under_the_new_frame() {
         let legacy = golden_str(&format!("{name}.rendering"));
         let (_, body) = legacy_frame(&legacy);
         let fresh = compressor.compress(input.as_bytes()).unwrap().rendering;
+        if GRID_FIXTURES.contains(name) {
+            continue;
+        }
         if *tag == "raw" {
             assert_eq!(fresh, input, "{name}: a passthrough rendering is the input");
         } else {
@@ -236,5 +254,25 @@ fn a_fresh_rendering_is_the_legacy_body_under_the_new_frame() {
                 "{name}: only the frame changed"
             );
         }
+    }
+}
+
+#[test]
+fn a_fresh_rendering_of_a_table_input_is_the_golden_grid() {
+    let compressor = Compressor::new(Config::default());
+    for name in GRID_FIXTURES {
+        assert!(
+            FIXTURES.iter().any(|(n, tag)| n == name && *tag == "tbl"),
+            "{name}: a grid fixture is one of the legacy table inputs"
+        );
+        let input = golden_str(name);
+        let pinned = golden_str(&format!("{name}.grid"));
+        let fresh = compressor.compress(input.as_bytes()).unwrap().rendering;
+        assert_eq!(fresh, pinned, "{name}: the grid rendering changed");
+        let decoded = grid::decode_grid_rendering(&pinned);
+        assert!(
+            json_semantically_eq(&decoded, &input),
+            "{name}: the grid rendering decodes to a different document\n{decoded}"
+        );
     }
 }

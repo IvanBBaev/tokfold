@@ -105,7 +105,7 @@ const CONSERVATIVE_ENCODERS: &[Encoder] = &[Encoder::E1Minify];
 /// legend folding is reserved and unimplemented in v0.0.1, so the two profiles
 /// currently offer the same set; the split exists so aggressive codecs can be added
 /// later without an API change.
-const FULL_ENCODERS: &[Encoder] = &[Encoder::E1Minify, Encoder::E2Tabular];
+const FULL_ENCODERS: &[Encoder] = &[Encoder::E1Minify, Encoder::E2Tabular, Encoder::E5Grid];
 
 /// How aggressively [`compress`](Compressor::compress) is allowed to re-encode.
 ///
@@ -118,8 +118,8 @@ pub enum Profile {
     /// Minification only — the smallest, safest change to the text. A JSON Lines
     /// input, which minification does not apply to, passes through.
     Conservative,
-    /// Minification plus tabular re-encoding, including the tabular rendering of a
-    /// JSON Lines input's records. The default.
+    /// Minification plus both tabular re-encodings (E2 and the E5 grid), and the
+    /// tabular rendering of a JSON Lines input's records. The default.
     #[default]
     Balanced,
     /// Every shipped encoder. Identical to [`Profile::Balanced`] in v0.0.1 until
@@ -273,7 +273,8 @@ impl Default for ConfigBuilder {
 /// The type is `#[non_exhaustive]`, so downstream crates cannot construct one — a
 /// later version may add fields. Compare against the associated constants instead
 /// ([`PASSTHROUGH`](Self::PASSTHROUGH), [`E1_MINIFY`](Self::E1_MINIFY),
-/// [`E2_TABULAR`](Self::E2_TABULAR), [`E4_JSONL`](Self::E4_JSONL)); without them the derived `PartialEq` would be
+/// [`E2_TABULAR`](Self::E2_TABULAR), [`E4_JSONL`](Self::E4_JSONL),
+/// [`E5_GRID`](Self::E5_GRID)); without them the derived `PartialEq` would be
 /// unusable outside this crate, because there would be no way to build the
 /// right-hand side. The wire id stays readable through the public field for ids a
 /// given build does not name.
@@ -281,7 +282,7 @@ impl Default for ConfigBuilder {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EncoderId(
     /// The frozen id: `0` = passthrough, `1` = E1 minify, `2` = E2 tabular, `4` = E4
-    /// JSON Lines. Reported
+    /// JSON Lines, `5` = E5 grid. Reported
     /// out-of-band via [`Stats::encoder`]; v0.0.1's compressor always records
     /// `encoder_id = 0` in the archive header, since the archive is a passthrough blob.
     pub u8,
@@ -297,6 +298,9 @@ impl EncoderId {
     /// The tabular re-encoding applied to a JSON Lines input's records (wire id `4`;
     /// `3` is reserved for legend folding, which is not implemented).
     pub const E4_JSONL: Self = Self(4);
+    /// The tabular re-encoding with a union header, flattened sub-objects and
+    /// constant columns (wire id `5`).
+    pub const E5_GRID: Self = Self(5);
 }
 
 /// What a compression pass achieved.
@@ -856,7 +860,7 @@ mod tests {
     /// anchor test):
     ///
     /// * **False positive** — a small homogeneous array. The heuristic over-counts
-    ///   and picks E2 tabular; both exact tokenizers see that hoisting two short,
+    ///   and picks the E5 grid; both exact tokenizers see that hoisting two short,
     ///   already-cheap key sets is not a token win and pass through. The exact gate
     ///   *suppresses* a transform the heuristic wrongly rated as helpful.
     /// * **False negative** — a small pretty-printed config object. The heuristic
@@ -884,16 +888,16 @@ mod tests {
                 .build(),
         );
 
-        // False positive: heuristic picks E2 (id 2); both exact tokenizers pass
+        // False positive: heuristic picks E5 (id 5); both exact tokenizers pass
         // through (id 0). Selection diverges by estimator.
-        let pos_input = "[{\"id\":0,\"name\":\"item0\",\"active\":true},{\"id\":1,\"name\":\"item1\",\"active\":true}]";
+        let pos_input = "[{\"id\":0,\"name\":\"a\"},{\"id\":1,\"name\":\"a\"}]";
         let pos_heur = heuristic.compress(pos_input.as_bytes()).unwrap();
         let pos_cl = cl100k.compress(pos_input.as_bytes()).unwrap();
         let pos_o2 = o200k.compress(pos_input.as_bytes()).unwrap();
-        assert_ne!(
+        assert_eq!(
             pos_heur.stats.encoder,
-            EncoderId(0),
-            "heuristic should pick a real encoder on the small array"
+            EncoderId::E5_GRID,
+            "heuristic should pick the grid on the small array"
         );
         assert_eq!(
             pos_cl.stats.encoder,
@@ -1218,7 +1222,7 @@ mod tests {
         );
         assert_eq!(
             enabled_encoders(Profile::Balanced),
-            [Encoder::E1Minify, Encoder::E2Tabular].as_slice()
+            [Encoder::E1Minify, Encoder::E2Tabular, Encoder::E5Grid].as_slice()
         );
         assert_eq!(
             enabled_encoders(Profile::Aggressive),
@@ -1240,14 +1244,14 @@ mod tests {
                 &parsed,
                 &input,
                 &estimator,
-                &[Encoder::E1Minify, Encoder::E2Tabular],
+                &[Encoder::E1Minify, Encoder::E2Tabular, Encoder::E5Grid],
                 0,
             );
             let reversed = encoder::select(
                 &parsed,
                 &input,
                 &estimator,
-                &[Encoder::E2Tabular, Encoder::E1Minify],
+                &[Encoder::E5Grid, Encoder::E2Tabular, Encoder::E1Minify],
                 0,
             );
             assert_eq!(forward.encoder, reversed.encoder, "on {input:?}");
@@ -1263,7 +1267,7 @@ mod tests {
         let cfg = Config::builder().profile(Profile::Aggressive).build();
         let aggressive = Compressor::new(cfg).compress(input.as_bytes()).unwrap();
         let balanced = compressor().compress(input.as_bytes()).unwrap();
-        assert_eq!(aggressive.stats.encoder, EncoderId::E2_TABULAR);
+        assert_eq!(aggressive.stats.encoder, EncoderId::E5_GRID);
         assert_eq!(aggressive.rendering, balanced.rendering);
         assert_eq!(aggressive.archive, balanced.archive);
     }
@@ -1288,12 +1292,13 @@ mod tests {
             assert_eq!(a.archive, b.archive, "archive on {input:?}");
         }
 
-        // Seeded profile is Balanced, so E2 competes; Conservative would pick E1.
+        // Seeded profile is Balanced, so the tabular encoders compete; Conservative
+        // would pick E1. On this homogeneous array the E5 grid is the cheapest.
         let table = homogeneous_array(12);
         assert_eq!(
             built.compress(table.as_bytes()).unwrap().stats.encoder,
-            EncoderId::E2_TABULAR,
-            "the default profile must offer the tabular encoder"
+            EncoderId::E5_GRID,
+            "the default profile must offer the grid encoder"
         );
 
         // Seeded byte ceiling is 16 MiB; the error reports the limit it applied.
@@ -1369,6 +1374,8 @@ mod tests {
         assert_eq!(EncoderId::PASSTHROUGH.0, 0);
         assert_eq!(EncoderId::E1_MINIFY.0, 1);
         assert_eq!(EncoderId::E2_TABULAR.0, 2);
+        assert_eq!(EncoderId::E4_JSONL.0, 4);
+        assert_eq!(EncoderId::E5_GRID.0, 5);
 
         let c = compressor();
         assert_eq!(
@@ -1387,6 +1394,13 @@ mod tests {
                 .unwrap()
                 .stats
                 .encoder,
+            EncoderId::E5_GRID
+        );
+        // Two alternating shapes: E2 hoists each shape once, while the grid's
+        // union header pays a `~` for every absent column on every row.
+        let two_shapes = "[{\"id\":0,\"name\":\"n0\"},{\"code\":1,\"label\":\"l1\",\"ok\":true},{\"id\":2,\"name\":\"n2\"}]";
+        assert_eq!(
+            c.compress(two_shapes.as_bytes()).unwrap().stats.encoder,
             EncoderId::E2_TABULAR
         );
     }

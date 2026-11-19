@@ -33,13 +33,16 @@
 //!   and `u64` bound — plus malformed lexemes that must be refused;
 //! * string bodies built from every control-character escape, lone and reversed
 //!   surrogates, noncharacters, `U+2028`/`U+2029`, NFC/NFD pairs, the sentinel's own
-//!   text and E2's row-marker punctuation — used as keys *and* values;
+//!   text, E2's row-marker punctuation and E5's column punctuation — used as keys
+//!   *and* values;
 //! * raw control bytes, bad escapes and invalid UTF-8 spliced into a valid document
 //!   at a generated position, refused at that exact byte offset;
-//! * arrays of near-identical objects built to reach E2 (tabular), with rows that
+//! * arrays of near-identical objects built to reach the table encoders — E5 (grid)
+//!   wins most of them since it was added, E2 (tabular) the rest — with rows that
 //!   differ in one value, swap two keys, drop a key or repeat one — checked through
 //!   the public API with an E2 body decoder written from the grammar in the
-//!   `encoder::e2_tabular` rustdoc;
+//!   `encoder::e2_tabular` rustdoc and the strict E5 reference decoder in
+//!   `tests/support/grid.rs`, written from the `encoder::e5_grid` rustdoc;
 //! * JSON Lines of those documents, with blank and CRLF lines, held to the same
 //!   contract with the E2 decoder applied to the records as one array;
 //! * every prefix of a hostile document of at most 256 bytes (the loop is quadratic
@@ -57,8 +60,8 @@
 //! `compress` must agree; property 2 of the frozen spec says "`compress(decompress(a))`
 //! is a fixed point"; and the rendering body must stand for the input — verbatim on
 //! passthrough, semantically equal under E1, and semantically equal after table
-//! expansion under E2 — and under E4, equal after the same expansion to the records
-//! of the JSON Lines input as one array.
+//! expansion under E2 and under E5 — and under E4, equal after the E2 expansion to the
+//! records of the JSON Lines input as one array.
 //!
 //! # Case count
 //!
@@ -72,6 +75,9 @@ use tokfold_core::{Artifact, CompressError, Compressor, Config, EncoderId};
 
 #[path = "oracle.rs"]
 mod oracle;
+
+#[path = "support/grid.rs"]
+mod grid;
 use oracle::json_semantically_eq;
 
 /// Default 32 cases locally; `PROPTEST_CASES` overrides it, as in `roundtrip.rs`.
@@ -101,7 +107,7 @@ const DEFAULT_MAX_INPUT_BYTES: usize = 16 * 1024 * 1024;
 // ===========================================================================
 
 /// The sentinel line an encoder's rendering opens with, without its newline. The
-/// tags are the ones `encoder::Encoder` documents: `min`, `tbl` and `jsonl`.
+/// tags are the ones `encoder::Encoder` documents: `min`, `tbl`, `jsonl` and `grid`.
 /// Passthrough has none -- its rendering is the input, unframed -- and neither has an
 /// id no encoder holds.
 fn sentinel_for(encoder: EncoderId) -> Option<&'static str> {
@@ -109,6 +115,7 @@ fn sentinel_for(encoder: EncoderId) -> Option<&'static str> {
         EncoderId::E1_MINIFY => Some("#tkfd1 min"),
         EncoderId::E2_TABULAR => Some("#tkfd1 tbl"),
         EncoderId::E4_JSONL => Some("#tkfd1 jsonl"),
+        EncoderId::E5_GRID => Some("#tkfd1 grid"),
         _ => None,
     }
 }
@@ -222,6 +229,19 @@ fn check_accepted(c: &Compressor, input: &str) -> Result<Artifact, TestCaseError
                 json_semantically_eq(&array, &expanded),
                 "E4 body does not expand to the records\n  records  = {:?}\n  body     = {:?}\n  expanded = {:?}",
                 array,
+                body,
+                expanded
+            );
+        }
+        EncoderId::E5_GRID => {
+            // The shared reference decoder panics on anything the published grammar
+            // does not allow, so a body that only happens to decode cannot pass; a
+            // panic inside a property fails it like a `prop_assert!`.
+            let expanded = grid::decode_grid_body(body);
+            prop_assert!(
+                json_semantically_eq(input, &expanded),
+                "E5 body does not expand to its input\n  in       = {:?}\n  body     = {:?}\n  expanded = {:?}",
+                input,
                 body,
                 expanded
             );
@@ -435,9 +455,9 @@ fn inject_whitespace(doc: &str, filler: &str) -> String {
 /// so narrowing the property test's range without touching the coverage test — which
 /// is exactly how this test came to run over two encoders while claiming three — no
 /// longer type-checks against a coverage table of a different length.
-const NUMBER_LEXEME_SHAPES: u8 = 5;
+const NUMBER_LEXEME_SHAPES: u8 = 6;
 
-/// The five document shapes [`number_lexemes_survive_every_encoder`] wraps a number
+/// The six document shapes [`number_lexemes_survive_every_encoder`] wraps a number
 /// lexeme in, shared with the coverage test that pins which encoder each one reaches.
 fn number_lexeme_doc(lex: &str, shape: u8) -> String {
     match shape {
@@ -447,7 +467,23 @@ fn number_lexeme_doc(lex: &str, shape: u8) -> String {
         3 => {
             format!("[{{\"id\":1,\"v\":{lex}}},{{\"id\":2,\"v\":{lex}}},{{\"id\":3,\"v\":{lex}}}]")
         }
-        _ => format!("[{}]", vec![lex; 20].join(",")),
+        4 => format!("[{}]", vec![lex; 20].join(",")),
+        // Eleven rows of one shape with one wide row of another among them, which
+        // alone carries the lexeme — on every row it would be a constant the grid
+        // hoists into its header. E2 answers the outlier with one deviating row, which
+        // is the shape it still wins over the E5 grid.
+        _ => {
+            let mut rows: Vec<String> = (0..11)
+                .map(|i| format!("{{\"id\":{i},\"name\":\"n{i}\"}}"))
+                .collect();
+            rows.insert(
+                5,
+                format!(
+                    "{{\"code\":1,\"label\":\"l1\",\"ok\":true,\"kind\":\"x\",\"zone\":\"eu\",\"v\":{lex}}}"
+                ),
+            );
+            format!("[{}]", rows.join(","))
+        }
     }
 }
 
@@ -560,16 +596,20 @@ fn arb_string_piece() -> impl Strategy<Value = String> {
             "\u{1f600}",
         ])
         .prop_map(String::from),
-        // Text that imitates the rendering's own framing: all three sentinels
+        // Text that imitates the rendering's own framing: all four sentinels
         // `sentinel_for` names — this list once held two of them, so a string that
         // spelled the E1 sentinel was never generated — E2's header and row markers,
-        // and a whole escaped table block.
+        // a whole escaped table block, E5's column punctuation (a dotted path, a
+        // constant cell, the absent marker) and a whole escaped grid block.
         2 => prop::sample::select(vec![
             "#tkfd1 min",
             "#tkfd1 tbl",
             "#tkfd1 jsonl",
+            "#tkfd1 grid",
             "+[", "*{", "#2[", ",:[]{}",
             "\\n#1[\\\"a\\\"]\\n+[1]\\n",
+            "a.b=~", "=~", "+~,~",
+            "\\n#1[a.b,c=1]\\n+2\\n",
         ])
         .prop_map(String::from),
         2 => "[a-z0-9 ]{0,6}",
@@ -822,19 +862,22 @@ proptest! {
     /// compares lexemes byte for byte), each lexeme must appear verbatim in the
     /// rendering body, whichever encoder won.
     ///
-    /// The five shapes are what makes "every encoder" true, and each is here for a
+    /// The six shapes are what makes "every encoder" true, and each is here for a
     /// different arm of the selection. Shapes 0-2 are passthrough: they are scalars
     /// or two-member objects, and `pretty` does not move them, because the filler
     /// `inject_whitespace` adds to a document that small is worth less than the
     /// `#tkfd1 min` sentinel line plus the do-no-harm margin. Shape 3 is the array of
-    /// three like objects E2 tabularizes. Shape 4 — twenty copies of the lexeme in
+    /// three like objects the E5 grid wins. Shape 4 — twenty copies of the lexeme in
     /// one array, always pretty-printed — is the only one E1 wins, and it is here
     /// because without it this test never reached E1 at all: measured over 4 000
     /// draws of each of the first four shapes, E1 was selected 0 times, so the name
     /// of the test was a claim about an encoder its inputs never ran. Shape 4 on a
     /// 121-digit lexeme measures 2 541 bytes in, 2 459 out, encoder `e1-minify`;
-    /// [`the_number_lexeme_shapes_reach_every_encoder`] pins that all three appear
-    /// rather than leaving it to this comment.
+    /// Shape 5 — eleven like rows and one wide row that carries the lexeme — is the
+    /// E2 one: shape 3 reached E2 until the grid encoder took it, which left E2
+    /// unreached here. [`the_number_lexeme_shapes_reach_every_encoder`] pins that all
+    /// four appear rather than leaving it to this comment. E4 is not among them: it
+    /// answers only JSON Lines, which no shape here is.
     #[test]
     fn number_lexemes_survive_every_encoder(
         lex in arb_number_lexeme(),
@@ -869,8 +912,8 @@ proptest! {
 
     /// Arrays of near-identical objects — rows equal to the base, differing in one
     /// value, with two keys swapped, a key dropped or a key repeated — hold the whole
-    /// contract; when E2 wins, its body must expand, by the published grammar, to a
-    /// document semantically equal to the input.
+    /// contract; when E2 or E5 wins, its body must expand, by the published grammar,
+    /// to a document semantically equal to the input.
     #[test]
     fn near_identical_object_arrays_hold_the_contract(doc in arb_table_doc()) {
         check_accepted(&compressor(), &doc)?;
@@ -1335,7 +1378,7 @@ fn table_of_exact_len(len: usize) -> String {
 }
 
 /// A 16 MiB array of near-identical objects — exactly the default cap — is accepted
-/// and holds the whole contract, E2 expansion included.
+/// and holds the whole contract, grid expansion included.
 ///
 /// It carried `#[ignore = "slow"]` until it was timed, and in this repo an ignored
 /// test is an absent one: no gate leg passes `--ignored`, so the only case that
@@ -1361,7 +1404,15 @@ fn table_of_exact_len(len: usize) -> String {
 /// than that sum, so read 10–17 s as the band. `--report-time` would answer this
 /// directly but is nightly-only on a stable toolchain, so the difference is the
 /// measurement. Both legs run it now.
-/// Re-time it before adding a second document of this size — the cost is linear in
+/// Those figures predate the E5 grid encoder, which is a third candidate on this
+/// document and the one that wins it, so they are stale. A re-time on 2026-11-19 is
+/// not a replacement: the box was at a load average of ~130 from other processes, and
+/// the single-target runs (debug 78.33 s then 48.01 s, release 2.00 s then 3.93 s)
+/// measure that load as much as the test. The encoder itself, timed the same hour on
+/// one 16.6 MB table through `tokfold stats`, took 0.37 s user in release against
+/// 0.23 s for binaries built before the grid encoder existed (the main checkout's,
+/// built 2026-11-13 and -15), and 4.99 s against 3.69 s in debug.
+/// Re-time it on an idle machine before trusting a figure here, and before adding a second document of this size — the cost is linear in
 /// the document — and if it ever has to be skipped again, skip it behind a `cfg` a
 /// gate leg still exercises, not behind `#[ignore]`.
 #[test]
@@ -1369,11 +1420,11 @@ fn a_table_at_exactly_the_default_cap_holds_the_contract() {
     let doc = table_of_exact_len(DEFAULT_MAX_INPUT_BYTES);
     let art = check_accepted(&compressor(), &doc).unwrap();
     assert_eq!(art.stats.bytes_before, DEFAULT_MAX_INPUT_BYTES);
-    // "E2 expansion included" is a claim about which encoder wins at this size, and the
-    // E2 arm is the only one of `check_accepted`'s three that expands a table. Without
-    // this the test stayed green if selection fell back to passthrough and the expansion
-    // it is named for stopped running altogether.
-    assert_eq!(art.stats.encoder, EncoderId::E2_TABULAR);
+    // "Grid expansion included" is a claim about which encoder wins at this size: the
+    // E5 grid, which took this array from E2 when it was added. Without this the test
+    // stayed green if selection fell back to passthrough and the expansion it is named
+    // for stopped running altogether.
+    assert_eq!(art.stats.encoder, EncoderId::E5_GRID);
     assert!(art.stats.bytes_after < art.stats.bytes_before);
 }
 
@@ -1384,8 +1435,9 @@ fn a_table_at_exactly_the_default_cap_holds_the_contract() {
 /// The properties that draw from the hostile generators are only as strong as the
 /// regions those generators reach. With a fixed seed, this asserts that the hostile
 /// generators put every encoder in play, that E2 bodies carry both plain and deviating
-/// rows and hostile (escaped)
-/// header keys, that each of the three sentinels `sentinel_for` names is spelled by
+/// rows and hostile (escaped) header keys, that E5 bodies carry both row kinds and a
+/// quoted column segment (measured over these draws: 1 181 plain, 211 deviating, 260
+/// headers), that each of the four sentinels `sentinel_for` names is spelled by
 /// some drawn input, and that each of the five [`RowEdit`] variants is drawn.
 ///
 /// The encoder and row-kind counts come from [`arb_hostile_valid`], the strategy the
@@ -1402,20 +1454,23 @@ fn hostile_generators_reach_every_encoder_and_row_kind() {
     let mut runner = TestRunner::deterministic();
     let c = compressor();
 
-    let (mut raw, mut min, mut tbl) = (0usize, 0usize, 0usize);
+    let (mut raw, mut min, mut tbl, mut grid) = (0usize, 0usize, 0usize, 0usize);
     let (mut plain_rows, mut deviating_rows, mut escaped_header_keys) = (0usize, 0usize, 0usize);
+    let (mut grid_plain_rows, mut grid_deviating_rows, mut grid_quoted_columns) =
+        (0usize, 0usize, 0usize);
     // One counter per sentinel `sentinel_for` names, over the *input*: the framing pool in
     // `arb_string_piece` is the only place these strings are generated, so a zero here is
-    // the pool having lost a member. Measured in place over these `DRAWS`: min 38,
-    // tbl 40, jsonl 33 of 600 drawn documents spell one, so none of the
-    // three is a near miss.
-    let mut sentinels_spelled = [0usize; 3];
+    // the pool having lost a member. Measured in place over these `DRAWS`: min 20,
+    // tbl 30, jsonl 26, grid 18 of 600 drawn documents spell one, so none of the
+    // four is a near miss.
+    let mut sentinels_spelled = [0usize; 4];
     for _ in 0..DRAWS {
         let doc = arb_hostile_valid().new_tree(&mut runner).unwrap().current();
         for (i, kind) in [
             EncoderId::E1_MINIFY,
             EncoderId::E2_TABULAR,
             EncoderId::E4_JSONL,
+            EncoderId::E5_GRID,
         ]
         .into_iter()
         .enumerate()
@@ -1441,6 +1496,19 @@ fn hostile_generators_reach_every_encoder_and_row_kind() {
                     }
                 }
             }
+            EncoderId::E5_GRID => {
+                grid += 1;
+                let body = art.rendering.split_once('\n').unwrap().1;
+                for line in body.split('\n') {
+                    if line.starts_with('+') {
+                        grid_plain_rows += 1;
+                    } else if line.starts_with('*') {
+                        grid_deviating_rows += 1;
+                    } else if line.starts_with('#') && line.contains('"') {
+                        grid_quoted_columns += 1;
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -1448,12 +1516,20 @@ fn hostile_generators_reach_every_encoder_and_row_kind() {
         ("passthrough", raw),
         ("E1", min),
         ("E2", tbl),
+        ("E5", grid),
         ("plain rows", plain_rows),
         ("deviating rows", deviating_rows),
         ("escaped header keys", escaped_header_keys),
+        ("grid plain rows", grid_plain_rows),
+        ("grid deviating rows", grid_deviating_rows),
+        (
+            "grid headers with a quoted column segment",
+            grid_quoted_columns,
+        ),
         ("inputs spelling the min sentinel", sentinels_spelled[0]),
         ("inputs spelling the tbl sentinel", sentinels_spelled[1]),
         ("inputs spelling the jsonl sentinel", sentinels_spelled[2]),
+        ("inputs spelling the grid sentinel", sentinels_spelled[3]),
     ] {
         assert!(n > 0, "no {name} in {DRAWS} hostile draws");
     }
@@ -1517,7 +1593,8 @@ fn the_json_lines_generator_reaches_both_outcomes() {
 
 /// [`number_lexemes_survive_every_encoder`] is named after a claim about every
 /// encoder, so which encoder each of its shapes reaches is pinned here rather than
-/// assumed. Shapes 0-2 must reach passthrough, shape 3 E2 and shape 4 E1; the test
+/// assumed. Shapes 0-2 must reach passthrough, shape 3 E5, shape 4 E1 and shape 5
+/// E2; the test
 /// asserts each shape lands where its doc says, which fails both if a shape stops
 /// reaching its encoder and if the selection changes under it.
 #[test]
@@ -1533,8 +1610,9 @@ fn the_number_lexeme_shapes_reach_every_encoder() {
         (0, EncoderId::PASSTHROUGH),
         (1, EncoderId::PASSTHROUGH),
         (2, EncoderId::PASSTHROUGH),
-        (3, EncoderId::E2_TABULAR),
+        (3, EncoderId::E5_GRID),
         (4, EncoderId::E1_MINIFY),
+        (5, EncoderId::E2_TABULAR),
     ];
     // The drawn lexemes reach the widest fixtures only by chance — `arb_number_lexeme`
     // picks its fixture arm one draw in four and then one of sixteen — so the ends of

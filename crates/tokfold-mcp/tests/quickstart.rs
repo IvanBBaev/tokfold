@@ -9,7 +9,7 @@
 //! one block's share as if it covered all three ("that is under a quarter of the bytes
 //! it quotes"): the session block is pinned whole, its first and last lines by equality
 //! and its seven request lines by being served; the rendering is compared byte for
-//! byte; and only the replies are quoted with elisions, holding 1680 bytes of the 7500
+//! byte; and only the replies are quoted with elisions, holding 1674 bytes of the 7441
 //! the real replies carry -- the share
 //! `the_quoted_replies_anchor_only_part_of_what_they_quote` asserts. The request lines
 //! are the ones the reader runs, and every quoted reply is matched against the real
@@ -245,15 +245,15 @@ fn the_restored_text_is_the_input_byte_for_byte_and_the_numbers_quoted_hold() {
     let stats = path(&compress, "result.structuredContent.stats");
     for (key, expected) in [
         ("bytesBefore", 290),
-        ("bytesAfter", 226),
+        ("bytesAfter", 211),
         ("estTokensBefore", 174),
-        ("estTokensAfter", 130),
+        ("estTokensAfter", 115),
         ("tokenizerId", 0),
     ] {
         assert_eq!(stats.get(key).and_then(json::Value::as_i64), Some(expected));
     }
     for phrase in [
-        "instead of the 290-byte original — 226 bytes, and 130 tokens against 174",
+        "instead of the 290-byte original — 211 bytes, and 115 tokens against 174",
         "(`tokenizerId` `0`,",
     ] {
         assert!(
@@ -276,8 +276,8 @@ fn the_quoted_replies_anchor_only_part_of_what_they_quote() {
     const COVERAGE: [(usize, usize, usize); 6] = [
         (3, 214, 1655),
         (5, 205, 2521),
-        (2, 453, 528),
-        (6, 287, 1489),
+        (2, 447, 522),
+        (6, 287, 1436),
         (4, 210, 921),
         (2, 311, 386),
     ];
@@ -313,7 +313,7 @@ fn the_quoted_replies_anchor_only_part_of_what_they_quote() {
         anchored_total += held;
         actual_total += actual;
     }
-    assert_eq!((anchored_total, actual_total), (1680, 7500));
+    assert_eq!((anchored_total, actual_total), (1674, 7441));
     // The rows that reach the loop inside `matches_trimmed`, rather than only its prefix
     // and suffix check. Derived here so that no comment has to carry the count.
     assert_eq!(past_the_loop, 4, "quotes with more than two pieces");

@@ -465,6 +465,8 @@ fn encoder_name(encoder: EncoderId) -> &'static str {
         "tabular"
     } else if encoder == EncoderId::E4_JSONL {
         "jsonl"
+    } else if encoder == EncoderId::E5_GRID {
+        "grid"
     } else {
         "unknown"
     }
@@ -745,11 +747,12 @@ mod tests {
         // The name is written by a comparison chain rather than a `match`, so nothing
         // checks at compile time that each arm returns the name its id is frozen to.
         // The `"unknown"` arm cannot be driven from here: `EncoderId` is
-        // `#[non_exhaustive]`, so this crate can build only the four named ids.
+        // `#[non_exhaustive]`, so this crate can build only the five named ids.
         assert_eq!(encoder_name(EncoderId::PASSTHROUGH), "passthrough");
         assert_eq!(encoder_name(EncoderId::E1_MINIFY), "minify");
         assert_eq!(encoder_name(EncoderId::E2_TABULAR), "tabular");
         assert_eq!(encoder_name(EncoderId::E4_JSONL), "jsonl");
+        assert_eq!(encoder_name(EncoderId::E5_GRID), "grid");
     }
 
     /// Pins that `estimate` withholds the payload, not merely that two key names
@@ -759,10 +762,13 @@ mod tests {
     ///
     /// One document per encoder. On a passthrough input there is no rendering to
     /// withhold in the first place, so a test that only ever reaches that path says
-    /// nothing about the other two. What selects each encoder here is width: the
-    /// 30-byte document stays raw, the 252-byte indented one pays for having its
-    /// whitespace runs stripped (252 -> 111 bytes), and twelve uniform rows let E2
-    /// hoist the keys.
+    /// nothing about the other three. What selects each encoder here is shape: the
+    /// 30-byte document stays raw; the 246-byte indented one holds no array of
+    /// objects, so only minification applies (246 -> 100 bytes); twelve uniform rows
+    /// let E5 hoist the keys and the two constant cells (636 -> 107 bytes); and eleven
+    /// like rows around one wide outlier, the only row carrying the marker, are the
+    /// shape E2's dominant-shape table still prices below E5's header (317 -> 225
+    /// bytes).
     #[test]
     fn estimate_reports_stats_without_the_payload() {
         const MARKER: &str = "payload-marker-9f3a";
@@ -780,12 +786,12 @@ mod tests {
       }
     },
     "e": [
-      {
-        "p": 1
-      },
-      {
-        "q": 2
-      }
+      [
+        "p"
+      ],
+      [
+        "q"
+      ]
     ]
   }
 }"#;
@@ -797,10 +803,19 @@ mod tests {
             .map(|n| format!(r#"{{"kind":"alpha","note":"{MARKER}","n":{n}}}"#))
             .collect::<Vec<_>>()
             .join(",");
+        let mut outlier = (0..11)
+            .map(|n| format!(r#"{{"id":{n},"name":"n{n}"}}"#))
+            .collect::<Vec<_>>();
+        outlier.insert(
+            5,
+            format!(r#"{{"code":1,"label":"{MARKER}","ok":true,"kind":"x","zone":"eu"}}"#),
+        );
+        let outlier = outlier.join(",");
         let documents = [
             ("passthrough", format!(r#"{{"note":"{MARKER}"}}"#)),
             ("minify", INDENTED.to_owned()),
-            ("tabular", format!(r#"{{"rows":[{rows}]}}"#)),
+            ("grid", format!(r#"{{"rows":[{rows}]}}"#)),
+            ("tabular", format!(r#"{{"rows":[{outlier}]}}"#)),
         ];
         for (expected, document) in documents {
             let arguments = Object::new().set("text", Value::string(document)).build();
@@ -1004,9 +1019,10 @@ mod tests {
     /// mapping every string to one profile kept it green. The parser is checked
     /// directly for all three, because `aggressive` offers the same encoders as
     /// `balanced` in this release and no output can tell them apart. The call is then
-    /// checked end to end: a compact homogeneous array is a tabular win and nothing a
-    /// minifier can shorten, so the profiles that admit the tabular encoder and the one
-    /// that does not name different encoders.
+    /// checked end to end: a compact homogeneous array with a constant column is a
+    /// grid win (E5 hoists the constant) and nothing a minifier can shorten, so the
+    /// profiles that admit the table encoders and the one that does not name different
+    /// encoders.
     #[test]
     fn each_profile_string_selects_its_own_profile() {
         for (name, profile) in [
@@ -1037,8 +1053,8 @@ mod tests {
                 .to_owned()
         };
         assert_eq!(encoder("conservative"), "passthrough");
-        assert_eq!(encoder("balanced"), "tabular");
-        assert_eq!(encoder("aggressive"), "tabular");
+        assert_eq!(encoder("balanced"), "grid");
+        assert_eq!(encoder("aggressive"), "grid");
     }
 
     /// A client that serializes an unset option as `null` must get the same

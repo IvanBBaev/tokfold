@@ -272,14 +272,14 @@ impl HeuristicEstimator {
     /// more and moved every row above down.) Every "keeps E1" here is a
     /// statement about that profile: under the default
     /// [`Profile::Balanced`](crate::Profile::Balanced) the array-of-rows shape goes to
-    /// E2 instead, and the margin is weighed against each candidate separately, so a
-    /// bar that refuses every saving in this table's row band still keeps that shape
-    /// compressed — on E2's saving, not E1's.
+    /// the E5 grid instead, and the margin is weighed against each candidate
+    /// separately, so a bar that refuses every saving in this table's row band still
+    /// keeps that shape compressed — on E5's saving, not E1's.
     /// `the_600_bps_bar_sits_just_above_the_flat_object_plateau` pins the table and
     /// every Conservative claim in this paragraph, including which rows keep E1 at
     /// the bar; it builds every config through one Conservative helper and so cannot
     /// reach the two sentences about the default profile, which
-    /// `the_default_profile_sends_the_row_array_to_e2_and_weighs_its_saving` pins
+    /// `the_default_profile_sends_the_row_array_to_the_grid_and_weighs_its_saving` pins
     /// instead. The corpus figures
     /// above the table are measurements over the reference corpus, and no test
     /// recomputes them.
@@ -703,47 +703,49 @@ mod tests {
 
     /// Pins the one sentence in the `MEASURED_OVER_CLAIM_BPS` doc that is not about
     /// `Profile::Conservative`: under the default profile the array-of-rows shape
-    /// goes to E2 instead of E1, and the margin is weighed against E2's saving.
+    /// goes to the E5 grid instead of E1, and the margin is weighed against E5's
+    /// saving.
     ///
     /// `the_600_bps_bar_sits_just_above_the_flat_object_plateau` cannot reach that
     /// sentence — it builds every config through `claimed`, which is Conservative by
     /// construction — and the bar it is named for cannot distinguish the two halves
     /// either: 6.00 pp is below both encoders' savings on this shape. The
     /// distinguishing bar has to sit between them. E1 claims the table's
-    /// 15.0%–16.1% here and E2 claims three times that, so 2 000 bps (20.00 pp) is
-    /// above everything E1 can claim on this shape and below everything E2 can. The
-    /// gate runs per candidate, so at that bar E1 is refused under either profile:
+    /// 15.0%–16.1% here and E5 claims 67.2%–73.9% (measured at 10, 200 and 2 000
+    /// rows under the heuristic estimator), so 2 000 bps (20.00 pp) is above
+    /// everything E1 can claim on this shape and below everything E5 can. The gate
+    /// runs per candidate, so at that bar E1 is refused under either profile:
     /// `Conservative`, which enables nothing else, falls back to passthrough, while
-    /// `Balanced` keeps the shape on E2's saving alone. Both outcomes are asserted,
+    /// `Balanced` keeps the shape on E5's saving alone. Both outcomes are asserted,
     /// so the test fails whichever saving the margin stops weighing.
     #[test]
-    fn the_default_profile_sends_the_row_array_to_e2_and_weighs_its_saving() {
-        // A bar above everything E1 claims on this shape and below everything E2
+    fn the_default_profile_sends_the_row_array_to_the_grid_and_weighs_its_saving() {
+        // A bar above everything E1 claims on this shape and below everything E5
         // claims; 6.00 pp, the constant this module is about, is below both.
         const BETWEEN_THE_TWO_ENCODERS: u32 = 2000;
 
         for n in [10usize, 200, 2000] {
             let doc = four_space_json("rows", n);
             let (e1_saving, conservative) = claimed_at(Profile::Conservative, &doc, 0);
-            let (e2_saving, balanced) = claimed_at(Profile::Balanced, &doc, 0);
+            let (e5_saving, balanced) = claimed_at(Profile::Balanced, &doc, 0);
             assert_eq!(
                 conservative,
                 EncoderId::E1_MINIFY,
                 "{n} rows under Conservative"
             );
-            assert_eq!(balanced, EncoderId::E2_TABULAR, "{n} rows under Balanced");
+            assert_eq!(balanced, EncoderId::E5_GRID, "{n} rows under Balanced");
             assert!(
                 (14.9..=16.2).contains(&e1_saving),
                 "{n} rows: E1 left the band the table spells, 15.0%-16.1%: {e1_saving}"
             );
             assert!(
-                (45.0..=60.0).contains(&e2_saving),
-                "{n} rows: E2's saving moved out of 45.0%-60.0%: {e2_saving}"
+                (67.0..=74.0).contains(&e5_saving),
+                "{n} rows: E5's saving moved out of 67.0%-74.0%: {e5_saving}"
             );
             assert!(
-                e2_saving > e1_saving + 20.0,
+                e5_saving > e1_saving + 20.0,
                 "{n} rows: the two savings must stay far enough apart for a bar to \
-                 sit between them: E1 {e1_saving}, E2 {e2_saving}"
+                 sit between them: E1 {e1_saving}, E5 {e5_saving}"
             );
 
             assert_eq!(
@@ -753,7 +755,7 @@ mod tests {
             );
             assert_eq!(
                 claimed_at(Profile::Balanced, &doc, BETWEEN_THE_TWO_ENCODERS).1,
-                EncoderId::E2_TABULAR,
+                EncoderId::E5_GRID,
                 "{n} rows: the margin weighed E1's saving, not the winning encoder's"
             );
         }
@@ -1019,12 +1021,13 @@ mod tiktoken_tests {
             ("min", (4, 6, 6), (5, 5, 5)),
             ("tbl", (4, 6, 6), (5, 5, 5)),
             ("jsonl", (5, 7, 7), (6, 6, 6)),
+            ("grid", (5, 6, 6), (6, 5, 5)),
         ];
 
         for (tag, plain, table) in expected {
             let sentinel = format!("#tkfd1 {tag}\n");
-            // `#tkfd1 `, the tag and the newline: 11 for the three-letter tags, 13
-            // for `jsonl`.
+            // `#tkfd1 `, the tag and the newline: 11 for the three-letter tags, 12
+            // for `grid`, 13 for `jsonl`.
             assert_eq!(sentinel.len(), 8 + tag.len(), "the {tag} sentinel's length");
             let cases = bodies
                 .iter()

@@ -55,6 +55,13 @@
 //!   protected string occurring among those hoisted *keys* is written once, at the
 //!   header, instead of once per element. (Rows whose shape deviates from the header
 //!   are self-describing and still spell out their own keys.)
+//! * **E5 (grid) never reads this table either**, and is faithful the same way E2 is:
+//!   verbatim value lexemes, rows in source order. It moves more than E2 does. Its
+//!   header holds the union of the elements' keys, a flattened sub-object's key is
+//!   written once as a path segment, and a constant column's *value* is written once,
+//!   as `path=<cell>`, instead of at each row. A protected string among those keys or
+//!   constant values therefore appears once, at the header. (Deviating rows are
+//!   written as compact JSON and still spell out everything.)
 //! * **Passthrough** re-emits the input verbatim, and the recovery archive stores the
 //!   original bytes whichever encoder shaped the rendering — so reconstruction is
 //!   exact regardless, and what this contract governs is only the *rendering* the
@@ -80,17 +87,17 @@
 //!
 //! Nothing in v0.0.1 forces the question at the level it is written — no encoder
 //! collapses repeated *lines*. But E2's key hoisting is the same shape of transform
-//! applied to a repeated protected *key*, and it ships, so the ambiguity is not
-//! academic.
+//! applied to a repeated protected *key*, E5's constant columns apply it to a
+//! repeated protected *value*, and both ship, so the ambiguity is not academic.
 //!
 //! Resolving it is a normative, format-affecting decision reserved for the repo
 //! owner, because either answer changes emitted bytes:
 //!
 //! * **Position wins** — collapsing protected content is forbidden even when the
-//!   copies are identical, so E2 must repeat a protected key on every row and give up
-//!   the saving on that key.
+//!   copies are identical, so E2 and E5 must repeat a protected key on every row (and
+//!   E5 a protected constant value) and give up the saving on it.
 //! * **Byte-identity wins** — collapsing byte-identical protected content is allowed,
-//!   E2's current behaviour is already correct, and the position rule narrows to "not
+//!   E2's and E5's current behaviour is already correct, and the position rule narrows to "not
 //!   moved or merged relative to content that is not byte-identical to it".
 //!
 //! Until it is decided, treat the position rule as the stated *intent* and the

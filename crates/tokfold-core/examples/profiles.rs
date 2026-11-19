@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tokfold_core::estimator::ids;
 use tokfold_core::{ByteLenEstimator, Compressor, Config, EncoderId, Profile};
 
-/// Uniform records: minification can shrink them, and the tabular encoder can
+/// Uniform records: minification can shrink them, and the table encoders can
 /// shrink them further, so the profiles give different answers.
 const RECORDS: &str = r#"[
   { "id": 1, "name": "alpha",   "size": 120, "kind": "file" },
@@ -40,10 +40,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     assert_eq!(conservative, EncoderId::E1_MINIFY);
 
-    // `Balanced` (the default) also offers the tabular encoder, which wins here.
+    // `Balanced` (the default) also offers the two table encoders, tabular and grid.
+    // Both state the keys once, in a header; the grid wins here because it writes
+    // the keys unquoted and each row without the brackets the tabular encoder uses.
     // `Aggressive` offers the same encoders as `Balanced` in this version.
     let balanced = run("Balanced (default)", Config::default())?;
-    assert_eq!(balanced, EncoderId::E2_TABULAR);
+    assert_eq!(balanced, EncoderId::E5_GRID);
 
     // The estimator is the cost model that picks the winner. `ByteLenEstimator`
     // counts bytes; it is a reference model, never the default. The id it reports

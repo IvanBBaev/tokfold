@@ -47,6 +47,7 @@ use crate::tape::Tape;
 
 mod e1_minify;
 mod e2_tabular;
+mod e5_grid;
 
 /// The sealed set of encoders. See the module docs for why this is an enum and not
 /// a public trait. Ids are frozen once released and must never be renumbered; they
@@ -65,12 +66,15 @@ pub(crate) enum Encoder {
     /// of its records (see [`crate::ndjson`]). id 4: id 3 is reserved for E3 legend
     /// folding, which is not implemented.
     E4Jsonl,
+    /// Tabular re-encoding with a union header, flattened sub-objects and constant
+    /// columns (see the `e5_grid` module). id 5.
+    E5Grid,
 }
 
 impl Encoder {
     /// The frozen id for this encoder; a released id never changes. In v0.0.1 the
     /// compressor writes only `encoder_id = 0` (passthrough) to the archive header;
-    /// ids 1, 2 and 4 identify the rendering out-of-band via `Stats.encoder` and the
+    /// ids 1, 2, 4 and 5 identify the rendering out-of-band via `Stats.encoder` and the
     /// sentinel tag, never on the wire.
     pub(crate) const fn id(self) -> u8 {
         match self {
@@ -78,10 +82,11 @@ impl Encoder {
             Self::E1Minify => 1,
             Self::E2Tabular => 2,
             Self::E4Jsonl => 4,
+            Self::E5Grid => 5,
         }
     }
 
-    /// The sentinel tag opening this encoder's rendering: `min`, `tbl` or `jsonl`.
+    /// The sentinel tag opening this encoder's rendering: `min`, `tbl`, `jsonl` or `grid`.
     /// `None` for [`Encoder::Passthrough`], whose rendering is the input itself with
     /// no sentinel line at all.
     const fn tag(self) -> Option<&'static str> {
@@ -90,6 +95,7 @@ impl Encoder {
             Self::E1Minify => Some("min"),
             Self::E2Tabular => Some("tbl"),
             Self::E4Jsonl => Some("jsonl"),
+            Self::E5Grid => Some("grid"),
         }
     }
 }
@@ -135,8 +141,8 @@ fn framed(enc: Encoder, body: &str) -> String {
 /// followed by the encoder body. [`Encoder::Passthrough`] always applies and
 /// returns the input verbatim, with no sentinel line; the other encoders decline with
 /// `None` when the input does not fit their shape — E1 when a span cannot be resolved,
-/// E2 when no array qualifies. E2 additionally propagates `None` from several
-/// defensive guards inside its render walk (span resolution, index arithmetic, an
+/// E2 and E5 when no array qualifies. E2 and E5 additionally propagate `None` from
+/// several defensive guards inside their render walks (span resolution, index arithmetic, an
 /// element that is not the object the qualifying condition promised); each is
 /// unreachable by construction and exists so a violated invariant degrades to
 /// passthrough instead of emitting a malformed body. Either way the contract for the
@@ -156,6 +162,7 @@ pub(crate) fn render(enc: Encoder, tape: &Tape, input: &str) -> Option<String> {
         Encoder::E2Tabular | Encoder::E4Jsonl => {
             e2_tabular::render(tape, input).map(|body| framed(enc, &body))
         }
+        Encoder::E5Grid => e5_grid::render(tape, input).map(|body| framed(enc, &body)),
     }
 }
 
@@ -365,6 +372,7 @@ mod tests {
         assert_eq!(Encoder::E1Minify.id(), 1);
         assert_eq!(Encoder::E2Tabular.id(), 2);
         assert_eq!(Encoder::E4Jsonl.id(), 4);
+        assert_eq!(Encoder::E5Grid.id(), 5);
     }
 
     /// The body grammars of ids 1, 2 and 4 are frozen: a released id never changes

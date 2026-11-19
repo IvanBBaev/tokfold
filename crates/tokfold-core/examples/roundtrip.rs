@@ -5,7 +5,7 @@
 
 use tokfold_core::{Compressor, Config, EncoderId};
 
-/// A tool result of the shape the tabular encoder is built for: an array of objects
+/// A tool result of the shape the table encoders are built for: an array of objects
 /// that share one key list.
 const TOOL_RESULT: &str = r#"{
   "result": [

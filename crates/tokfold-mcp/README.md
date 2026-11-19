@@ -149,37 +149,40 @@ they read:
 ```text
 {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"tokfold","version":"0.0.1"},"instructions":"…","resultType":"complete","_meta":…}}
 {"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"tokfold_compress",…},{"name":"tokfold_decompress",…},{"name":"tokfold_estimate",…}],"ttlMs":3600000,"cacheScope":"public","resultType":"complete","_meta":…}}
-{"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"encoder=tabular bytes 290->226 tokens(est) 174->130"}],"structuredContent":{"compressed":true,"stats":{"bytesBefore":290,"bytesAfter":226,"estTokensBefore":174,"estTokensAfter":130,"byteRatio":0.7793103448275862,"tokenRatio":0.7471264367816092,"encoder":"tabular","encoderId":2,"tokenizerId":0,"minSavingBps":0,"fidelity":"lossless"}},"isError":false,"resultType":"complete","_meta":…}}
-{"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"#tkfd1 tbl\n{\"issues\":\n#3[…]\n}"}],"structuredContent":{"compressed":true,"stats":{…},"rendering":"#tkfd1 tbl\n{\"issues\":\n#3[…]\n}","archive":"VEtGRAEAAAAAAKIC…fQ=="},"isError":false,"resultType":"complete","_meta":…}}
+{"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"encoder=grid bytes 290->211 tokens(est) 174->115"}],"structuredContent":{"compressed":true,"stats":{"bytesBefore":290,"bytesAfter":211,"estTokensBefore":174,"estTokensAfter":115,"byteRatio":0.7275862068965517,"tokenRatio":0.6609195402298851,"encoder":"grid","encoderId":5,"tokenizerId":0,"minSavingBps":0,"fidelity":"lossless"}},"isError":false,"resultType":"complete","_meta":…}}
+{"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"#tkfd1 grid\n{\"issues\":\n#3[…\n}"}],"structuredContent":{"compressed":true,"stats":{…},"rendering":"#tkfd1 grid\n{\"issues\":\n#3[…\n}","archive":"VEtGRAEAAAAAAKIC…fQ=="},"isError":false,"resultType":"complete","_meta":…}}
 {"jsonrpc":"2.0","id":5,"result":{"content":[{"type":"text","text":"{\"issues\":[{\"id\":101,…}]}"}],"structuredContent":{"text":"{\"issues\":[{\"id\":101,…}]}"},"isError":false,"resultType":"complete","_meta":…}}
 {"jsonrpc":"2.0","id":6,"result":{"content":[{"type":"text","text":"plain log line, not JSON"}],"structuredContent":{"compressed":false,"reason":"invalid JSON at byte 0: expected a JSON value","reasonCode":"invalid_json","rendering":"plain log line, not JSON"},"isError":false,"resultType":"complete","_meta":…}}
 ```
 
 The rendering of the fourth reply, unescaped, is what an agent puts in its context
-instead of the 290-byte original — 226 bytes, and 130 tokens against 174 by the
+instead of the 290-byte original — 211 bytes, and 115 tokens against 174 by the
 built-in estimator (`tokenizerId` `0`, an arithmetic approximation rather than a
 real model tokenizer):
 
 <!-- quickstart-rendering -->
 ```text
-#tkfd1 tbl
+#tkfd1 grid
 {"issues":
-#3["id","state","title","labels","assignee"]
-+[101,"open","Crash on empty config",["bug","p1"],null]
-+[102,"open","Add --json flag",["enhancement"],"ana"]
-+[103,"closed","Typo in README",["docs"],"ben"]
+#3[id,state,title,labels,assignee]
++101,"open","Crash on empty config",["bug","p1"],null
++102,"open","Add --json flag",["enhancement"],"ana"
++103,"closed","Typo in README",["docs"],"ben"
 }
 ```
 
 The archive in that reply is the one the fifth request sends back, and the text the
 fifth reply returns is byte-for-byte the original input. Replies 5 and 6 of this session
 are byte-identical between this repository and the published `0.0.1` binary. Replies 3
-and 4 are not, since the rendering sentinel changed from `⟦tkfd:v1:<tag>⟧` to
-`#tkfd1 <tag>` (unreleased): reply 4's rendering opens with the new sentinel line, in
-`content` and in `structuredContent.rendering` alike, and both replies report the 7
-bytes and 6 estimated tokens the shorter sentinel saves (`bytesAfter` 233 → 226,
-`estTokensAfter` 136 → 130, and the `byteRatio` and `tokenRatio` derived from them), so
-reply 3 grows from 527 to 528 bytes and reply 4 shrinks from 1 502 to 1 489. Replies 1
+and 4 are not, for two unreleased changes: the rendering sentinel changed from
+`⟦tkfd:v1:<tag>⟧` to `#tkfd1 <tag>`, and this document is now rendered by the grid
+encoder (`encoder` `grid`, `encoderId` `5`) where `0.0.1` chose the tabular one
+(`tabular`, `2`). Reply 4's rendering opens with the `#tkfd1 grid` line and carries its
+header columns as bare names and its rows as bare cells, in `content` and in
+`structuredContent.rendering` alike, and both replies report the smaller rendering
+(`bytesAfter` 233 → 211, `estTokensAfter` 136 → 115, and the `byteRatio` and
+`tokenRatio` derived from them), so reply 3 shrinks from 527 to 522 bytes and reply 4
+from 1 502 to 1 436. Replies 1
 and 2 differ only in the `instructions` text, the `tokfold_compress` description and the
 `profile` argument's description (which both `tokfold_compress` and `tokfold_estimate`
 carry), all reworded since that release. The first reply's line is 894 bytes longer
@@ -211,7 +214,9 @@ seven lines were replayed through the same registry binary and a
 on macOS arm64: replies 5 and 6 byte-identical at 921 and 386 bytes, the six lines
 1 655, 2 521, 528, 1 489, 921 and 386 bytes wide, and the decoded replies 1 and 2
 differing in the same three strings and replies 3 and 4 in exactly the sentinel and
-the four `stats` fields named above, and nowhere else. The
+the four `stats` fields of the sentinel change, and nowhere else — true of that
+working tree, which predates the grid encoder, and no longer of this one for replies 3
+and 4. The
 other four platform packages were not run, and for them this is reasoning rather than
 measurement. No reply text here is platform-conditional:
 `tokfold-core` carries no `cfg(unix)`, `cfg(windows)` or `cfg(target_os)` in its source

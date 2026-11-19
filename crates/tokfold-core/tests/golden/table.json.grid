@@ -1,0 +1,15 @@
+#tkfd1 grid
+
+#12[id,name,price,tags=["a","b"],ok]
++0,"item-0",0.0,true
++1,"item-1",1.5,false
++2,"item-2",3.0,true
++3,"item-3",4.5,false
++4,"item-4",6.0,true
++5,"item-5",7.5,false
++6,"item-6",9.0,true
++7,"item-7",10.5,false
++8,"item-8",12.0,true
++9,"item-9",13.5,false
++10,"item-10",15.0,true
++11,"item-11",16.5,false

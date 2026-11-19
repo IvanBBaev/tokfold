@@ -17,11 +17,12 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 /// A homogeneous JSON array whose repeated keys make it a clear token win for the
-/// tabular encoder — and, being valid JSON, a clean recovery-archive round trip.
+/// grid encoder (E5, which also hoists the constant `active` column) — and, being
+/// valid JSON, a clean recovery-archive round trip.
 const COMPRESSIBLE_JSON: &[u8] = br#"[{"id":0,"name":"item0","active":true},{"id":1,"name":"item1","active":true},{"id":2,"name":"item2","active":true},{"id":3,"name":"item3","active":true}]"#;
 
-/// Pretty-printed, heterogeneous JSON: the objects differ in shape, so the tabular
-/// encoder has nothing to hoist and the minifier's whitespace stripping wins on every
+/// Pretty-printed, heterogeneous JSON: the objects differ in shape, so neither table
+/// encoder has anything to hoist and the minifier's whitespace stripping wins on every
 /// profile. This is the only input in this file whose rendering is `e1-minify`.
 const WHITESPACE_JSON: &[u8] = br#"{
     "service"     : "gateway",
@@ -684,21 +685,22 @@ fn every_stats_row_begins_its_value_at_column_21() {
 /// checked that the label `encoder:` appeared, which stays true no matter which
 /// encoder won or what it is called.
 ///
-/// The same already-minified array is a clear tabular win but nothing a minifier can
-/// improve, so the two profiles land on visibly different encoders — which is exactly
-/// what makes the flag observable.
+/// The same already-minified array is a clear table win (E5's grid, which also hoists
+/// its constant `active` column) but nothing a minifier can improve, so the two
+/// profiles land on visibly different encoders — which is exactly what makes the flag
+/// observable.
 #[test]
 fn the_profile_flag_selects_the_encoder_the_report_names() {
     let conservative = stats_report("conservative", COMPRESSIBLE_JSON);
     assert!(
         conservative.contains("passthrough (id 0)"),
-        "conservative may not use the tabular encoder: {conservative}"
+        "conservative may not use a table encoder: {conservative}"
     );
 
     let balanced = stats_report("balanced", COMPRESSIBLE_JSON);
     assert!(
-        balanced.contains("e2-tabular (id 2)"),
-        "balanced must let the tabular encoder compete: {balanced}"
+        balanced.contains("e5-grid (id 5)"),
+        "balanced must let the table encoders compete: {balanced}"
     );
 
     // `aggressive` enables the same encoders as `balanced` in v0.0.1, which is what
@@ -816,8 +818,8 @@ fn stats_appends_exact_counts_without_changing_the_report() {
             &cl100k,
             "balanced",
             54,
-            47,
-            "0.8704",
+            38,
+            "0.7037",
             "cl100k-base (id 2)",
         ),
         (
@@ -834,8 +836,8 @@ fn stats_appends_exact_counts_without_changing_the_report() {
             &o200k,
             "balanced",
             54,
-            47,
-            "0.8704",
+            38,
+            "0.7037",
             "o200k-base (id 3)",
         ),
         (
@@ -897,13 +899,13 @@ fn stats_appends_exact_counts_without_changing_the_report() {
 }
 
 /// The exact rows report; they do not vote. On this array the heuristic prices the
-/// tabular rendering as a win (49 -> 40 estimated tokens) while `cl100k` counts it as
-/// a loss (27 -> 28), and the encoder stays the one the heuristic chose -- the gate's
+/// grid rendering as a win (33 -> 25 estimated tokens) while `cl100k` counts it as a
+/// loss (19 -> 21), and the encoder stays the one the heuristic chose -- the gate's
 /// estimator is unchanged, which is what makes a ratio above `1.0000` possible.
 #[cfg(feature = "tiktoken")]
 #[test]
 fn stats_reports_an_exact_loss_the_heuristic_priced_as_a_win() {
-    let input = br#"[{"id":10,"v":"aa"},{"id":11,"v":"bb"},{"id":12,"v":"cc"}]"#;
+    let input = br#"[{"id":10,"v":"aa"},{"id":11,"v":"bb"}]"#;
     let out = run_tokfold(
         &["stats", "--profile", "balanced", "--tokenizer", "cl100k"],
         input,
@@ -917,21 +919,21 @@ fn stats_reports_an_exact_loss_the_heuristic_priced_as_a_win() {
             .find(|(l, _)| l == label)
             .map_or_else(|| panic!("no {label} row: {report}"), |(_, v)| v.as_str())
     };
-    assert_eq!(value("token ratio"), "0.8163");
-    assert_eq!(value("encoder"), "e2-tabular (id 2)");
-    assert_eq!(value("real tokens before"), "27");
-    assert_eq!(value("real tokens after"), "28");
-    assert_eq!(value("real token ratio"), "1.0370");
+    assert_eq!(value("token ratio"), "0.7576");
+    assert_eq!(value("encoder"), "e5-grid (id 5)");
+    assert_eq!(value("real tokens before"), "19");
+    assert_eq!(value("real tokens after"), "21");
+    assert_eq!(value("real token ratio"), "1.1053");
 }
 
 /// `stats --json --tokenizer cl100k` is the MCP object followed by the four exact
 /// counts, under the keys the help names, and the same numbers the text rows print for
-/// the same pass (the exact-loss array above: 27 -> 28). Without an exact tokenizer the
+/// the same pass (the exact-loss array above: 19 -> 21). Without an exact tokenizer the
 /// line is the MCP object alone, pinned by the test below.
 #[cfg(feature = "tiktoken")]
 #[test]
 fn stats_json_appends_the_exact_counts_after_the_mcp_object() {
-    let input = br#"[{"id":10,"v":"aa"},{"id":11,"v":"bb"},{"id":12,"v":"cc"}]"#;
+    let input = br#"[{"id":10,"v":"aa"},{"id":11,"v":"bb"}]"#;
     let out = run_tokfold(
         &[
             "stats",
@@ -952,8 +954,8 @@ fn stats_json_appends_the_exact_counts_after_the_mcp_object() {
     assert_eq!(
         line,
         format!(
-            "{object},\"realTokensBefore\":27,\"realTokensAfter\":28,\
-             \"realTokenRatio\":1.037037037037037,\"realTokenizerId\":2}}\n"
+            "{object},\"realTokensBefore\":19,\"realTokensAfter\":21,\
+             \"realTokenRatio\":1.105263157894737,\"realTokenizerId\":2}}\n"
         )
     );
 }
@@ -980,9 +982,9 @@ fn stats_json_prints_the_mcp_stats_object_as_one_line() {
 
     assert_eq!(
         run("balanced"),
-        "{\"bytesBefore\":153,\"bytesAfter\":109,\"estTokensBefore\":105,\
-         \"estTokensAfter\":70,\"byteRatio\":0.7124183006535948,\
-         \"tokenRatio\":0.6666666666666666,\"encoder\":\"tabular\",\"encoderId\":2,\
+        "{\"bytesBefore\":153,\"bytesAfter\":81,\"estTokensBefore\":105,\
+         \"estTokensAfter\":48,\"byteRatio\":0.5294117647058824,\
+         \"tokenRatio\":0.45714285714285713,\"encoder\":\"grid\",\"encoderId\":5,\
          \"tokenizerId\":0,\"minSavingBps\":0,\"fidelity\":\"lossless\"}\n"
     );
     assert_eq!(
@@ -997,10 +999,10 @@ fn stats_json_prints_the_mcp_stats_object_as_one_line() {
     let text = stats_report("balanced", COMPRESSIBLE_JSON);
     for row in [
         "bytes before:       153",
-        "bytes after:        109",
+        "bytes after:        81",
         "est tokens before:  105",
-        "est tokens after:   70",
-        "encoder:            e2-tabular (id 2)",
+        "est tokens after:   48",
+        "encoder:            e5-grid (id 5)",
     ] {
         assert!(
             text.lines().any(|line| line == row),
@@ -1116,7 +1118,7 @@ fn the_stats_numbers_are_the_measurements_they_claim_to_be() {
     );
     assert!(
         bytes_after < bytes_before && est_after < est_before,
-        "the tabular encoder wins on this input in both bytes and tokens: {report}"
+        "the grid encoder wins on this input in both bytes and tokens: {report}"
     );
     assert!(
         est_before > 0.0 && est_after > 0.0,
@@ -4825,7 +4827,7 @@ fn hook_event(response: &str) -> Vec<u8> {
         .into_bytes()
 }
 
-/// The hook's whole job, through the binary: an MCP result the tabular encoder shrinks
+/// The hook's whole job, through the binary: an MCP result the grid encoder shrinks
 /// comes back as exactly the object Claude Code reads, carrying exactly what
 /// `tokfold compress` prints for the same text, and nothing goes to standard error.
 #[test]
@@ -4898,7 +4900,7 @@ fn hook_leaves_every_other_result_alone_silently_and_exits_zero() {
     }
 }
 
-/// `--profile` reaches the engine: `conservative` has no tabular encoder and minify
+/// `--profile` reaches the engine: `conservative` has no table encoder and minify
 /// finds nothing to remove in compact JSON, so the result `balanced` replaces stands.
 #[test]
 fn hook_honours_the_profile_flag() {
@@ -4910,18 +4912,16 @@ fn hook_honours_the_profile_flag() {
     assert!(!out.stdout.is_empty());
 }
 
-/// A tabular array the byte rule and the token rule disagree on: the rendering is
-/// shorter (58 bytes against 66) and costs more real tokens (31 against 23, in both
+/// A table array the byte rule and the token rule disagree on: its grid rendering is
+/// shorter (30 bytes against 31) and costs more real tokens (18 against 14, in both
 /// `cl100k` and `o200k`).
-const SHORTER_BUT_DEARER: &str =
-    r#"[{"type":"x"},{"type":"x"},{"type":"x"},{"type":"x"},{"type":"x"}]"#;
+const SHORTER_BUT_DEARER: &str = r#"[{"a":"","b":0},{"a":"","b":1}]"#;
 
-/// A tabular array the two exact tokenizers disagree on: its rendering (68 bytes
-/// against 80) costs 37 real tokens in both, the input 37 in `cl100k` and 46 in
+/// A table array the two exact tokenizers disagree on: its grid rendering (33 bytes
+/// against 35) costs 19 real tokens in both, the input 19 in `cl100k` and 21 in
 /// `o200k`, so the counts tie under one and the rendering wins under the other.
 #[cfg(feature = "tiktoken")]
-const TIES_IN_CL100K: &str =
-    r#"[{"x":0,"a":""},{"x":-1,"a":""},{"x":-2,"a":""},{"x":-3,"a":""},{"x":-4,"a":""}]"#;
+const TIES_IN_CL100K: &str = r#"[{"n":-1,"a":"x"},{"n":-2,"a":"x"}]"#;
 
 /// The default `--tokenizer heuristic` keeps the byte rule: a shorter rendering is
 /// forwarded, whatever it costs in tokens.
@@ -4938,7 +4938,7 @@ fn hook_compares_bytes_by_default() {
 
 /// With an exact tokenizer the hook forwards a rendering only on strictly fewer real
 /// tokens: the byte-shorter fixture is withheld under both, `COMPRESSIBLE_JSON` (54
-/// tokens; its rendering 47 in both) is forwarded under both, and `TIES_IN_CL100K` is
+/// tokens; its rendering 38 in both) is forwarded under both, and `TIES_IN_CL100K` is
 /// withheld under `cl100k`, where the counts tie, and forwarded under `o200k`.
 #[cfg(feature = "tiktoken")]
 #[test]
@@ -5175,7 +5175,7 @@ fn hook_help_states_its_contract() {
 }
 
 /// One synthetic Claude Code transcript for the `bench` tests: three requests on the
-/// main chain, an MCP tool whose result the tabular encoder shrinks, a built-in tool
+/// main chain, an MCP tool whose result the grid encoder shrinks, a built-in tool
 /// whose result is a list of text parts, a sidechain record that must not be billed,
 /// and a line that is not JSON.
 ///
@@ -5280,7 +5280,7 @@ fn bench_json_reports_the_model_on_a_synthetic_transcript() {
     assert!(mcp_after < mcp_before, "the fixture must be a real saving");
     assert_eq!(
         (mcp_before, mcp_after, bash),
-        (105, 70, 7),
+        (105, 48, 7),
         "pinned derivation"
     );
 

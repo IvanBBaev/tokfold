@@ -74,6 +74,9 @@ use tokfold_core::{
 mod oracle;
 use oracle::json_semantically_eq;
 
+#[path = "support/grid.rs"]
+mod grid;
+
 /// Default 32 cases locally; `PROPTEST_CASES` overrides it (CI uses 1024). Reading
 /// the env var ourselves guarantees an *unset* environment yields 32, not proptest's
 /// built-in default of 256.
@@ -686,8 +689,12 @@ proptest! {
     /// — must still stand for the input.
     ///
     /// The claim is per encoder: passthrough must reproduce the input byte for byte,
-    /// and E1 minify must stay semantically equal to it. E2's body is a header + row
-    /// projection rather than a JSON document, so it is not compared here; its
+    /// E1 minify must stay semantically equal to it, and an E5 grid body, decoded by
+    /// the reference decoder in `tests/support/grid.rs` (written from the
+    /// `encoder::e5_grid` grammar, not from the encoder), must be semantically equal
+    /// to it too. E5 had no arm here until a generated case reached it (now kept in
+    /// `roundtrip.proptest-regressions`): the final arm refused id 5 as "unknown",
+    /// which is that arm doing its job. E2's body is a header + row projection rather than a JSON document, so it is not compared here; its
     /// fidelity is covered by `tests/hostile.rs`, whose `check_accepted` parses the
     /// body back with `expand_e2_body` and then calls `json_semantically_eq`, and by
     /// the E2 unit tests in `encoder::e2_tabular`.
@@ -721,6 +728,14 @@ proptest! {
                 "minify rendering is NOT semantically equal to its input\n  in   = {:?}\n  body = {:?}",
                 x, body
             ),
+            5 => {
+                let decoded = grid::decode_grid_body(body);
+                prop_assert!(
+                    json_semantically_eq(&x, &decoded),
+                    "grid rendering does NOT decode to its input\n  in      = {:?}\n  body    = {:?}\n  decoded = {:?}",
+                    x, body, decoded
+                );
+            }
             other => prop_assert_eq!(
                 other, EncoderId::E2_TABULAR.0,
                 "unknown encoder id {} fell through prop01b unchecked", other
@@ -1023,11 +1038,24 @@ fn json_lines_records_are_rendered_as_one_table() {
 
 /// The body under `jsonl` is exactly what E2 renders for the records as one array:
 /// the record encoder adds the recognition, not a second table format.
+///
+/// The records are eleven of one shape and one wide outlier, so that E2 also wins
+/// the array: on the uniform records of [`json_lines`] the array goes to the E5
+/// grid, whose union header would pay a `~` per outlier key on every row where E2
+/// spells the outlier once as a `*` row.
 #[test]
 fn json_lines_body_is_the_e2_body_of_the_records_array() {
     let c = compressor();
-    let input = json_lines(12);
-    let array = format!("[{}]", input.lines().collect::<Vec<_>>().join(","));
+    let mut records: Vec<String> = (0..11)
+        .map(|i| format!("{{\"id\":{i},\"name\":\"n{i}\"}}"))
+        .collect();
+    records.insert(
+        5,
+        "{\"code\":1,\"label\":\"l1\",\"ok\":true,\"kind\":\"x\",\"zone\":\"eu\",\"rank\":3}"
+            .to_owned(),
+    );
+    let input: String = records.iter().flat_map(|r| [r.as_str(), "\n"]).collect();
+    let array = format!("[{}]", records.join(","));
     let lines = c.compress(input.as_bytes()).unwrap();
     let doc = c.compress(array.as_bytes()).unwrap();
     assert_eq!(doc.stats.encoder, EncoderId::E2_TABULAR);

@@ -263,7 +263,7 @@ What the code does, and does not do, about it:
   matched while a bare `500` is not, and neither is `HTTP/1.1 500 Oops` (the
   `http-status` rows of the table, pinned by
   `http_rules_are_reason_phrases_and_never_bare_codes`). Only the minify encoder (E1)
-  consults the table. The tabular encoder (E2) never reads it. A phrase spelled with
+  consults the table. The tabular encoders (E2 and the E5 grid) never read it. A phrase spelled with
   `\u` escapes misses the match. Nothing about it inspects, blocks or neutralises
   hostile content, and it must not be relied on to.
 - **Known fidelity gaps an A2 attacker could aim at** (all recorded, all
@@ -271,6 +271,12 @@ What the code does, and does not do, about it:
   - E2 hoists an array's dominant key set into the table header once. A protected
     string among those keys is therefore written once rather than per row
     (`never_compress.rs`, "What v0.0.1 actually implements").
+  - E5 (grid, after `0.0.1`) goes further: it writes the union of the elements'
+    keys once, a flattened sub-object's key once as a path segment, and a column
+    whose value is the same in every plain row once, as `path=<cell>`. A protected
+    key or constant value there is written once rather than per row (same section).
+    E5's key lookup compares the key text, so it has no counterpart of the hash
+    collision below.
   - E2 interns shapes by a 64-bit `FxHasher` hash and never compares the key text,
     so two colliding key lists are counted as one shape. The rendering still
     round-trips, but the header can be a shape that occurs once. The
@@ -596,7 +602,8 @@ listed so that nobody mistakes any of them for an undiscovered defect.
   model could actually be given. What remains is the estimator's own error against a
   real tokenizer, which no change to the frame addresses; `tokfold stats --tokenizer`
   and `tokfold hook --tokenizer` measure it.
-- **F6.** E2 can hoist a `never_compress`-protected key (see *Semantic integrity*).
+- **F6.** E2 can hoist a `never_compress`-protected key, and the E5 grid a protected
+  key or constant value (see *Semantic integrity*).
 - **E2 shape interning by hash** (see *Semantic integrity*).
 - **Forged archives** decode successfully (see *Integrity of reconstruction*).
 

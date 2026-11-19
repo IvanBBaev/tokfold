@@ -1322,8 +1322,8 @@ mod tests {
     /// `tools::estimate_reports_stats_without_the_payload` reads the `Outcome` that
     /// `tools_call` then wraps, so it cannot see what this module adds around it: the
     /// content block, the two envelope keys, and the serialization of the whole line.
-    /// Each of the four documents carries a marker, the first three reach a different
-    /// encoder each and the fourth repeats the widest one at 108 900 bytes, and the
+    /// Each of the five documents carries a marker, the first four reach a different
+    /// encoder each and the fifth repeats the grid one at 108 900 bytes, and the
     /// marker must occur nowhere in the line the server writes. `tokfold_compress` on
     /// the same document is the control: its reply does carry the marker, so the
     /// absence asserted here is the tool's doing and not the fixture's.
@@ -1344,12 +1344,12 @@ mod tests {
       }
     },
     "e": [
-      {
-        "p": 1
-      },
-      {
-        "q": 2
-      }
+      [
+        "p"
+      ],
+      [
+        "q"
+      ]
     ]
   }
 }"#;
@@ -1364,9 +1364,19 @@ mod tests {
                 .join(",");
             format!(r#"{{"rows":[{rows}]}}"#)
         };
+        // Eleven like rows around one wide outlier, the only row carrying the marker:
+        // the shape E2's dominant-shape table still wins over E5's grid.
+        let mut outlier = (0..11)
+            .map(|n| format!(r#"{{"id":{n},"name":"n{n}"}}"#))
+            .collect::<Vec<_>>();
+        outlier.insert(
+            5,
+            format!(r#"{{"code":1,"label":"{MARKER}","ok":true,"kind":"x","zone":"eu"}}"#),
+        );
+        let outlier = format!(r#"{{"rows":[{}]}}"#, outlier.join(","));
         // The last one is here because a leak conditional on size would sail past the
-        // other three, which are 30, 252 and 636 bytes: at 2 000 rows the document is
-        // 108 900 bytes.
+        // other four, which are 30, 246, 636 and 317 bytes: at 2 000 rows the document
+        // is 108 900 bytes.
         let documents = [
             (
                 "small object",
@@ -1374,8 +1384,9 @@ mod tests {
                 format!(r#"{{"note":"{MARKER}"}}"#),
             ),
             ("indented object", "minify", INDENTED.to_owned()),
-            ("12 rows", "tabular", rows(12)),
-            ("2 000 rows", "tabular", rows(2_000)),
+            ("12 rows", "grid", rows(12)),
+            ("12 rows around an outlier", "tabular", outlier),
+            ("2 000 rows", "grid", rows(2_000)),
         ];
         let mut server = Server::new();
         for (name, expected, document) in documents {

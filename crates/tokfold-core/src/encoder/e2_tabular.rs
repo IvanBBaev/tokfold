@@ -605,7 +605,13 @@ fn value_end(nodes: &[Node], v: usize) -> Option<usize> {
 
 /// Emit the value spanning nodes `[lo, hi]` as minified JSON with verbatim lexemes.
 /// Never starts a table, so a cell can never contain a nested table block.
-fn emit_compact(nodes: &[Node], input: &str, out: &mut String, lo: usize, hi: usize) -> Option<()> {
+pub(super) fn emit_compact(
+    nodes: &[Node],
+    input: &str,
+    out: &mut String,
+    lo: usize,
+    hi: usize,
+) -> Option<()> {
     let mut frames: Vec<RenderFrame> = Vec::new();
     let mut i = lo;
     while i <= hi {
@@ -649,20 +655,20 @@ fn emit_compact(nodes: &[Node], input: &str, out: &mut String, lo: usize, hi: us
 // ---------------------------------------------------------------------------
 
 /// One open container during emission; `seen` drives comma placement.
-struct RenderFrame {
+pub(super) struct RenderFrame {
     is_array: bool,
     seen: bool,
 }
 
 impl RenderFrame {
-    fn object() -> Self {
+    pub(super) fn object() -> Self {
         Self {
             is_array: false,
             seen: false,
         }
     }
 
-    fn array() -> Self {
+    pub(super) fn array() -> Self {
         Self {
             is_array: true,
             seen: false,
@@ -673,7 +679,7 @@ impl RenderFrame {
 /// Emit the separator preceding a value: a comma before every array element after
 /// the first. In an object the comma belongs before the key, and a top-level value
 /// has no frame, so both emit nothing here.
-fn open_value(frames: &mut [RenderFrame], out: &mut String) {
+pub(super) fn open_value(frames: &mut [RenderFrame], out: &mut String) {
     if let Some(frame) = frames.last_mut() {
         if frame.is_array {
             if frame.seen {
@@ -686,7 +692,7 @@ fn open_value(frames: &mut [RenderFrame], out: &mut String) {
 
 /// Emit the separator preceding an object key: a comma before every member after
 /// the first.
-fn open_key(frames: &mut [RenderFrame], out: &mut String) {
+pub(super) fn open_key(frames: &mut [RenderFrame], out: &mut String) {
     if let Some(frame) = frames.last_mut() {
         if frame.seen {
             out.push(',');
@@ -696,7 +702,7 @@ fn open_key(frames: &mut [RenderFrame], out: &mut String) {
 }
 
 /// Resolve a node span to its source slice, or `None` if it is out of bounds.
-fn span_str(input: &str, span: Span) -> Option<&str> {
+pub(super) fn span_str(input: &str, span: Span) -> Option<&str> {
     input.get(span.start as usize..span.end as usize)
 }
 
@@ -705,7 +711,7 @@ fn span_str(input: &str, span: Span) -> Option<&str> {
 /// This *does* allocate — `to_string` builds a `String` — but it has no panic path,
 /// unlike `write!`, whose `fmt::Result` would have to be unwrapped or discarded. The
 /// workspace's `unwrap_used` and `expect_used` denies are what pick that trade.
-fn push_usize(out: &mut String, n: usize) {
+pub(super) fn push_usize(out: &mut String, n: usize) {
     out.push_str(&n.to_string());
 }
 

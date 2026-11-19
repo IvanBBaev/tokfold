@@ -333,7 +333,7 @@ which stays the default. The line is the `stats` object every MCP tool reply
 carries — `bytesBefore`, `bytesAfter`, `estTokensBefore`, `estTokensAfter`,
 `byteRatio`, `tokenRatio`, `encoder`, `encoderId`, `tokenizerId`, `minSavingBps`,
 `fidelity` — with the MCP encoder names (`minify`, `tabular`, `jsonl`,
-`passthrough`) and unrounded ratios. A rejected input still exits `2` with nothing on
+`grid`, `passthrough`) and unrounded ratios. A rejected input still exits `2` with nothing on
 standard output.
 
 `--tokenizer cl100k` or `--tokenizer o200k` also counts the input and the rendering
@@ -388,7 +388,7 @@ encoder reduces the estimated token count, it returns a passthrough artifact wit
 ratio `1.0`. "Couldn't compress" is a statistic, never an error. A passthrough
 rendering is the input itself, byte for byte, with no sentinel line, so that `1.0` is
 exact. Every other rendering opens with a one-line `#tkfd1 <tag>` sentinel (`min`,
-`tbl` or `jsonl`), and the do-no-harm gate prices that line in: an encoder wins only
+`tbl`, `jsonl` or `grid`), and the do-no-harm gate prices that line in: an encoder wins only
 when the estimate of its whole rendering, sentinel included, is lower than the
 input's. Invalid input (including `NaN`/`Infinity`, truncated
 documents, or trailing garbage) returns a `CompressError`; the caller then forwards

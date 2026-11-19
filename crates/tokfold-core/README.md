@@ -91,7 +91,7 @@ count, it returns a passthrough artifact with ratio `1.0`. "Couldn't compress" i
 a statistic, never an error. A passthrough rendering is the input itself, byte for
 byte, with no sentinel line, so on that path the `*_after` fields equal their
 `*_before` counterparts because the rendering *is* the input. Every other rendering
-opens with a one-line `#tkfd1 <tag>` sentinel (`min`, `tbl` or `jsonl`), and the
+opens with a one-line `#tkfd1 <tag>` sentinel (`min`, `tbl`, `jsonl` or `grid`), and the
 do-no-harm gate prices that line in: an encoder wins only when the estimate of its
 whole rendering, sentinel included, is lower than the input's. (`0.0.1` renderings
 open with a `⟦tkfd:v1:<tag>⟧` line instead, a passthrough one included; archives

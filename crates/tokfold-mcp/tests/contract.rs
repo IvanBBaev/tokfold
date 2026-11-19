@@ -952,17 +952,27 @@ fn the_encoder_name_and_its_wire_id_never_disagree() {
     // different pieces of code, so they can drift apart, and a reader comparing a log
     // line against an archive header would then be quietly wrong. The pairing is frozen
     // — an id may be added, but an existing one may never be renumbered.
-    let pairs: &[(&str, i64)] = &[("passthrough", 0), ("minify", 1), ("tabular", 2)];
+    let pairs: &[(&str, i64)] = &[
+        ("passthrough", 0),
+        ("minify", 1),
+        ("tabular", 2),
+        ("jsonl", 4),
+        ("grid", 5),
+    ];
 
-    // Three inputs chosen to reach all three encoders: uniform rows are what the
-    // tabular encoder exists for, a whitespace-heavy object with no repeated shape can
-    // only be minified, and a short object — spaced, but too short for removing the
-    // spaces to be worth selecting — passes through. Text that is not JSON is declined and reports no stats at all, so it
-    // cannot stand in for the passthrough encoder. Until this test asserted the set it
-    // observed, its "irregular object" was compact enough to pass through, and the
-    // minifier's pairing was never checked.
+    // Five inputs chosen to reach all five encoders: uniform rows are what the grid
+    // encoder exists for; four like rows around one wide outlier are the shape the tabular
+    // encoder's dominant-shape table still wins; newline-delimited objects are a JSONL
+    // stream; a whitespace-heavy object with no array of objects can only be minified;
+    // and a short object — spaced, but too short for removing the spaces to be worth
+    // selecting — passes through. Text that is not JSON is declined and reports no
+    // stats at all, so it cannot stand in for the passthrough encoder. Until this test
+    // asserted the set it observed, its "irregular object" was compact enough to pass
+    // through, and the minifier's pairing was never checked.
     let inputs = [
         r#"{"rows":[{"id":1,"name":"ada","ok":true},{"id":2,"name":"grace","ok":false},{"id":3,"name":"alan","ok":true}]}"#,
+        r#"{"rows":[{"id":1,"name":"ada"},{"id":2,"name":"grace"},{"id":3,"name":"alan"},{"id":4,"name":"bob"},{"code":1,"label":"x","ok":true,"kind":"y","zone":"eu"}]}"#,
+        "{\"a\":1,\"b\":\"x\"}\n{\"a\":2,\"b\":\"y\"}\n{\"a\":3,\"b\":\"z\"}\n",
         "{\n    \"service\"     : \"gateway\",\n    \"version\"     : \"1.4.2\",\n    \"healthy\"     : true,\n    \"replicas\"    : 3,\n    \"endpoints\"   : [\n        \"https://example.invalid/a\",\n        \"https://example.invalid/b\"\n    ]\n}",
         r#"{ "a" : { "b" : [ 1 , 2 , 3 ] } , "c" : "some text that is long enough to matter" }"#,
     ];
@@ -988,7 +998,7 @@ fn the_encoder_name_and_its_wire_id_never_disagree() {
     let expected: Vec<(String, i64)> = pairs.iter().map(|&(n, i)| (n.to_owned(), i)).collect();
     assert_eq!(
         seen, expected,
-        "the three inputs must reach all three encoders, or a pairing goes unchecked"
+        "the five inputs must reach all five encoders, or a pairing goes unchecked"
     );
 }
 

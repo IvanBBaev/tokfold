@@ -1665,6 +1665,7 @@ fn encoder_name(id: u8) -> &'static str {
         1 => "e1-minify",
         2 => "e2-tabular",
         4 => "e4-jsonl",
+        5 => "e5-grid",
         _ => "unknown",
     }
 }
@@ -1888,7 +1889,7 @@ enum TokenizerArg {
 enum ProfileArg {
     /// Minification only — the smallest, safest change to the text.
     Conservative,
-    /// Minification plus tabular re-encoding. The default.
+    /// Minification plus the two table encoders (tabular and grid). The default.
     Balanced,
     /// Every shipped encoder (identical to `balanced` in v0.0.1).
     Aggressive,
@@ -2015,10 +2016,10 @@ mod tests {
             EncoderId::PASSTHROUGH,
             "balanced must let an encoder win"
         );
-        assert_eq!(rendered, 109, "the tabular rendering this pins");
+        assert_eq!(rendered, 81, "the grid rendering this pins");
         assert_eq!(
             rows,
-            "real tokens before: 153\nreal tokens after:  109\nreal token ratio:   0.7124\nreal tokenizer:     byte-length (id 1)\n"
+            "real tokens before: 153\nreal tokens after:  81\nreal token ratio:   0.5294\nreal tokenizer:     byte-length (id 1)\n"
         );
 
         let (encoder, rendered, rows) = report(Profile::Conservative)?;
@@ -2081,6 +2082,7 @@ mod tests {
         assert_eq!(encoder_name(1), "e1-minify");
         assert_eq!(encoder_name(2), "e2-tabular");
         assert_eq!(encoder_name(4), "e4-jsonl");
+        assert_eq!(encoder_name(5), "e5-grid");
     }
 
     #[test]
@@ -2089,7 +2091,7 @@ mod tests {
         // the id itself is always shown alongside, so nothing is lost. Id 3 is
         // reserved for legend folding, which no build implements.
         assert_eq!(encoder_name(3), "unknown");
-        assert_eq!(encoder_name(5), "unknown");
+        assert_eq!(encoder_name(6), "unknown");
         assert_eq!(encoder_name(u8::MAX), "unknown");
     }
 

@@ -583,7 +583,7 @@ released says so, and names what `0.0.1` does in the same case.
   input itself.** `0.0.1` opened every rendering with a `⟦tkfd:v1:<tag>⟧` line, a
   passthrough one included (`⟦tkfd:v1:raw⟧`). The two brackets are three `cl100k` and
   `o200k` tokens each, so that line cost 10 to 14 real tokens; `#tkfd1 min`, `#tkfd1
-  tbl` and `#tkfd1 jsonl` cost 5 to 7, pinned per tag and tokenizer by
+  tbl`, `#tkfd1 jsonl` and `#tkfd1 grid` cost 5 to 7, pinned per tag and tokenizer by
   `the_sentinel_costs_what_the_docs_say_it_costs` in `tokfold-core`'s `estimator`. A
   passthrough rendering now has no sentinel line at all: a JSON or JSON Lines document
   never opens with `#`, so a rendering that opens with `#tkfd1 ` is framed and one that
@@ -602,11 +602,12 @@ released says so, and names what `0.0.1` does in the same case.
   old frame and a reference decoder in the test, is semantically equal to its input,
   and that a fresh rendering differs from the legacy one only in its frame. What a reader of renderings sees changes: a client that
   matched `⟦tkfd:v1:` must match `#tkfd1 ` instead, and must not expect a marker on a
-  passthrough. Through the MCP server, the quickstart replay's reply 3 grows from 527
-  to 528 bytes and reply 4 shrinks from 1 502 to 1 489 (`bytesAfter` 233 → 226,
-  `estTokensAfter` 136 → 130), pinned by the `COVERAGE` rows in
-  `crates/tokfold-mcp/tests/quickstart.rs`. The MCP `initialize` instructions no
-  longer quote the old frame.
+  passthrough. Through the MCP server, this change alone (commit `5cfc228`) grew the
+  quickstart replay's reply 3 from 527 to 528 bytes and shrank reply 4 from 1 502 to
+  1 489 (`bytesAfter` 233 → 226, `estTokensAfter` 136 → 130); the E5 grid entry under
+  "Added" gives the numbers the `COVERAGE` rows in
+  `crates/tokfold-mcp/tests/quickstart.rs` pin now. The MCP `initialize` instructions
+  no longer quote the old frame.
 
 - **A rejected `compress --archive PATH` can now exit `2`.** `0.0.1` exited `0` on
   the rejected path unless writing the passthrough itself failed (a file-size limit
@@ -892,6 +893,56 @@ released says so, and names what `0.0.1` does in the same case.
   array (compact, CRLF, 9 330 bytes) 0.6222; 50 records alternating two shapes
   (910 bytes) 0.7584. Each `tokfold compress --archive` round-tripped byte for byte
   through `tokfold expand`.
+
+- **The E5 `grid` encoder (id 5).** A second table encoder, `tokfold-core`'s
+  `encoder::e5_grid`, competing with E1 and E2 under `Balanced` (the default) and
+  `Aggressive`; `Conservative` still runs E1 alone. Like E2 it writes an array of
+  objects as a header and one row per element. Its syntax is lighter — a key whose
+  text matches `[A-Za-z_][A-Za-z0-9_-]*` is written without its quotes, and a plain
+  row is `+<cell>,<cell>,…` with no brackets — and it differs in three more ways: the
+  header is the ordered *union* of the elements' keys, so an element that only lacks
+  some keys is a plain row with `~` in those columns where E2 writes it out whole; a
+  key whose every present value is a non-empty object is flattened into dotted-path
+  columns (`user.id`), for keys at the element's first three levels; and a column
+  whose cell is the same in every plain row is written once in the header as
+  `path=<cell>` and dropped from the rows. An element whose keys repeat, or come in
+  an order the union contradicts, is written verbatim as a `*` row. A grid is
+  declined when its plain rows times its leaf columns exceed the array's source
+  bytes, so a sparse array cannot blow up. The body grammar, the union order and the
+  reversibility argument are in the module docs; a reference decoder written from
+  that grammar (`crates/tokfold-core/tests/support/grid.rs`) rebuilds the minified
+  input from the body alone, byte for byte, in the unit, golden, round-trip and
+  property tests. The union is keyed by the full key text, so E5 has no counterpart
+  of E2's 64-bit shape-hash collision.
+
+  It renders under the `#tkfd1 grid` sentinel (CLI name `e5-grid`, MCP name `grid`).
+  The sentinel line is 12 bytes and costs 5 estimated (6 real `cl100k`, 6 real
+  `o200k`) tokens before a body that does not open with a newline, and 6 estimated
+  (5 and 5 real) before a table body, which does; pinned in
+  `the_sentinel_costs_what_the_docs_say_it_costs`. The archive format is unchanged —
+  the archive is still a passthrough of the input with `encoder_id` `0` — so archives
+  from `0.0.1` and from this build decode alike, and `golden.rs` now also holds the
+  grid renderings of its two table inputs (`*.json.grid`), decoded by the reference
+  decoder. E5 does not consult `never_compress`; a constant value or a flattened key
+  that it protects is written once, at the header, where E2 would repeat it — see the
+  `never_compress` module docs and `docs/threat-model.md`.
+
+  Behaviour change against `0.0.1`: under `Balanced` and `Aggressive` an array of
+  objects can now come back under `#tkfd1 grid` instead of `#tkfd1 tbl` or
+  `#tkfd1 min`, whenever the grid is the cheapest candidate the do-no-harm gate
+  accepts. Through the MCP server the quickstart replay's reply 3 is 522 bytes and
+  reply 4 1 436 (`bytesAfter` 211, `estTokensAfter` 115), pinned by the `COVERAGE`
+  rows in `crates/tokfold-mcp/tests/quickstart.rs`.
+
+  Measured on macOS arm64 with release builds, profile `Balanced`, gate priced with
+  the heuristic estimator, over 2 189 JSON tool results extracted from a local
+  Claude Code transcript corpus (246 of them MCP results), counting the rendering
+  against the input in real tokens: the sum ratio over all of them went from 1.0445
+  `o200k` / 1.0372 `cl100k` at `a21a26a` (before the sentinel change), to 0.9688 /
+  0.9730 at `5cfc228` (sentinel change only), to 0.9388 / 0.9448 with this encoder;
+  over the MCP results alone from 0.9489 / 0.9559 to 0.9325 / 0.9426 to 0.8573 /
+  0.8707. The number of renderings that cost more real tokens than their input fell
+  from 2 068 / 2 069 to 22 / 38 to 5 / 13. E5 won 157 of the 2 189 documents.
 
 - `Stats::gate_rejected_candidate` — whether the do-no-harm gate refused a candidate
   rendering during the pass. `Stats` is `#[non_exhaustive]`, so the field is
