@@ -469,7 +469,15 @@ outcome of the pass:
   find out, and exits `2` too, whatever the file holds. A pipe, socket or device is
   not read at all, and stderr says it is not a regular file; a directory exits `2` with
   the platform's own diagnostic, which is why the rejected pass hands one to the open
-  at all.
+  at all. What kind of file stands behind the spelling is asked through an
+  open of it, which on macOS duplicates the descriptor and cannot block, rather than
+  through `stat`: while another process `stat`s its own descriptor of the same number,
+  macOS was measured answering a `stat` of `/dev/fd/3` with that process's file type or
+  with `Bad file descriptor`, which had made a stale archive look like "not a regular
+  file" and be left in place. Under the same conditions a write open of the spelling
+  was measured failing with `Is a directory` for a regular file, so that one answer is
+  asked again, up to 64 times, before it is believed: no descriptor open for writing
+  is a directory.
 - **The rejected pass is not contained by the successful one.** It is tempting to
   reason that deleting is safe because a successful pass would have overwritten the
   same path anyway. That is not true, because the two use different system calls with

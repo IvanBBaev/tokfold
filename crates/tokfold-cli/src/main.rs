@@ -537,7 +537,8 @@ fn file_identity(path: &Path) -> Option<(u64, u64)> {
 ///
 /// The input read opens read-only, and so does this, so a write-only descriptor the
 /// read can never open is not an input to protect: `-i /dev/stdin 0>>a.tkfd` fails
-/// with the error the read itself reports. Any other path is its `stat` identity.
+/// with the error the read itself reports. Any other path is its [`path_metadata`]
+/// identity, which away from `/dev/fd` is its `stat` identity.
 fn input_identity(path: &Path) -> Option<(u64, u64)> {
     reached_identity(path, |path| fs::File::open(path))
 }
@@ -551,16 +552,19 @@ fn input_identity(path: &Path) -> Option<(u64, u64)> {
 /// rejected input through as `0.0.1` did, and a successful pass fails on the write
 /// instead of being called a collision.
 fn archive_identity(path: &Path) -> Option<(u64, u64)> {
-    reached_identity(path, |path| fs::OpenOptions::new().write(true).open(path))
+    reached_identity(path, |path| {
+        open_for_writing(path, fs::OpenOptions::new().write(true))
+    })
 }
 
 /// The identity of `path` through `open` when it is a regular file reached through
-/// `/dev`, or its `stat` identity otherwise; `None` if either fails.
+/// `/dev`, or the identity of what [`path_metadata`] reports otherwise; `None` if
+/// either fails.
 fn reached_identity(
     path: &Path,
     open: impl FnOnce(&Path) -> io::Result<fs::File>,
 ) -> Option<(u64, u64)> {
-    let meta = fs::metadata(path).ok()?;
+    let meta = path_metadata(path).ok()?;
     if meta.is_file() && is_reached_through_dev(path) {
         let file = open(path).ok()?;
         return file.metadata().ok().as_ref().and_then(identity_of);
@@ -577,6 +581,70 @@ fn reached_identity(
 /// rejected pass named as its own input deleted that input.
 fn is_reached_through_dev(path: &Path) -> bool {
     fs::canonicalize(path).is_ok_and(|resolved| resolved.starts_with("/dev/fd"))
+}
+
+/// How many times [`open_for_writing`] asks a descriptor spelling before it believes an
+/// `EISDIR`.
+const DESCRIPTOR_OPEN_ATTEMPTS: u32 = 64;
+
+/// What `fs::metadata` answers for `path`, asked through an open descriptor when `path`
+/// is a descriptor spelling under `/dev/fd`.
+///
+/// On macOS a `stat` of `/dev/fd/N` is not reliable while another process `stat`s its
+/// own descriptor `N`: the kernel answers both from one shared `fdesc` node, and the
+/// answer can carry the other process's file type or fail `EBADF` for a descriptor
+/// that is open. Measured on macOS with three processes each `stat`ing `/dev/fd/3`
+/// 200 000 times — a regular file in one, a pipe in another — the file came back as some
+/// other type 1 424 times and as `EBADF` 293 times; with the descriptor numbers
+/// distinct, or each process alone, 0 times. It made `compress --archive /dev/fd/3`
+/// call a stale archive "not a regular file" and pass the input through at exit `0`,
+/// with the archive left in place, and fail a pipe slot at exit `2` with `Bad file
+/// descriptor`, about one full test run in ten under load.
+///
+/// An `fstat` of the descriptor a `/dev/fd` open returns does not go through that node,
+/// and was measured never wrong under the same load. On macOS that open duplicates the
+/// descriptor rather than opening the file again, so it cannot block on a FIFO and
+/// reads nothing; the duplicate closes on drop. A read-only open is tried first, since
+/// it was also measured never failing spuriously; a descriptor open write-only refuses
+/// it and is opened for writing through [`open_for_writing`]. A descriptor neither open
+/// can reach is asked by `stat` after all, so its error is the one `stat` has always
+/// reported. Every other path is `stat`ed as before — and so is a descriptor spelling
+/// on Linux, which resolves to the file's own path and never reaches the open.
+fn path_metadata(path: &Path) -> io::Result<fs::Metadata> {
+    if !is_reached_through_dev(path) {
+        return fs::metadata(path);
+    }
+    fs::File::open(path)
+        .or_else(|_| open_for_writing(path, fs::OpenOptions::new().write(true)))
+        .and_then(|file| file.metadata())
+        .or_else(|_| fs::metadata(path))
+}
+
+/// Open `path` with `options`, which ask for write access, believing an `EISDIR` from
+/// a descriptor spelling under `/dev/fd` only after [`DESCRIPTOR_OPEN_ATTEMPTS`] tries.
+///
+/// The shared `fdesc` node [`path_metadata`] describes also makes a write open of
+/// `/dev/fd/N` fail `EISDIR` for a regular file while another process `stat`s a
+/// directory at its own descriptor `N`: 2 549 times in 200 000 opens, measured on macOS
+/// against two such processes. A descriptor open for writing is never a directory, so
+/// that answer is retried; a directory behind a read-only descriptor fails every try
+/// and reports `Is a directory` as before. Every other error, and every other path,
+/// is returned from the first open.
+fn open_for_writing(path: &Path, options: &fs::OpenOptions) -> io::Result<fs::File> {
+    let spelling = is_reached_through_dev(path);
+    let mut attempts = 1;
+    loop {
+        match options.open(path) {
+            Err(e)
+                if spelling
+                    && e.kind() == io::ErrorKind::IsADirectory
+                    && attempts < DESCRIPTOR_OPEN_ATTEMPTS =>
+            {
+                attempts += 1;
+            }
+            result => return result,
+        }
+    }
 }
 
 /// The identity of the regular file standing behind standard input, or `None` when
@@ -698,7 +766,7 @@ fn stdout_is_the_file_at(archive: &Path) -> bool {
 /// spellings of one device or pipe — `--input /dev/null --archive /dev/null` — are not
 /// the same *file* here, and are passed through as `0.0.1` passed them.
 fn is_same_file(a: &Path, b: &Path) -> bool {
-    let is_a_file = |path: &Path| fs::metadata(path).is_ok_and(|meta| meta.is_file());
+    let is_a_file = |path: &Path| path_metadata(path).is_ok_and(|meta| meta.is_file());
     if !is_a_file(a) || !is_a_file(b) {
         return false;
     }
@@ -740,8 +808,10 @@ enum ArchiveSlot {
     /// A regular file that is not a `TKFD` archive: different bytes, or too short to
     /// carry the magic at all.
     Foreign,
-    /// A FIFO, socket or device. It is never opened or read, so nothing is known about
-    /// its bytes — only that no later `expand` can read an archive back from it.
+    /// A FIFO, socket or device. It is never read, and never opened except through a
+    /// macOS descriptor spelling, whose open duplicates the descriptor (see
+    /// [`path_metadata`]), so nothing is known about its bytes — only that no later
+    /// `expand` can read an archive back from it.
     NotAFile,
     /// A regular file behind a descriptor spelling that refuses to be opened for
     /// writing — on macOS, a descriptor open read-only. The archive write cannot reach
@@ -825,8 +895,11 @@ fn removal_is_still_the_inspected_file(target: &Path, identity: Option<(u64, u64
 ///   resolves to cleared, through however many links. Removing the link instead would leave that archive readable
 ///   while stderr claimed it was gone — the exact silent substitution above, with a
 ///   reassuring message on top.
-/// * A FIFO, a socket or a device is **never opened**. Neither can hold a readable
-///   archive, and opening a FIFO blocks until a writer appears. A directory is the
+/// * A FIFO, a socket or a device is **never opened** by its own path. Neither can
+///   hold a readable archive, and opening a FIFO blocks until a writer appears. A
+///   macOS descriptor spelling is opened to learn its file type, because a `stat` of
+///   it is unreliable, and that open duplicates the descriptor and cannot block — see
+///   [`path_metadata`]. A directory is the
 ///   one non-file this refuses to skip: it is handed to the open on purpose, so the
 ///   failure carries the platform's own diagnostic rather than silently reporting
 ///   nothing to clear at a path that plainly is not empty. Which call fails is the
@@ -988,7 +1061,10 @@ fn inspect_archive_slot(path: &Path) -> Result<ArchiveSlot> {
     // removal the file behind it: `--input x --archive x/` deleted its own input at exit
     // `0`, although every same-file guard, asking `stat`, saw no archive. Any other
     // failure — a symlink loop, a name too long, an unsearchable parent — is reported
-    // below and ends the pass with exit `2`, which the crate README documents.
+    // below and ends the pass with exit `2`, which the crate README documents. This is a
+    // plain `stat` even for a descriptor spelling, whose `stat` [`path_metadata`] calls
+    // unreliable: only `ENOENT` and `ENOTDIR` are acted on here, and the corrupted
+    // answers measured were a wrong file type and `EBADF`, never either of those.
     match fs::metadata(path) {
         Err(e)
             if matches!(
@@ -1073,8 +1149,10 @@ fn inspect_archive_slot(path: &Path) -> Result<ArchiveSlot> {
 /// Classify an archive path that resolves under `/dev/fd`: a descriptor spelling that
 /// stands for a file, pipe or device already open in this process.
 ///
-/// `metadata` follows the descriptor to the file behind it, so a FIFO, socket or
-/// device is still never opened, and a directory is handed to the open on purpose, as
+/// The file type comes from [`path_metadata`], which opens the spelling rather than
+/// `stat`ing it, because a `stat` of `/dev/fd/N` can carry another process's answer;
+/// that open duplicates the descriptor, so a FIFO, socket or device is still never
+/// opened anew or read, and a directory is handed to the open on purpose, as
 /// on the plain path, so the failure reports the platform's own diagnostic — the
 /// read's on Unix, the open's on Windows.
 ///
@@ -1111,7 +1189,7 @@ fn inspect_archive_slot(path: &Path) -> Result<ArchiveSlot> {
 /// an archive was classified as foreign and reported "not a tokfold archive".
 fn inspect_descriptor_slot(path: &Path) -> Result<ArchiveSlot> {
     let context = || format!("inspecting the archive path {}", path.display());
-    let meta = match fs::metadata(path) {
+    let meta = match path_metadata(path) {
         Ok(meta) => meta,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(ArchiveSlot::Empty),
         Err(e) => return Err(e).with_context(context),
@@ -1120,7 +1198,7 @@ fn inspect_descriptor_slot(path: &Path) -> Result<ArchiveSlot> {
         return Ok(ArchiveSlot::NotAFile);
     }
     if meta.is_file() {
-        if fs::OpenOptions::new().write(true).open(path).is_err() {
+        if open_for_writing(path, fs::OpenOptions::new().write(true)).is_err() {
             return Ok(ArchiveSlot::Unwritable);
         }
         // Too short for the magic is settled by the length alone. That matters here,
@@ -1460,8 +1538,10 @@ fn warn(args: fmt::Arguments<'_>) {
 fn write_file(path: &Path, bytes: &[u8]) -> Result<()> {
     // `metadata` follows symlinks, so a link aimed at a FIFO is refused too, and it
     // only ever `stat`s: unlike `open`, that cannot block on any of the file types it
-    // is here to reject.
-    match fs::metadata(path) {
+    // is here to reject. The one exception is a descriptor spelling on macOS, which
+    // `path_metadata` asks through an open because a `stat` of it is unreliable; that
+    // open duplicates the descriptor and cannot block either.
+    match path_metadata(path) {
         Ok(meta) => ensure!(
             meta.is_file() || meta.is_dir(),
             "refusing to write the archive to {}: it is not a regular file",
@@ -1474,12 +1554,14 @@ fn write_file(path: &Path, bytes: &[u8]) -> Result<()> {
         }
     }
     let context = || format!("writing archive to {}", path.display());
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(path)
-        .with_context(context)?;
+    let mut file = open_for_writing(
+        path,
+        fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true),
+    )
+    .with_context(context)?;
     // An open that truncates does not always empty the file. On macOS `/dev/fd/N`
     // (and `/dev/stdout`, `/dev/stderr`) duplicates the descriptor instead of opening
     // the file: the truncation is ignored and the descriptor's offset and append mode

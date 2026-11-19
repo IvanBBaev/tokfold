@@ -19,6 +19,26 @@ released says so, and names what `0.0.1` does in the same case.
 
 ### Fixed
 
+- **On macOS, a `/dev/fd/N` spelling is no longer asked its file type by `stat`.**
+  macOS answers a `stat` of `/dev/fd/N` from one `fdesc` node shared with every other
+  process's descriptor `N`, and while another process `stat`s its own descriptor 3 the
+  answer was measured carrying that process's file type (1 424 times in 200 000) or
+  failing `EBADF` (293 times) for a regular file open at descriptor 3; with distinct
+  descriptor numbers, or alone, 0 times. Under load, about one full `cli` test run in
+  ten saw it: a rejected `compress --archive /dev/fd/3` called a stale archive "not a
+  regular file" and left it in place at exit `0`, a pipe slot failed at exit `2` with
+  `Bad file descriptor`, and the same-file guards could miss. The rejected pass's slot
+  check, both same-file guards and the archive write's pre-check now take the file
+  type from an `fstat` of the descriptor a `/dev/fd` open returns — on macOS a
+  duplicate that cannot block and reads nothing — which was measured never wrong under
+  the same load. A write open of the spelling was measured failing `Is a directory`
+  for a regular file under the same conditions (2 549 times in 200 000), so that one
+  error is retried up to 64 times before it is believed. Other paths, and descriptor
+  spellings on Linux, are `stat`ed as before. Every check this touches is unreleased:
+  `0.0.1`'s `main.rs` inspects no archive slot and compares no files. With
+  three processes hammering `/dev/fd/3` and `/dev/fd/0` beside two parallel runs of the
+  descriptor tests, 9 of 50 runs failed before the change.
+
 - **A rejected `compress` no longer leaves a stale recovery archive at
   `--archive`.** `compress` treats a `CompressError` as a passthrough and exits
   `0`; an archive an *earlier* successful run had written at the same path
