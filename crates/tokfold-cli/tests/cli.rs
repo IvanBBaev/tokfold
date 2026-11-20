@@ -5313,6 +5313,7 @@ fn run_bench(args: &[&str]) -> Output {
 /// [`bench_counts_with_an_exact_tokenizer`] in 12 of the 20 runs and nothing else. Its
 /// subject is the numbers, not termination, so it waits longer; a hang still fails
 /// rather than stalls.
+#[cfg(feature = "tiktoken")]
 const EXACT_TOKENIZER_BENCH_LIMIT: Duration = Duration::from_secs(120);
 
 /// Run `bench` with `args` and no standard input, bounded at `limit`, and return its
