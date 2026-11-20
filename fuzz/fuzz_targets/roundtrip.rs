@@ -71,6 +71,7 @@ fuzz_target!(|data: &[u8]| {
                 let tag = match stats.encoder.0 {
                     1 => "min",
                     2 => "tbl",
+                    3 => "refs",
                     4 => "jsonl",
                     5 => "grid",
                     other => panic!("unknown encoder id {other}"),

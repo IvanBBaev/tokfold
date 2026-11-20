@@ -206,7 +206,7 @@ fn profile_property() -> Value {
         .set(
             "description",
             Value::string(
-                "`aggressive` is the same as `balanced` now. Default `balanced`. Reversible.",
+                "`aggressive` also adds a legend of repeats. Default `balanced`. Reversible.",
             ),
         )
         .build()
@@ -463,6 +463,8 @@ fn encoder_name(encoder: EncoderId) -> &'static str {
         "minify"
     } else if encoder == EncoderId::E2_TABULAR {
         "tabular"
+    } else if encoder == EncoderId::E3_REFS {
+        "refs"
     } else if encoder == EncoderId::E4_JSONL {
         "jsonl"
     } else if encoder == EncoderId::E5_GRID {
@@ -747,10 +749,11 @@ mod tests {
         // The name is written by a comparison chain rather than a `match`, so nothing
         // checks at compile time that each arm returns the name its id is frozen to.
         // The `"unknown"` arm cannot be driven from here: `EncoderId` is
-        // `#[non_exhaustive]`, so this crate can build only the five named ids.
+        // `#[non_exhaustive]`, so this crate can build only the six named ids.
         assert_eq!(encoder_name(EncoderId::PASSTHROUGH), "passthrough");
         assert_eq!(encoder_name(EncoderId::E1_MINIFY), "minify");
         assert_eq!(encoder_name(EncoderId::E2_TABULAR), "tabular");
+        assert_eq!(encoder_name(EncoderId::E3_REFS), "refs");
         assert_eq!(encoder_name(EncoderId::E4_JSONL), "jsonl");
         assert_eq!(encoder_name(EncoderId::E5_GRID), "grid");
     }
@@ -1017,12 +1020,13 @@ mod tests {
     /// `every_documented_profile_is_accepted_and_others_are_not` proves each advertised
     /// string is accepted, not what it selects:
     /// mapping every string to one profile kept it green. The parser is checked
-    /// directly for all three, because `aggressive` offers the same encoders as
-    /// `balanced` in this release and no output can tell them apart. The call is then
-    /// checked end to end: a compact homogeneous array with a constant column is a
-    /// grid win (E5 hoists the constant) and nothing a minifier can shorten, so the
-    /// profiles that admit the table encoders and the one that does not name different
-    /// encoders.
+    /// directly for all three, because `aggressive` differs from `balanced` only on an
+    /// input its value dictionary folds. The call is then checked end to end: a
+    /// compact homogeneous array with a constant column is a grid win (E5 hoists the
+    /// constant) and nothing a minifier can shorten, so the profiles that admit the
+    /// table encoders and the one that does not name different encoders; and two long
+    /// ids trading columns from row to row give E5 nothing to hoist, so only
+    /// `aggressive` folds them into references.
     #[test]
     fn each_profile_string_selects_its_own_profile() {
         for (name, profile) in [
@@ -1037,8 +1041,9 @@ mod tests {
                 "{name}"
             );
         }
-        let text = r#"[{"id":0,"name":"item0","active":true},{"id":1,"name":"item1","active":true},{"id":2,"name":"item2","active":true},{"id":3,"name":"item3","active":true}]"#;
-        let encoder = |profile: &str| {
+        let grid = r#"[{"id":0,"name":"item0","active":true},{"id":1,"name":"item1","active":true},{"id":2,"name":"item2","active":true},{"id":3,"name":"item3","active":true}]"#;
+        let refs = r#"[{"id":1,"caller":"8a5055c9c61122780043563ef53438e3","group":"5137153cc611227c000bbd1bd8cd2005"},{"id":2,"caller":"5137153cc611227c000bbd1bd8cd2005","group":"8a5055c9c61122780043563ef53438e3"},{"id":3,"caller":"8a5055c9c61122780043563ef53438e3","group":"5137153cc611227c000bbd1bd8cd2005"},{"id":4,"caller":"5137153cc611227c000bbd1bd8cd2005","group":"8a5055c9c61122780043563ef53438e3"},{"id":5,"caller":"8a5055c9c61122780043563ef53438e3","group":"5137153cc611227c000bbd1bd8cd2005"},{"id":6,"caller":"5137153cc611227c000bbd1bd8cd2005","group":"8a5055c9c61122780043563ef53438e3"}]"#;
+        let encoder = |text: &str, profile: &str| {
             let arguments = Object::new()
                 .set("text", Value::string(text))
                 .set("profile", Value::string(profile))
@@ -1052,16 +1057,19 @@ mod tests {
                 .unwrap()
                 .to_owned()
         };
-        assert_eq!(encoder("conservative"), "passthrough");
-        assert_eq!(encoder("balanced"), "grid");
-        assert_eq!(encoder("aggressive"), "grid");
+        assert_eq!(encoder(grid, "conservative"), "passthrough");
+        assert_eq!(encoder(grid, "balanced"), "grid");
+        assert_eq!(encoder(grid, "aggressive"), "grid");
+        assert_eq!(encoder(refs, "balanced"), "grid");
+        assert_eq!(encoder(refs, "aggressive"), "refs");
     }
 
     /// A client that serializes an unset option as `null` must get the same
     /// compression a client that omitted the key gets — not merely "no error" — and
     /// the fallback is the *default* profile, not an arbitrary one. The parser is
-    /// checked directly because no output separates `balanced` from `aggressive`; the
-    /// call is then checked on an input `conservative` compresses differently.
+    /// checked directly because an output separates `balanced` from `aggressive` only
+    /// on an input the value dictionary folds; the call is then checked on an input
+    /// `conservative` compresses differently.
     #[test]
     fn an_absent_or_null_profile_falls_back_to_the_default() {
         for arguments in [None, Some(args("{}")), Some(args(r#"{"profile":null}"#))] {

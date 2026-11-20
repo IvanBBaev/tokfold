@@ -21,6 +21,12 @@ use std::time::{Duration, Instant};
 /// valid JSON, a clean recovery-archive round trip.
 const COMPRESSIBLE_JSON: &[u8] = br#"[{"id":0,"name":"item0","active":true},{"id":1,"name":"item1","active":true},{"id":2,"name":"item2","active":true},{"id":3,"name":"item3","active":true}]"#;
 
+/// Two 32-hex ids that trade columns from row to row: each repeats six times but no
+/// column is constant, so E5 has nothing to hoist and only the value dictionary (E3,
+/// `aggressive` only) can fold them. Measured on this input: `balanced` renders
+/// `e5-grid` at an estimated 173 tokens, `aggressive` renders `e3-refs` at 134.
+const REFS_JSON: &[u8] = br#"[{"id":1,"caller":"8a5055c9c61122780043563ef53438e3","group":"5137153cc611227c000bbd1bd8cd2005"},{"id":2,"caller":"5137153cc611227c000bbd1bd8cd2005","group":"8a5055c9c61122780043563ef53438e3"},{"id":3,"caller":"8a5055c9c61122780043563ef53438e3","group":"5137153cc611227c000bbd1bd8cd2005"},{"id":4,"caller":"5137153cc611227c000bbd1bd8cd2005","group":"8a5055c9c61122780043563ef53438e3"},{"id":5,"caller":"8a5055c9c61122780043563ef53438e3","group":"5137153cc611227c000bbd1bd8cd2005"},{"id":6,"caller":"5137153cc611227c000bbd1bd8cd2005","group":"8a5055c9c61122780043563ef53438e3"}]"#;
+
 /// Pretty-printed, heterogeneous JSON: the objects differ in shape, so neither table
 /// encoder has anything to hoist and the minifier's whitespace stripping wins on every
 /// profile. This is the only input in this file whose rendering is `e1-minify`.
@@ -709,14 +715,72 @@ fn the_profile_flag_selects_the_encoder_the_report_names() {
         "balanced must let the table encoders compete: {balanced}"
     );
 
-    // `aggressive` enables the same encoders as `balanced` in v0.0.1, which is what
-    // this pins -- the identity of the two reports, not the mapping that produced
-    // them. No output can check that mapping, so it is pinned where the arms are
-    // distinguishable, in `each_profile_spelling_reaches_its_own_core_profile`.
+    // `aggressive` adds only the value dictionary, which declines an input without
+    // repeated long values, so on this input the two reports are identical. Where
+    // they differ is pinned in `only_aggressive_folds_repeated_values`.
     let aggressive = stats_report("aggressive", COMPRESSIBLE_JSON);
     assert_eq!(
         aggressive, balanced,
-        "aggressive and balanced are identical in v0.0.1"
+        "the value dictionary must decline an input with no repeated long values"
+    );
+}
+
+/// The one profile difference an output can show: on [`REFS_JSON`] `balanced` stays
+/// on the grid and `aggressive` switches to the value dictionary, whose rendering
+/// opens with its sentinel, its explanation and its legend -- and whose archive still
+/// gives back the original bytes.
+#[test]
+fn only_aggressive_folds_repeated_values() {
+    let balanced = stats_report("balanced", REFS_JSON);
+    assert!(
+        balanced.contains("encoder:            e5-grid (id 5)"),
+        "balanced must not reach the value dictionary: {balanced}"
+    );
+    let aggressive = stats_report("aggressive", REFS_JSON);
+    assert!(
+        aggressive.contains("encoder:            e3-refs (id 3)"),
+        "aggressive must fold the repeated ids: {aggressive}"
+    );
+
+    let archive = archive_path("refs_round_trip.tkfd");
+    let archive_str = archive.to_str().expect("utf-8 archive path");
+    let compressed = run_tokfold(
+        &[
+            "compress",
+            "--profile",
+            "aggressive",
+            "--archive",
+            archive_str,
+        ],
+        REFS_JSON,
+    );
+    assert!(
+        compressed.status.success(),
+        "compress failed: {}",
+        String::from_utf8_lossy(&compressed.stderr)
+    );
+    let rendering = String::from_utf8(compressed.stdout).expect("rendering is utf-8");
+    assert!(
+        rendering.starts_with(
+            "#tkfd1 refs\n#refs \"$N\" = entry N (from 0) of:\n$=[\"8a5055c9c61122780043563ef53438e3\",\"5137153cc611227c000bbd1bd8cd2005\"]\n"
+        ),
+        "the refs rendering lost its sentinel, explanation or legend: {rendering}"
+    );
+    assert!(
+        rendering.contains("+1,\"$0\",\"$1\"\n"),
+        "the first row must reference the legend: {rendering}"
+    );
+
+    let archive_bytes = fs::read(&archive).expect("read archive file");
+    let expanded = run_tokfold(&["expand"], &archive_bytes);
+    assert!(
+        expanded.status.success(),
+        "expand failed: {}",
+        String::from_utf8_lossy(&expanded.stderr)
+    );
+    assert_eq!(
+        expanded.stdout, REFS_JSON,
+        "round trip did not reproduce the original bytes"
     );
 }
 

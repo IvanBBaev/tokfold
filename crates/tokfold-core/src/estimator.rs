@@ -1022,12 +1022,13 @@ mod tiktoken_tests {
             ("tbl", (4, 6, 6), (5, 5, 5)),
             ("jsonl", (5, 7, 7), (6, 6, 6)),
             ("grid", (5, 6, 6), (6, 5, 5)),
+            ("refs", (5, 6, 6), (6, 5, 5)),
         ];
 
         for (tag, plain, table) in expected {
             let sentinel = format!("#tkfd1 {tag}\n");
             // `#tkfd1 `, the tag and the newline: 11 for the three-letter tags, 12
-            // for `grid`, 13 for `jsonl`.
+            // for `grid` and `refs`, 13 for `jsonl`.
             assert_eq!(sentinel.len(), 8 + tag.len(), "the {tag} sentinel's length");
             let cases = bodies
                 .iter()
@@ -1051,6 +1052,33 @@ mod tiktoken_tests {
                     "o200k cost of the {tag} sentinel before {body:?}"
                 );
             }
+        }
+    }
+
+    /// The E3 explanation line's real cost, as `EXPLANATION` in `encoder::e3_refs`
+    /// states it: 18 estimated, 15 `cl100k` and 15 `o200k` tokens, measured as the
+    /// delta it adds between the `refs` sentinel line and a legend. The literal is the
+    /// constant's text; `e3_refs`'s own tests hold every rendering to that constant.
+    #[test]
+    fn the_refs_explanation_costs_what_its_docs_say() {
+        let cl100k = Cl100kEstimator::new().unwrap();
+        let o200k = O200kEstimator::new().unwrap();
+        let explanation = "#refs \"$N\" = entry N (from 0) of:\n";
+        for legend in [
+            "$=[\"abc\"]\n[1]",
+            "$=[\"abc\"]\n{\"a\":1}",
+            "$=[\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\",\"x\"]\n\n#2[\"id\"]",
+        ] {
+            let without = format!("#tkfd1 refs\n{legend}");
+            let with = format!("#tkfd1 refs\n{explanation}{legend}");
+            let delta = |e: &dyn TokenEstimator| e.estimate(&with) - e.estimate(&without);
+            assert_eq!(
+                delta(&HeuristicEstimator),
+                18,
+                "heuristic, before {legend:?}"
+            );
+            assert_eq!(delta(&cl100k), 15, "cl100k, before {legend:?}");
+            assert_eq!(delta(&o200k), 15, "o200k, before {legend:?}");
         }
     }
 

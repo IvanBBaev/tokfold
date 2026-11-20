@@ -101,11 +101,19 @@ const MAX_SAVING_BPS: u32 = 10_000;
 /// lowest-risk transform.
 const CONSERVATIVE_ENCODERS: &[Encoder] = &[Encoder::E1Minify];
 
-/// Encoders offered under [`Profile::Balanced`] and [`Profile::Aggressive`]. E3
-/// legend folding is reserved and unimplemented in v0.0.1, so the two profiles
-/// currently offer the same set; the split exists so aggressive codecs can be added
-/// later without an API change.
+/// Encoders offered under [`Profile::Balanced`].
 const FULL_ENCODERS: &[Encoder] = &[Encoder::E1Minify, Encoder::E2Tabular, Encoder::E5Grid];
+
+/// Encoders offered under [`Profile::Aggressive`]: the balanced set plus the E3
+/// value dictionary, whose `"$i"` references a model must resolve through a legend.
+/// It is kept out of `Balanced` because that indirection was measured to cost small
+/// models answers (see the `e3_refs` module docs).
+const AGGRESSIVE_ENCODERS: &[Encoder] = &[
+    Encoder::E1Minify,
+    Encoder::E2Tabular,
+    Encoder::E3Refs,
+    Encoder::E5Grid,
+];
 
 /// How aggressively [`compress`](Compressor::compress) is allowed to re-encode.
 ///
@@ -122,8 +130,11 @@ pub enum Profile {
     /// tabular rendering of a JSON Lines input's records. The default.
     #[default]
     Balanced,
-    /// Every shipped encoder. Identical to [`Profile::Balanced`] in v0.0.1 until
-    /// legend folding lands.
+    /// Every shipped encoder: everything in [`Profile::Balanced`] plus the E3 value
+    /// dictionary, which writes a repeated string value once in a legend and refers
+    /// to it as `"$i"`. Cheaper on documents that repeat long values, and harder to
+    /// read: a small model was measured answering from the reference instead of the
+    /// value. JSON Lines input is treated as under `Balanced`.
     Aggressive,
 }
 
@@ -273,7 +284,8 @@ impl Default for ConfigBuilder {
 /// The type is `#[non_exhaustive]`, so downstream crates cannot construct one — a
 /// later version may add fields. Compare against the associated constants instead
 /// ([`PASSTHROUGH`](Self::PASSTHROUGH), [`E1_MINIFY`](Self::E1_MINIFY),
-/// [`E2_TABULAR`](Self::E2_TABULAR), [`E4_JSONL`](Self::E4_JSONL),
+/// [`E2_TABULAR`](Self::E2_TABULAR), [`E3_REFS`](Self::E3_REFS),
+/// [`E4_JSONL`](Self::E4_JSONL),
 /// [`E5_GRID`](Self::E5_GRID)); without them the derived `PartialEq` would be
 /// unusable outside this crate, because there would be no way to build the
 /// right-hand side. The wire id stays readable through the public field for ids a
@@ -281,8 +293,8 @@ impl Default for ConfigBuilder {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EncoderId(
-    /// The frozen id: `0` = passthrough, `1` = E1 minify, `2` = E2 tabular, `4` = E4
-    /// JSON Lines, `5` = E5 grid. Reported
+    /// The frozen id: `0` = passthrough, `1` = E1 minify, `2` = E2 tabular, `3` = E3 value
+    /// dictionary, `4` = E4 JSON Lines, `5` = E5 grid. Reported
     /// out-of-band via [`Stats::encoder`]; v0.0.1's compressor always records
     /// `encoder_id = 0` in the archive header, since the archive is a passthrough blob.
     pub u8,
@@ -295,8 +307,11 @@ impl EncoderId {
     pub const E1_MINIFY: Self = Self(1);
     /// Shape-deduplicated tabular re-encoding (wire id `2`).
     pub const E2_TABULAR: Self = Self(2);
-    /// The tabular re-encoding applied to a JSON Lines input's records (wire id `4`;
-    /// `3` is reserved for legend folding, which is not implemented).
+    /// A value dictionary in front of the grid: repeated string values move into a
+    /// legend and are written as `"$i"` references (wire id `3`). Offered only under
+    /// [`Profile::Aggressive`].
+    pub const E3_REFS: Self = Self(3);
+    /// The tabular re-encoding applied to a JSON Lines input's records (wire id `4`).
     pub const E4_JSONL: Self = Self(4);
     /// The tabular re-encoding with a union header, flattened sub-objects and
     /// constant columns (wire id `5`).
@@ -651,7 +666,8 @@ impl Compressor {
 fn enabled_encoders(profile: Profile) -> &'static [Encoder] {
     match profile {
         Profile::Conservative => CONSERVATIVE_ENCODERS,
-        Profile::Balanced | Profile::Aggressive => FULL_ENCODERS,
+        Profile::Balanced => FULL_ENCODERS,
+        Profile::Aggressive => AGGRESSIVE_ENCODERS,
     }
 }
 
@@ -1226,8 +1242,13 @@ mod tests {
         );
         assert_eq!(
             enabled_encoders(Profile::Aggressive),
-            enabled_encoders(Profile::Balanced),
-            "Aggressive is documented as identical to Balanced until E3 lands"
+            [
+                Encoder::E1Minify,
+                Encoder::E2Tabular,
+                Encoder::E3Refs,
+                Encoder::E5Grid
+            ]
+            .as_slice()
         );
     }
 
@@ -1256,13 +1277,26 @@ mod tests {
             );
             assert_eq!(forward.encoder, reversed.encoder, "on {input:?}");
             assert_eq!(forward.rendering, reversed.rendering, "on {input:?}");
+            let aggressive = [
+                Encoder::E1Minify,
+                Encoder::E2Tabular,
+                Encoder::E3Refs,
+                Encoder::E5Grid,
+            ];
+            let mut backwards = aggressive;
+            backwards.reverse();
+            let forward = encoder::select(&parsed, &input, &estimator, &aggressive, 0);
+            let reversed = encoder::select(&parsed, &input, &estimator, &backwards, 0);
+            assert_eq!(forward.encoder, reversed.encoder, "on {input:?}");
+            assert_eq!(forward.rendering, reversed.rendering, "on {input:?}");
         }
     }
 
     /// Aggressive must actually compress what Balanced compresses — the assertion the
-    /// profile map above cannot make on its own.
+    /// profile map above cannot make on its own. Without a repeated string value E3
+    /// declines, so the two profiles agree byte for byte.
     #[test]
-    fn aggressive_profile_matches_balanced_byte_for_byte() {
+    fn aggressive_matches_balanced_without_a_repeated_value() {
         let input = homogeneous_array(12);
         let cfg = Config::builder().profile(Profile::Aggressive).build();
         let aggressive = Compressor::new(cfg).compress(input.as_bytes()).unwrap();
@@ -1270,6 +1304,42 @@ mod tests {
         assert_eq!(aggressive.stats.encoder, EncoderId::E5_GRID);
         assert_eq!(aggressive.rendering, balanced.rendering);
         assert_eq!(aggressive.archive, balanced.archive);
+    }
+
+    /// On repeated long values Aggressive selects the E3 value dictionary and Balanced
+    /// does not offer it; the archive is the same passthrough blob under both.
+    #[test]
+    fn aggressive_selects_the_value_dictionary_on_repeated_values() {
+        let a = "0f1e2d3c4b5a69788796a5b4c3d2e1f0";
+        let b = "8899aabbccddeeff0011223344556677";
+        let rows: Vec<String> = (0..12)
+            .map(|i| {
+                let (x, y) = if i % 3 == 0 { (a, b) } else { (b, a) };
+                format!(r#"{{"n":{i},"caller":"{x}","assignee":"{y}"}}"#)
+            })
+            .collect();
+        let input = format!("[{}]", rows.join(","));
+        let cfg = Config::builder().profile(Profile::Aggressive).build();
+        let aggressive = Compressor::new(cfg).compress(input.as_bytes()).unwrap();
+        let balanced = compressor().compress(input.as_bytes()).unwrap();
+        assert_eq!(aggressive.stats.encoder, EncoderId::E3_REFS);
+        assert_eq!(balanced.stats.encoder, EncoderId::E5_GRID);
+        assert!(
+            aggressive.stats.est_tokens_after < balanced.stats.est_tokens_after,
+            "{} vs {}",
+            aggressive.stats.est_tokens_after,
+            balanced.stats.est_tokens_after
+        );
+        let rendering = &aggressive.rendering;
+        assert!(
+            rendering.starts_with("#tkfd1 refs\n#refs \"$N\" = entry N (from 0) of:\n$=["),
+            "{rendering}"
+        );
+        assert_eq!(aggressive.archive, balanced.archive);
+        assert_eq!(
+            compressor().decompress(&aggressive.archive).unwrap(),
+            input.as_bytes()
+        );
     }
 
     /// `Config::builder()` is documented as "seeded with the defaults", so a
@@ -1374,6 +1444,7 @@ mod tests {
         assert_eq!(EncoderId::PASSTHROUGH.0, 0);
         assert_eq!(EncoderId::E1_MINIFY.0, 1);
         assert_eq!(EncoderId::E2_TABULAR.0, 2);
+        assert_eq!(EncoderId::E3_REFS.0, 3);
         assert_eq!(EncoderId::E4_JSONL.0, 4);
         assert_eq!(EncoderId::E5_GRID.0, 5);
 

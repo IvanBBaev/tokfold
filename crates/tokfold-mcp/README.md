@@ -243,7 +243,8 @@ newest handshake-era version it serves.
   compressing.
 - **`tokfold_compress`** — arguments `text` and optional `profile`
   (`conservative`, `balanced` or `aggressive`; `balanced` is the default, and every
-  profile is reversible). Returns the rendering in `content` and, in
+  profile is reversible; `aggressive` also offers the `refs` encoder, which states a
+  repeated string value once, in a legend line, and refers to it as `"$0"`, `"$1"`, …). Returns the rendering in `content` and, in
   `structuredContent`, `compressed`, `stats`, `rendering` and the base64
   `archive`. **The archive is only in `structuredContent`** — see
   [Reading a compress result](#reading-a-compress-result). Input the engine

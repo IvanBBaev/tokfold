@@ -664,7 +664,7 @@ fn is_bare(text: &str) -> bool {
 
 #[cfg(test)]
 #[path = "../../tests/support/grid.rs"]
-mod grid_reference;
+pub(super) mod grid_reference;
 
 #[cfg(test)]
 mod tests {

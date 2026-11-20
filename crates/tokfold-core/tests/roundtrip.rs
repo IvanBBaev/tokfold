@@ -67,7 +67,7 @@
 
 use proptest::prelude::*;
 use tokfold_core::{
-    CompressError, Compressor, Config, EncoderId, HeuristicEstimator, TokenEstimator,
+    CompressError, Compressor, Config, EncoderId, HeuristicEstimator, Profile, TokenEstimator,
 };
 
 #[path = "oracle.rs"]
@@ -76,6 +76,8 @@ use oracle::json_semantically_eq;
 
 #[path = "support/grid.rs"]
 mod grid;
+#[path = "support/refs.rs"]
+mod refs;
 
 /// Default 32 cases locally; `PROPTEST_CASES` overrides it (CI uses 1024). Reading
 /// the env var ourselves guarantees an *unset* environment yields 32, not proptest's
@@ -694,7 +696,13 @@ proptest! {
     /// `encoder::e5_grid` grammar, not from the encoder), must be semantically equal
     /// to it too. E5 had no arm here until a generated case reached it (now kept in
     /// `roundtrip.proptest-regressions`): the final arm refused id 5 as "unknown",
-    /// which is that arm doing its job. E2's body is a header + row projection rather than a JSON document, so it is not compared here; its
+    /// which is that arm doing its job. An E3 refs body, resolved by the reference
+    /// decoder in `tests/support/refs.rs` (written from the `encoder::e3_refs` docs),
+    /// must be semantically equal to the input as well; E3 runs only under
+    /// `Profile::Aggressive`, so every input is compressed under the default profile
+    /// and under that one. Whether this generator ever reaches E3 is not
+    /// pinned, so the arm is a guard here; `tests/hostile.rs` is where E3 is driven
+    /// and where its reach is pinned. E2's body is a header + row projection rather than a JSON document, so it is not compared here; its
     /// fidelity is covered by `tests/hostile.rs`, whose `check_accepted` parses the
     /// body back with `expand_e2_body` and then calls `json_semantically_eq`, and by
     /// the E2 unit tests in `encoder::e2_tabular`.
@@ -713,7 +721,8 @@ proptest! {
     /// property by falling through it.
     #[test]
     fn prop01b_rendering_semantic_fidelity(x in arb_valid_json()) {
-        let c = compressor();
+        let aggressive = Compressor::new(Config::builder().profile(Profile::Aggressive).build());
+        for c in [compressor(), aggressive] {
         let art = c.compress(x.as_bytes()).unwrap();
         let body = rendering_body(&art);
         // Field access is allowed on the non_exhaustive id even from a test crate.
@@ -728,6 +737,14 @@ proptest! {
                 "minify rendering is NOT semantically equal to its input\n  in   = {:?}\n  body = {:?}",
                 x, body
             ),
+            3 => {
+                let decoded = refs::decode_refs_body(body);
+                prop_assert!(
+                    json_semantically_eq(&x, &decoded),
+                    "refs rendering does NOT decode to its input\n  in      = {:?}\n  body    = {:?}\n  decoded = {:?}",
+                    x, body, decoded
+                );
+            }
             5 => {
                 let decoded = grid::decode_grid_body(body);
                 prop_assert!(
@@ -740,6 +757,7 @@ proptest! {
                 other, EncoderId::E2_TABULAR.0,
                 "unknown encoder id {} fell through prop01b unchecked", other
             ),
+        }
         }
     }
 

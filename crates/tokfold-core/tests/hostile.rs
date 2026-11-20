@@ -43,6 +43,11 @@
 //!   the public API with an E2 body decoder written from the grammar in the
 //!   `encoder::e2_tabular` rustdoc and the strict E5 reference decoder in
 //!   `tests/support/grid.rs`, written from the `encoder::e5_grid` rustdoc;
+//! * arrays of records whose values repeat — long `sys_id`-like strings, values that
+//!   already look like a reference (`"$0"`, `"$$1"`, `"$01"`), escaped spellings of
+//!   them (`"\u00240"`) and hostile strings — compressed under `Profile::Aggressive`,
+//!   the only profile E3 (refs) runs in, and checked with the strict E3 reference
+//!   decoder in `tests/support/refs.rs`, written from the `encoder::e3_refs` rustdoc;
 //! * JSON Lines of those documents, with blank and CRLF lines, held to the same
 //!   contract with the E2 decoder applied to the records as one array;
 //! * every prefix of a hostile document of at most 256 bytes (the loop is quadratic
@@ -59,9 +64,9 @@
 //! the same `Config` produce byte-identical output from one build", so a second
 //! `compress` must agree; property 2 of the frozen spec says "`compress(decompress(a))`
 //! is a fixed point"; and the rendering body must stand for the input — verbatim on
-//! passthrough, semantically equal under E1, and semantically equal after table
-//! expansion under E2 and under E5 — and under E4, equal after the E2 expansion to the
-//! records of the JSON Lines input as one array.
+//! passthrough, semantically equal under E1, semantically equal after table expansion
+//! under E2 and under E5 and after legend resolution under E3 — and under E4, equal
+//! after the E2 expansion to the records of the JSON Lines input as one array.
 //!
 //! # Case count
 //!
@@ -71,13 +76,15 @@
 //! so its own unit tests run once more in this binary.
 
 use proptest::prelude::*;
-use tokfold_core::{Artifact, CompressError, Compressor, Config, EncoderId};
+use tokfold_core::{Artifact, CompressError, Compressor, Config, EncoderId, Profile};
 
 #[path = "oracle.rs"]
 mod oracle;
 
 #[path = "support/grid.rs"]
 mod grid;
+#[path = "support/refs.rs"]
+mod refs;
 use oracle::json_semantically_eq;
 
 /// Default 32 cases locally; `PROPTEST_CASES` overrides it, as in `roundtrip.rs`.
@@ -96,6 +103,12 @@ fn compressor() -> Compressor {
     Compressor::new(Config::default())
 }
 
+/// The one profile E3 runs in. Every other property here uses the default profile,
+/// `Balanced`, which never offers E3.
+fn aggressive() -> Compressor {
+    Compressor::new(Config::builder().profile(Profile::Aggressive).build())
+}
+
 /// The documented default nesting ceiling (`ConfigBuilder::max_depth`: "Default: 512").
 const DEFAULT_MAX_DEPTH: usize = 512;
 
@@ -107,13 +120,15 @@ const DEFAULT_MAX_INPUT_BYTES: usize = 16 * 1024 * 1024;
 // ===========================================================================
 
 /// The sentinel line an encoder's rendering opens with, without its newline. The
-/// tags are the ones `encoder::Encoder` documents: `min`, `tbl`, `jsonl` and `grid`.
+/// tags are the ones `encoder::Encoder` documents: `min`, `tbl`, `refs`, `jsonl` and
+/// `grid`.
 /// Passthrough has none -- its rendering is the input, unframed -- and neither has an
 /// id no encoder holds.
 fn sentinel_for(encoder: EncoderId) -> Option<&'static str> {
     match encoder {
         EncoderId::E1_MINIFY => Some("#tkfd1 min"),
         EncoderId::E2_TABULAR => Some("#tkfd1 tbl"),
+        EncoderId::E3_REFS => Some("#tkfd1 refs"),
         EncoderId::E4_JSONL => Some("#tkfd1 jsonl"),
         EncoderId::E5_GRID => Some("#tkfd1 grid"),
         _ => None,
@@ -241,6 +256,18 @@ fn check_accepted(c: &Compressor, input: &str) -> Result<Artifact, TestCaseError
             prop_assert!(
                 json_semantically_eq(input, &expanded),
                 "E5 body does not expand to its input\n  in       = {:?}\n  body     = {:?}\n  expanded = {:?}",
+                input,
+                body,
+                expanded
+            );
+        }
+        EncoderId::E3_REFS => {
+            // The shared E3 decoder resolves the legend over the strict E5 decoder and
+            // panics on anything the `encoder::e3_refs` docs do not allow.
+            let expanded = refs::decode_refs_body(body);
+            prop_assert!(
+                json_semantically_eq(input, &expanded),
+                "E3 body does not expand to its input\n  in       = {:?}\n  body     = {:?}\n  expanded = {:?}",
                 input,
                 body,
                 expanded
@@ -596,16 +623,21 @@ fn arb_string_piece() -> impl Strategy<Value = String> {
             "\u{1f600}",
         ])
         .prop_map(String::from),
-        // Text that imitates the rendering's own framing: all four sentinels
+        // Text that imitates the rendering's own framing: all five sentinels
         // `sentinel_for` names — this list once held two of them, so a string that
         // spelled the E1 sentinel was never generated — E2's header and row markers,
         // a whole escaped table block, E5's column punctuation (a dotted path, a
-        // constant cell, the absent marker) and a whole escaped grid block.
+        // constant cell, the absent marker), a whole escaped grid block, and E3's
+        // explanation line, legend opener and a reference.
         2 => prop::sample::select(vec![
             "#tkfd1 min",
             "#tkfd1 tbl",
+            "#tkfd1 refs",
             "#tkfd1 jsonl",
             "#tkfd1 grid",
+            "#refs \\\"$N\\\" = entry N (from 0) of:",
+            "$=[\\\"$0\\\"]",
+            "$0",
             "+[", "*{", "#2[", ",:[]{}",
             "\\n#1[\\\"a\\\"]\\n+[1]\\n",
             "a.b=~", "=~", "+~,~",
@@ -810,6 +842,91 @@ fn arb_scalar_doc() -> impl Strategy<Value = String> {
         })
 }
 
+/// A string lexeme that collides with E3's reference syntax, or nearly does: one or
+/// more `$` and digits (a reference, an escaped one, one with a leading zero), the
+/// same text spelled with a `\u0024` escape (a different lexeme, so never a
+/// reference), and near misses.
+fn arb_reference_like_lexeme() -> impl Strategy<Value = String> {
+    prop_oneof![
+        2 => (1usize..=3, 0u32..40).prop_map(|(d, n)| format!("\"{}{n}\"", "$".repeat(d))),
+        1 => prop::sample::select(vec![
+            r#""$01""#, r#""$$00""#, r#""$""#, r#""$$""#, r#""$a""#, r#""$0 ""#, r#""0$""#,
+            r#""\u00240""#, r#""\u0024\u00241""#, r#""$\u0030""#, r#""$-1""#,
+        ])
+        .prop_map(String::from),
+    ]
+}
+
+/// A value long enough for the dictionary to pay for it: 32 hex digits, the shape of
+/// a `ServiceNow` `sys_id`, or a hostile string body behind a 16..=24-letter prefix.
+fn arb_long_lexeme() -> impl Strategy<Value = String> {
+    prop_oneof![
+        3 => "[0-9a-f]{32}".prop_map(|h| format!("\"{h}\"")),
+        1 => (arb_string_body(), "[a-z]{16,24}").prop_map(|(b, pad)| format!("\"{pad}{b}\"")),
+    ]
+}
+
+/// An array of 3..=12 records over 2..=4 keys whose values are drawn, with
+/// repetition, from a small pool: 1..=4 long values (drawn seven times in ten) and
+/// 1..=3 short ones — reference-like strings, hostile numbers, hostile strings. Keys
+/// are hostile or reference-like too, since E3 must never touch one. Placed bare,
+/// under a key, twice in an outer array, or two levels deep, and optionally
+/// pretty-printed, as [`arb_table_doc`] places its arrays.
+fn arb_refs_doc() -> impl Strategy<Value = String> {
+    (
+        prop::collection::vec(arb_long_lexeme(), 1..=4),
+        prop::collection::vec(
+            prop_oneof![
+                2 => arb_reference_like_lexeme(),
+                1 => arb_number_lexeme(),
+                1 => arb_string_lexeme(),
+            ],
+            1..=3,
+        ),
+        prop::collection::vec(
+            prop_oneof![2 => arb_string_lexeme(), 1 => arb_reference_like_lexeme()],
+            2..=4,
+        ),
+        prop::collection::vec(
+            prop::collection::vec((prop::bool::weighted(0.7), any::<prop::sample::Index>()), 4),
+            3..=12,
+        ),
+        0u8..4,
+        any::<bool>(),
+    )
+        .prop_map(|(long, short, keys, rows, wrap, pretty)| {
+            let mut arr = String::from("[");
+            for (r, cells) in rows.iter().enumerate() {
+                if r > 0 {
+                    arr.push(',');
+                }
+                arr.push('{');
+                for (m, (key, (is_long, at))) in keys.iter().zip(cells).enumerate() {
+                    if m > 0 {
+                        arr.push(',');
+                    }
+                    let pool = if *is_long { &long } else { &short };
+                    arr.push_str(key);
+                    arr.push(':');
+                    arr.push_str(&pool[at.index(pool.len())]);
+                }
+                arr.push('}');
+            }
+            arr.push(']');
+            let doc = match wrap {
+                0 => arr,
+                1 => format!(r#"{{"results":{arr},"ok":true}}"#),
+                2 => format!("[{arr},{arr}]"),
+                _ => format!(r#"{{"a":{{"b":[{arr}]}}}}"#),
+            };
+            if pretty {
+                inject_whitespace(&doc, "\n  ")
+            } else {
+                doc
+            }
+        })
+}
+
 /// Every hostile valid-document generator in this file.
 fn arb_hostile_valid() -> impl Strategy<Value = String> {
     prop_oneof![
@@ -917,6 +1034,18 @@ proptest! {
     #[test]
     fn near_identical_object_arrays_hold_the_contract(doc in arb_table_doc()) {
         check_accepted(&compressor(), &doc)?;
+    }
+
+    /// Under `Profile::Aggressive`, records whose values repeat — and every other
+    /// hostile document — hold the whole contract; when E3 wins, its body must resolve,
+    /// through the legend and the E5 grammar, to a document semantically equal to the
+    /// input. [`the_refs_generator_reaches_e3_and_its_escape`] pins that E3 wins here
+    /// and that the escape is exercised.
+    #[test]
+    fn repeated_values_hold_the_contract_under_aggressive(
+        doc in prop_oneof![3 => arb_refs_doc(), 1 => arb_hostile_valid()]
+    ) {
+        check_accepted(&aggressive(), &doc)?;
     }
 
     /// JSON Lines of hostile records hold the whole contract: byte-exact archive,
@@ -1437,7 +1566,7 @@ fn a_table_at_exactly_the_default_cap_holds_the_contract() {
 /// generators put every encoder in play, that E2 bodies carry both plain and deviating
 /// rows and hostile (escaped) header keys, that E5 bodies carry both row kinds and a
 /// quoted column segment (measured over these draws: 1 181 plain, 211 deviating, 260
-/// headers), that each of the four sentinels `sentinel_for` names is spelled by
+/// headers), that each of the five sentinels `sentinel_for` names is spelled by
 /// some drawn input, and that each of the five [`RowEdit`] variants is drawn.
 ///
 /// The encoder and row-kind counts come from [`arb_hostile_valid`], the strategy the
@@ -1460,15 +1589,16 @@ fn hostile_generators_reach_every_encoder_and_row_kind() {
         (0usize, 0usize, 0usize);
     // One counter per sentinel `sentinel_for` names, over the *input*: the framing pool in
     // `arb_string_piece` is the only place these strings are generated, so a zero here is
-    // the pool having lost a member. Measured in place over these `DRAWS`: min 20,
-    // tbl 30, jsonl 26, grid 18 of 600 drawn documents spell one, so none of the
-    // four is a near miss.
-    let mut sentinels_spelled = [0usize; 4];
+    // the pool having lost a member. Measured in place over these `DRAWS`: min 12,
+    // tbl 25, refs 21, jsonl 20, grid 17 of 600 drawn documents spell one, so none of
+    // the five is a near miss.
+    let mut sentinels_spelled = [0usize; 5];
     for _ in 0..DRAWS {
         let doc = arb_hostile_valid().new_tree(&mut runner).unwrap().current();
         for (i, kind) in [
             EncoderId::E1_MINIFY,
             EncoderId::E2_TABULAR,
+            EncoderId::E3_REFS,
             EncoderId::E4_JSONL,
             EncoderId::E5_GRID,
         ]
@@ -1528,8 +1658,9 @@ fn hostile_generators_reach_every_encoder_and_row_kind() {
         ),
         ("inputs spelling the min sentinel", sentinels_spelled[0]),
         ("inputs spelling the tbl sentinel", sentinels_spelled[1]),
-        ("inputs spelling the jsonl sentinel", sentinels_spelled[2]),
-        ("inputs spelling the grid sentinel", sentinels_spelled[3]),
+        ("inputs spelling the refs sentinel", sentinels_spelled[2]),
+        ("inputs spelling the jsonl sentinel", sentinels_spelled[3]),
+        ("inputs spelling the grid sentinel", sentinels_spelled[4]),
     ] {
         assert!(n > 0, "no {name} in {DRAWS} hostile draws");
     }
@@ -1589,6 +1720,42 @@ fn the_json_lines_generator_reaches_both_outcomes() {
     }
     assert!(raw > 0, "no passthrough in {DRAWS} JSON Lines draws");
     assert!(jsonl > 0, "no E4 in {DRAWS} JSON Lines draws");
+}
+
+/// [`repeated_values_hold_the_contract_under_aggressive`] holds E3's body to its
+/// grammar only when E3 wins, and the escape only when a reference-shaped value
+/// survives into a winning rendering, so both are pinned here rather than assumed:
+/// over deterministic draws of [`arb_refs_doc`] under `Profile::Aggressive`, E3 wins,
+/// some E3 body unescapes a value, and E3 also declines (the same records then go
+/// to E5 or pass through). Measured in place over these `DRAWS`: E3 won 244 and
+/// declined 56, resolving 5 709 references and unescaping 480 values, so none of the
+/// four is a near miss.
+#[test]
+fn the_refs_generator_reaches_e3_and_its_escape() {
+    use proptest::strategy::ValueTree;
+    use proptest::test_runner::TestRunner;
+
+    const DRAWS: usize = 300;
+    let mut runner = TestRunner::deterministic();
+    let c = aggressive();
+    let (mut e3, mut other, mut resolved, mut unescaped) = (0usize, 0usize, 0usize, 0usize);
+    for _ in 0..DRAWS {
+        let doc = arb_refs_doc().new_tree(&mut runner).unwrap().current();
+        let art = c.compress(doc.as_bytes()).unwrap();
+        if art.stats.encoder == EncoderId::E3_REFS {
+            e3 += 1;
+            let body = art.rendering.split_once('\n').unwrap().1;
+            let (_, r, u) = refs::decode_refs_body_counted(body);
+            resolved += r;
+            unescaped += u;
+        } else {
+            other += 1;
+        }
+    }
+    assert!(e3 > 0, "no E3 in {DRAWS} refs draws");
+    assert!(other > 0, "E3 never declined in {DRAWS} refs draws");
+    assert!(resolved > 0, "no reference resolved in {DRAWS} refs draws");
+    assert!(unescaped > 0, "no escaped value in {DRAWS} refs draws");
 }
 
 /// [`number_lexemes_survive_every_encoder`] is named after a claim about every

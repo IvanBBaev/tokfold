@@ -262,8 +262,11 @@ What the code does, and does not do, about it:
   literals are reason phrases rather than codes, so `500 Internal Server Error` is
   matched while a bare `500` is not, and neither is `HTTP/1.1 500 Oops` (the
   `http-status` rows of the table, pinned by
-  `http_rules_are_reason_phrases_and_never_bare_codes`). Only the minify encoder (E1)
-  consults the table. The tabular encoders (E2 and the E5 grid) never read it. A phrase spelled with
+  `http_rules_are_reason_phrases_and_never_bare_codes`). Two encoders consult the
+  table: minify (E1) and, after `0.0.1`, the `Aggressive` profile's value dictionary
+  (E3, `refs`), which never moves a protected value lexeme into its legend and leaves
+  it verbatim at its own position. The tabular encoders (E2 and the E5 grid) never
+  read it, and E3's body is an E5 rendering, so the gaps below for E5 hold for it too. A phrase spelled with
   `\u` escapes misses the match. Nothing about it inspects, blocks or neutralises
   hostile content, and it must not be relied on to.
 - **Known fidelity gaps an A2 attacker could aim at** (all recorded, all

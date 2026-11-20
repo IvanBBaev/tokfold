@@ -42,7 +42,7 @@
 //!
 //! ## What v0.0.1 actually implements
 //!
-//! * **E1 (minify) is the only encoder that consults this table.** It calls
+//! * **E1 (minify) and E3 (refs) are the encoders that consult this table.** E1 calls
 //!   [`is_protected`] on each JSON *string lexeme* — quotes and escapes included, so
 //!   the unit is a lexeme, not a line — and on a hit copies that lexeme byte-for-byte
 //!   rather than canonicalizing its escapes. E1 never folds, dedups or reorders, so
@@ -62,6 +62,13 @@
 //!   as `path=<cell>`, instead of at each row. A protected string among those keys or
 //!   constant values therefore appears once, at the header. (Deviating rows are
 //!   written as compact JSON and still spell out everything.)
+//! * **E3 (refs)** moves repeated value lexemes into a legend and writes `"$i"` in
+//!   their place, so it is the one encoder that folds values into a legend in the
+//!   sense of the contract above. It calls [`is_protected`] on each value lexeme, with
+//!   the same lexeme unit and the same escaped-spelling gap as E1, and never replaces
+//!   one that matches: a protected value stays verbatim at its own position and is
+//!   never a legend entry. The substituted document is then rendered by E5, so what
+//!   the E5 bullet says about keys and constant columns applies to E3's body as well.
 //! * **Passthrough** re-emits the input verbatim, and the recovery archive stores the
 //!   original bytes whichever encoder shaped the rendering — so reconstruction is
 //!   exact regardless, and what this contract governs is only the *rendering* the
@@ -435,7 +442,13 @@ mod tests {
     /// The E1 rendering of `input`, sentinel line included.
     fn minified(input: &str) -> String {
         let parsed = tape::parse(input, 512).unwrap();
-        encoder::render(Encoder::E1Minify, &parsed, input).unwrap()
+        encoder::render(
+            Encoder::E1Minify,
+            &parsed,
+            input,
+            &crate::estimator::ByteLenEstimator,
+        )
+        .unwrap()
     }
 
     /// One realistic line per semantic class must be protected, and it must land

@@ -83,7 +83,15 @@ fn call_line(id: i64, name: &str, arguments: &str) -> String {
 
 /// Compresses `text` and returns the `structuredContent` of the result.
 fn compress(text: &str) -> json::Value {
-    let arguments = format!(r#"{{"text":{}}}"#, json::Value::string(text));
+    compress_with_profile(text, None)
+}
+
+/// [`compress`], with an explicit `profile` argument when one is given.
+fn compress_with_profile(text: &str, profile: Option<&str>) -> json::Value {
+    let profile = profile.map_or_else(String::new, |profile| {
+        format!(r#","profile":{}"#, json::Value::string(profile))
+    });
+    let arguments = format!(r#"{{"text":{}{profile}}}"#, json::Value::string(text));
     let message = reply(&call_line(1, "tokfold_compress", &arguments));
     message
         .get("result")
@@ -956,13 +964,16 @@ fn the_encoder_name_and_its_wire_id_never_disagree() {
         ("passthrough", 0),
         ("minify", 1),
         ("tabular", 2),
+        ("refs", 3),
         ("jsonl", 4),
         ("grid", 5),
     ];
 
-    // Five inputs chosen to reach all five encoders: uniform rows are what the grid
+    // Six inputs chosen to reach all six encoders: uniform rows are what the grid
     // encoder exists for; four like rows around one wide outlier are the shape the tabular
-    // encoder's dominant-shape table still wins; newline-delimited objects are a JSONL
+    // encoder's dominant-shape table still wins; two long ids trading columns from row
+    // to row, under `aggressive`, are what only the value dictionary folds (E5 has no
+    // constant column to hoist); newline-delimited objects are a JSONL
     // stream; a whitespace-heavy object with no array of objects can only be minified;
     // and a short object — spaced, but too short for removing the spaces to be worth
     // selecting — passes through. Text that is not JSON is declined and reports no
@@ -970,16 +981,35 @@ fn the_encoder_name_and_its_wire_id_never_disagree() {
     // asserted the set it observed, its "irregular object" was compact enough to pass
     // through, and the minifier's pairing was never checked.
     let inputs = [
-        r#"{"rows":[{"id":1,"name":"ada","ok":true},{"id":2,"name":"grace","ok":false},{"id":3,"name":"alan","ok":true}]}"#,
-        r#"{"rows":[{"id":1,"name":"ada"},{"id":2,"name":"grace"},{"id":3,"name":"alan"},{"id":4,"name":"bob"},{"code":1,"label":"x","ok":true,"kind":"y","zone":"eu"}]}"#,
-        "{\"a\":1,\"b\":\"x\"}\n{\"a\":2,\"b\":\"y\"}\n{\"a\":3,\"b\":\"z\"}\n",
-        "{\n    \"service\"     : \"gateway\",\n    \"version\"     : \"1.4.2\",\n    \"healthy\"     : true,\n    \"replicas\"    : 3,\n    \"endpoints\"   : [\n        \"https://example.invalid/a\",\n        \"https://example.invalid/b\"\n    ]\n}",
-        r#"{ "a" : { "b" : [ 1 , 2 , 3 ] } , "c" : "some text that is long enough to matter" }"#,
+        (
+            r#"{"rows":[{"id":1,"name":"ada","ok":true},{"id":2,"name":"grace","ok":false},{"id":3,"name":"alan","ok":true}]}"#,
+            None,
+        ),
+        (
+            r#"{"rows":[{"id":1,"name":"ada"},{"id":2,"name":"grace"},{"id":3,"name":"alan"},{"id":4,"name":"bob"},{"code":1,"label":"x","ok":true,"kind":"y","zone":"eu"}]}"#,
+            None,
+        ),
+        (
+            r#"[{"id":1,"caller":"8a5055c9c61122780043563ef53438e3","group":"5137153cc611227c000bbd1bd8cd2005"},{"id":2,"caller":"5137153cc611227c000bbd1bd8cd2005","group":"8a5055c9c61122780043563ef53438e3"},{"id":3,"caller":"8a5055c9c61122780043563ef53438e3","group":"5137153cc611227c000bbd1bd8cd2005"},{"id":4,"caller":"5137153cc611227c000bbd1bd8cd2005","group":"8a5055c9c61122780043563ef53438e3"},{"id":5,"caller":"8a5055c9c61122780043563ef53438e3","group":"5137153cc611227c000bbd1bd8cd2005"},{"id":6,"caller":"5137153cc611227c000bbd1bd8cd2005","group":"8a5055c9c61122780043563ef53438e3"}]"#,
+            Some("aggressive"),
+        ),
+        (
+            "{\"a\":1,\"b\":\"x\"}\n{\"a\":2,\"b\":\"y\"}\n{\"a\":3,\"b\":\"z\"}\n",
+            None,
+        ),
+        (
+            "{\n    \"service\"     : \"gateway\",\n    \"version\"     : \"1.4.2\",\n    \"healthy\"     : true,\n    \"replicas\"    : 3,\n    \"endpoints\"   : [\n        \"https://example.invalid/a\",\n        \"https://example.invalid/b\"\n    ]\n}",
+            None,
+        ),
+        (
+            r#"{ "a" : { "b" : [ 1 , 2 , 3 ] } , "c" : "some text that is long enough to matter" }"#,
+            None,
+        ),
     ];
 
     let mut seen = Vec::new();
-    for input in inputs {
-        let outcome = compress(input);
+    for (input, profile) in inputs {
+        let outcome = compress_with_profile(input, profile);
         let stats = outcome
             .get("stats")
             .expect("every input here is JSON, so every outcome reports stats");
@@ -998,7 +1028,7 @@ fn the_encoder_name_and_its_wire_id_never_disagree() {
     let expected: Vec<(String, i64)> = pairs.iter().map(|&(n, i)| (n.to_owned(), i)).collect();
     assert_eq!(
         seen, expected,
-        "the five inputs must reach all five encoders, or a pairing goes unchecked"
+        "the six inputs must reach all six encoders, or a pairing goes unchecked"
     );
 }
 

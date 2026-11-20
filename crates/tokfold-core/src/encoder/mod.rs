@@ -47,6 +47,7 @@ use crate::tape::Tape;
 
 mod e1_minify;
 mod e2_tabular;
+mod e3_refs;
 mod e5_grid;
 
 /// The sealed set of encoders. See the module docs for why this is an enum and not
@@ -62,9 +63,12 @@ pub(crate) enum Encoder {
     E1Minify,
     /// Shape-deduplicated tabular re-encoding. id 2.
     E2Tabular,
+    /// A value dictionary in front of E5: repeated string values move into a legend
+    /// and are referenced as `"$i"` (see the `e3_refs` module). id 3. Enabled only
+    /// in `Profile::Aggressive`.
+    E3Refs,
     /// E2's tabular re-encoding applied to a JSON Lines input, rendered as the array
-    /// of its records (see [`crate::ndjson`]). id 4: id 3 is reserved for E3 legend
-    /// folding, which is not implemented.
+    /// of its records (see [`crate::ndjson`]). id 4.
     E4Jsonl,
     /// Tabular re-encoding with a union header, flattened sub-objects and constant
     /// columns (see the `e5_grid` module). id 5.
@@ -74,19 +78,21 @@ pub(crate) enum Encoder {
 impl Encoder {
     /// The frozen id for this encoder; a released id never changes. In v0.0.1 the
     /// compressor writes only `encoder_id = 0` (passthrough) to the archive header;
-    /// ids 1, 2, 4 and 5 identify the rendering out-of-band via `Stats.encoder` and the
+    /// ids 1 to 5 identify the rendering out-of-band via `Stats.encoder` and the
     /// sentinel tag, never on the wire.
     pub(crate) const fn id(self) -> u8 {
         match self {
             Self::Passthrough => 0,
             Self::E1Minify => 1,
             Self::E2Tabular => 2,
+            Self::E3Refs => 3,
             Self::E4Jsonl => 4,
             Self::E5Grid => 5,
         }
     }
 
-    /// The sentinel tag opening this encoder's rendering: `min`, `tbl`, `jsonl` or `grid`.
+    /// The sentinel tag opening this encoder's rendering: `min`, `tbl`, `refs`, `jsonl` or
+    /// `grid`.
     /// `None` for [`Encoder::Passthrough`], whose rendering is the input itself with
     /// no sentinel line at all.
     const fn tag(self) -> Option<&'static str> {
@@ -94,6 +100,7 @@ impl Encoder {
             Self::Passthrough => None,
             Self::E1Minify => Some("min"),
             Self::E2Tabular => Some("tbl"),
+            Self::E3Refs => Some("refs"),
             Self::E4Jsonl => Some("jsonl"),
             Self::E5Grid => Some("grid"),
         }
@@ -141,7 +148,8 @@ fn framed(enc: Encoder, body: &str) -> String {
 /// followed by the encoder body. [`Encoder::Passthrough`] always applies and
 /// returns the input verbatim, with no sentinel line; the other encoders decline with
 /// `None` when the input does not fit their shape — E1 when a span cannot be resolved,
-/// E2 and E5 when no array qualifies. E2 and E5 additionally propagate `None` from
+/// E2 and E5 when no array qualifies, E3 when no repeated value pays for a legend
+/// entry or E5 declines the substituted document. E2 and E5 additionally propagate `None` from
 /// several defensive guards inside their render walks (span resolution, index arithmetic, an
 /// element that is not the object the qualifying condition promised); each is
 /// unreachable by construction and exists so a violated invariant degrades to
@@ -151,8 +159,13 @@ fn framed(enc: Encoder, body: &str) -> String {
 /// Rendering is not deciding: no encoder here measures its candidate against the
 /// input, so a body returned by this function may well cost more than it saves.
 /// [`select`] alone applies the token gate that keeps such a candidate from
-/// winning.
-pub(crate) fn render(enc: Encoder, tape: &Tape, input: &str) -> Option<String> {
+/// winning. The `estimator` is read only by E3, to price its legend entries.
+pub(crate) fn render(
+    enc: Encoder,
+    tape: &Tape,
+    input: &str,
+    estimator: &dyn TokenEstimator,
+) -> Option<String> {
     match enc {
         Encoder::Passthrough => Some(framed(enc, input)),
         Encoder::E1Minify => e1_minify::render(tape, input).map(|body| framed(enc, &body)),
@@ -162,6 +175,7 @@ pub(crate) fn render(enc: Encoder, tape: &Tape, input: &str) -> Option<String> {
         Encoder::E2Tabular | Encoder::E4Jsonl => {
             e2_tabular::render(tape, input).map(|body| framed(enc, &body))
         }
+        Encoder::E3Refs => e3_refs::render(tape, input, estimator).map(|body| framed(enc, &body)),
         Encoder::E5Grid => e5_grid::render(tape, input).map(|body| framed(enc, &body)),
     }
 }
@@ -254,7 +268,7 @@ fn select_from(
             // Passthrough is the fallback, never a candidate that must beat the input.
             continue;
         }
-        let Some(candidate) = render(enc, tape, source) else {
+        let Some(candidate) = render(enc, tape, source, estimator) else {
             continue; // encoder does not apply to this input
         };
         let est = estimator.estimate(&candidate);
@@ -371,6 +385,7 @@ mod tests {
         assert_eq!(Encoder::Passthrough.id(), 0);
         assert_eq!(Encoder::E1Minify.id(), 1);
         assert_eq!(Encoder::E2Tabular.id(), 2);
+        assert_eq!(Encoder::E3Refs.id(), 3);
         assert_eq!(Encoder::E4Jsonl.id(), 4);
         assert_eq!(Encoder::E5Grid.id(), 5);
     }
@@ -407,7 +422,7 @@ mod tests {
             ),
         ];
         for (enc, tag, input, golden) in cases {
-            let r = render(enc, &tape_of(input), input).unwrap();
+            let r = render(enc, &tape_of(input), input, &ByteLenEstimator).unwrap();
             let body = r.strip_prefix(&format!("#tkfd1 {tag}\n")).unwrap();
             assert_eq!(body, legacy_body(golden, tag), "{enc:?} body changed");
         }
@@ -415,7 +430,13 @@ mod tests {
         let input = include_str!("../../tests/golden/records.jsonl");
         let golden = include_str!("../../tests/golden/records.jsonl.rendering");
         let records = crate::ndjson::records(input, 512).unwrap();
-        let r = render(Encoder::E4Jsonl, &records.tape, &records.array).unwrap();
+        let r = render(
+            Encoder::E4Jsonl,
+            &records.tape,
+            &records.array,
+            &ByteLenEstimator,
+        )
+        .unwrap();
         let body = r.strip_prefix("#tkfd1 jsonl\n").unwrap();
         assert_eq!(body, legacy_body(golden, "jsonl"), "E4Jsonl body changed");
     }
@@ -424,7 +445,7 @@ mod tests {
     fn passthrough_rendering_is_the_input_unframed() {
         for input in ["{\"a\":1}", " [1, 2]\n", "\"#tkfd1 min\""] {
             let t = tape_of(input);
-            let r = render(Encoder::Passthrough, &t, input).unwrap();
+            let r = render(Encoder::Passthrough, &t, input, &ByteLenEstimator).unwrap();
             assert_eq!(r, input);
             assert!(!r.starts_with(SENTINEL_OPEN), "got {r:?}");
         }
@@ -434,7 +455,7 @@ mod tests {
     fn minify_rendering_carries_the_min_sentinel() {
         let input = "{ \"a\" : 1 }";
         let t = tape_of(input);
-        let r = render(Encoder::E1Minify, &t, input).unwrap();
+        let r = render(Encoder::E1Minify, &t, input, &ByteLenEstimator).unwrap();
         assert_eq!(r, "#tkfd1 min\n{\"a\":1}");
     }
 

@@ -703,9 +703,10 @@ released says so, and names what `0.0.1` does in the same case.
   A client that shows the instructions to a model sees a different string than
   `0.0.1` sent.
 - **MCP: the `profile` argument's description no longer reads "How hard to try".**
-  `balanced` and `aggressive` select the same encoders, so no output can tell them
-  apart and `aggressive` tries no harder; the description now says `aggressive` is
-  the same as `balanced`. It is kept at the old string's 75 bytes, because the
+  `aggressive` does not try harder than `balanced`; it offers one more encoder, the
+  value dictionary E3 (below), so the description now reads "`aggressive` also adds
+  a legend of repeats. Default `balanced`. Reversible." It is kept at the old
+  string's 75 bytes, because the
   `tools/list` reply's width sets the batch windows pinned by
   `a_larger_limit_can_collapse_a_batch_that_a_smaller_one_answered`. A client that
   shows the schema to a model sees a different string.
@@ -887,7 +888,7 @@ released says so, and names what `0.0.1` does in the same case.
 
   The records are rendered the way E2 renders the array of them, under a new
   `#tkfd1 jsonl` sentinel and a new encoder id **4** (`EncoderId::E4_JSONL`;
-  id 3 stays reserved for E3). The CLI names it `e4-jsonl`, the MCP server `jsonl`.
+  id 3 is E3, below). The CLI names it `e4-jsonl`, the MCP server `jsonl`.
   The do-no-harm gate prices that rendering against the original text, and when it
   loses, the input passes through like any other — as itself, with no sentinel. The
   archive is always a passthrough of the original bytes, so line endings and blank
@@ -963,6 +964,66 @@ released says so, and names what `0.0.1` does in the same case.
   over the MCP results alone from 0.9489 / 0.9559 to 0.9325 / 0.9426 to 0.8573 /
   0.8707. The number of renderings that cost more real tokens than their input fell
   from 2 068 / 2 069 to 22 / 38 to 5 / 13. E5 won 157 of the 2 189 documents.
+
+- **E3, the value dictionary (`EncoderId::E3_REFS`, id 3), offered only under
+  `Profile::Aggressive`.** A string value lexeme that repeats — in the measured
+  workload, a ServiceNow `sys_id` many records point to — is written once in a
+  legend, and every occurrence becomes a reference `"$i"` to entry `i`. The document
+  with the references in it is then rendered by E5:
+
+  ```text
+  #tkfd1 refs
+  #refs "$N" = entry N (from 0) of:
+  $=[<lexeme_0>,<lexeme_1>,…]
+  <E5 body of the substituted document>
+  ```
+
+  Only value lexemes are replaced, never a key, and the unit is the lexeme as
+  written, so `"a"` and `"\u0061"` are two values. A value that already has the
+  shape quote, `$`+, digits, quote gets one more `$` (`"$5"` is written `"$$5"`), so
+  it is never read as a reference. A lexeme gets an entry when
+  `k × (cost(t) − cost(r_i)) > cost(t) + 1` (`k` occurrences, `cost` the configured
+  estimator, `r_i` its reference); the entries are re-priced once on their count in
+  the E5 rendering, since a constant column can hoist a reference into the header.
+  E3 declines when no entry pays or E5 declines the substituted document, so it
+  never renders a body other than a grid. It consults `never_compress`: a protected
+  value is never a legend entry and stays verbatim at its own position. The CLI
+  names it `e3-refs`, the MCP server `refs`. The grammar and the escape are in the
+  `encoder::e3_refs` module docs, and a strict reference decoder written from them
+  (`crates/tokfold-core/tests/support/refs.rs`) rebuilds the input from the body in
+  the hostile and round-trip tests; the module's unit tests carry their own decoder,
+  and the fuzz target names the new id.
+
+  The `refs` sentinel line costs 5 estimated (6 real `cl100k`, 6 `o200k`) tokens
+  before the explanation line, which never opens with a newline
+  (`the_sentinel_costs_what_the_docs_say_it_costs`); the explanation line costs
+  18 estimated, 15 `cl100k` and 15 `o200k` tokens
+  (`the_refs_explanation_costs_what_its_docs_say`). Both are priced by the
+  do-no-harm gate. The archive is unchanged — still a passthrough of the input — so
+  every archive decodes as before.
+
+  Why `Aggressive` only: the explanation line and the legend's place were chosen by
+  a comprehension pilot (56 ServiceNow `query_table` results, 245 generated
+  questions, answered through `claude -p`). Without the explanation, `haiku`
+  answered 30.4 % of the questions that need a legend value, against 99.5 % on the
+  plain rendering; with it, 74.9 %. `sonnet` was at parity in both forms (96.3 % and
+  97.9 % against 99.0 %). The pilot's files were tagged `grid`; `refs` is the one
+  difference from what it measured.
+
+  Behaviour change: `Aggressive` and `Balanced` now select different encoders on a
+  document that repeats long values; `Balanced` and `Conservative` are unchanged.
+  Measured on macOS arm64, release build, working tree on `f2b8bcd`, over the same
+  2 189 JSON tool results as the E5 entry above (246 MCP), counting the rendering
+  against the input in real tokens: under `Aggressive` with the heuristic gate, the
+  sum ratio over all of them is 0.9356 `o200k` / 0.9417 `cl100k` (`Balanced`:
+  0.9388 / 0.9448) and over the MCP results 0.8492 / 0.8626 (0.8573 / 0.8707); E3
+  won 38 documents, all of them MCP results, and 14 renderings cost more `cl100k`
+  tokens than their input (13 under `Balanced`; 5 `o200k` under both). With the
+  gate priced by `O200kEstimator` the MCP ratio is 0.8459 / 0.8589 and E3 wins 28.
+  The saving is small because E3 renders only a grid body: in a prototype that let
+  full `Balanced` selection render the substituted document, 12 392 of the 14 547
+  `o200k` tokens it saved on the MCP results came from documents it rendered as
+  plain JSON, which E3 does not reach.
 
 - `Stats::gate_rejected_candidate` — whether the do-no-harm gate refused a candidate
   rendering during the pass. `Stats` is `#[non_exhaustive]`, so the field is
@@ -5586,10 +5647,10 @@ same way afterwards — followed by the tests that pin this entry's fixes.
 - **No test told the three MCP `profile` strings apart.** A call that mapped
   `aggressive` or `conservative` to the wrong profile passed every test. Each string
   is now checked against the profile the argument parser returns for it, and each
-  also selects the encoder its profile allows on the same four-row table:
-  passthrough for `conservative`, tabular for the other two. The parser check is
-  the one that holds `aggressive`: in this release it enables exactly the encoders
-  `balanced` does, so no output can tell the two apart.
+  also selects the encoder its profile allows: on a four-row table, passthrough for
+  `conservative` and grid for the other two; on six rows in which two 32-character
+  ids trade columns, grid for `balanced` and `refs` for `aggressive`
+  (`each_profile_string_selects_its_own_profile`).
 - **The MCP `profile` fallback test compared outputs no profile changes.** Its
   input, `{"a":1}`, is passed through under every profile, so mapping an absent or
   `null` profile to `aggressive` or to `conservative` passed it. The parser is now

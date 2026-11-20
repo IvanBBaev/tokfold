@@ -1746,6 +1746,7 @@ fn encoder_name(id: u8) -> &'static str {
         0 => "passthrough",
         1 => "e1-minify",
         2 => "e2-tabular",
+        3 => "e3-refs",
         4 => "e4-jsonl",
         5 => "e5-grid",
         _ => "unknown",
@@ -1973,7 +1974,8 @@ enum ProfileArg {
     Conservative,
     /// Minification plus the two table encoders (tabular and grid). The default.
     Balanced,
-    /// Every shipped encoder (identical to `balanced` in v0.0.1).
+    /// Every shipped encoder: `balanced` plus the value dictionary (refs), which
+    /// replaces repeated long values with references to a legend.
     Aggressive,
 }
 
@@ -2115,14 +2117,12 @@ mod tests {
     }
 
     /// `--profile` must reach the core [`Profile`] its spelling names, on both
-    /// subcommands that take it, and no end-to-end test can check that: `balanced` and
-    /// `aggressive` enable the same encoders in v0.0.1, so every comparison in
-    /// `tests/cli.rs` passes with those two arms swapped. Hand-mutating
-    /// `ProfileArg::Aggressive => Self::Aggressive` to `Self::Balanced` left the whole
-    /// CLI suite green, while the same mutation of the `Conservative` arm was caught,
-    /// so the chain from spelling to profile is pinned here, where the arms are
-    /// distinguishable -- as the MCP server's `profile` argument is pinned in its own
-    /// crate. The `default_value` is parsed through clap rather than restated, so
+    /// subcommands that take it. End to end, `balanced` and `aggressive` differ only
+    /// on an input the value dictionary folds (`tests/cli.rs` drives one, for `stats`
+    /// and `compress`); on every other input their outputs are identical, so the
+    /// chain from spelling to profile is pinned here for every spelling, where the
+    /// arms are distinguishable on any input -- as the MCP server's `profile`
+    /// argument is pinned in its own crate. The `default_value` is parsed through clap rather than restated, so
     /// changing that literal fails here instead of silently redefining the default.
     #[test]
     fn each_profile_spelling_reaches_its_own_core_profile() {
@@ -2163,6 +2163,7 @@ mod tests {
         assert_eq!(encoder_name(0), "passthrough");
         assert_eq!(encoder_name(1), "e1-minify");
         assert_eq!(encoder_name(2), "e2-tabular");
+        assert_eq!(encoder_name(3), "e3-refs");
         assert_eq!(encoder_name(4), "e4-jsonl");
         assert_eq!(encoder_name(5), "e5-grid");
     }
@@ -2170,9 +2171,7 @@ mod tests {
     #[test]
     fn an_unknown_encoder_id_is_named_rather_than_hidden() {
         // A build that meets an archive from a newer writer must still print a report;
-        // the id itself is always shown alongside, so nothing is lost. Id 3 is
-        // reserved for legend folding, which no build implements.
-        assert_eq!(encoder_name(3), "unknown");
+        // the id itself is always shown alongside, so nothing is lost.
         assert_eq!(encoder_name(6), "unknown");
         assert_eq!(encoder_name(u8::MAX), "unknown");
     }
